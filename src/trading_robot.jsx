@@ -243,12 +243,18 @@ function generateSignal(history, strategy, pair) {
   } else if (strategy === "Mean Revert") {
     const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
     const dev = Math.abs(last - mean) / mean;
-    if (dev > 0.005) {
+    if (dev > 0.001) {
+      const dir = last > mean ? "SHORT" : "LONG";
       score += 50;
-      direction = last > mean ? "SHORT" : "LONG";
+      if (dev > 0.002) score += 10;
+      if (dev > 0.004) score += 10;
+      const returning = (dir === "LONG" && last > prev) || (dir === "SHORT" && last < prev);
+      if (returning) score += 10;
+      direction = dir;
       reason.push(`${(dev * 100).toFixed(2)}% deviation`);
       console.log(`[Signal] ${pair} | ${strategy} | ${direction} | score ${score} | dev ${(dev * 100).toFixed(3)}%`);
     }
+  
   } else if (strategy === "Breakout") {
     const high = Math.max(...recent), low = Math.min(...recent), range = high - low;
     if (last > high - range * 0.05) { score += 45; direction = "LONG"; reason.push("Near range high breakout"); }
@@ -2401,7 +2407,7 @@ const BASE_PRICES = {
 };
 
 export default function TradingRobot() {
-  const [strategy, setStrategy] = useState("Trend Follow");
+  const [strategy, setStrategy] = useState(() => localStorage.getItem("active_strategy") || "Mean Revert");
   const [trades, setTrades] = useState([]);
   const [balance, setBalance] = useState(100.0);
   const [activeRule, setActiveRule] = useState(null);
