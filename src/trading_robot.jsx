@@ -147,6 +147,17 @@ function isMarketOpen() {
   return true;
 }
 
+function getCurrentSession() {
+  const h = new Date().getUTCHours();
+  const d = new Date().getUTCDay();
+  if (d === 6 || (d === 0 && h < 22)) return "AVOID";
+  if (h >= 13 && h < 17) return "PRIME";
+  if (h >= 8  && h < 13) return "LONDON";
+  if (h >= 17 && h < 20) return "NY";
+  if ((h >= 0 && h < 4) || (h >= 20 && h < 24)) return "TOKYO";
+  return "SYDNEY";
+}
+
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
   useEffect(() => {
@@ -2865,6 +2876,10 @@ export default function TradingRobot() {
   const displayUPL = oandaUnrealizedPL != null ? oandaUnrealizedPL : parseFloat(pnl);
   const today = new Date().toDateString();
   const paperTodayCount = paperTrades.filter(t => new Date(t.timestamp).toDateString() === today).length;
+  const navShort = displayNav >= 10000 ? `$${(displayNav / 1000).toFixed(1)}K` : `$${displayNav.toFixed(0)}`;
+  const activeSess = SESSIONS.find(s => isSessionActive(s));
+  const activeSessionName = activeSess?.name ?? "—";
+  const activeSessionColor = activeSess?.color ?? "#484f58";
   const tabs = [["markets", "Markets"], ["news", "News"], ["ai", "Ask Xavier"], ["knowledge", "Knowledge"], ["risk", "Risk"], ["coach", "Coach"], ["analytics", "Analytics"]];
 
   return (
@@ -2872,39 +2887,66 @@ export default function TradingRobot() {
       <style>{`.qb-hscroll::-webkit-scrollbar{display:none}.qb-hscroll{-ms-overflow-style:none;scrollbar-width:none}@keyframes marquee{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}`}</style>
       {/* ── Header ── */}
       {isMobile ? (
-        <div style={{ padding: "10px 12px 8px", borderBottom: "0.5px solid #21262d", marginBottom: 0 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ display: "flex", alignItems: "center" }}>
-              <span style={{ fontSize: 18, fontWeight: 800, color: "#388bfd", letterSpacing: "-0.3px" }}>QuantBot Pro</span>
-              <span style={{ fontSize: 9, background: "#0f2d1a", color: "#3fb950", border: "1px solid #238636", padding: "1px 5px", borderRadius: 4, marginLeft: 6, fontWeight: 500 }}>Gen AI</span>
+        /* ── Mobile command-center header ── */
+        <div style={{ background: "#0d1117", borderBottom: "1px solid #21262d" }}>
+
+          {/* Row 1 — Wordmark · NAV · Auto toggle */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px 5px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+              <span style={{ fontSize: 15, fontWeight: 800, color: "#388bfd", letterSpacing: "-0.2px", whiteSpace: "nowrap" }}>QuantBot Pro</span>
+              <span style={{ fontSize: 8, background: "#0f2d1a", color: "#3fb950", border: "1px solid #238636", padding: "1px 4px", borderRadius: 3, fontWeight: 600, letterSpacing: "0.3px", flexShrink: 0 }}>GEN AI</span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontFamily: FONT_MONO, fontSize: 18, fontWeight: 600, color: displayUPL >= 0 ? "#1D9E75" : "#E24B4A" }}>
-                ${displayNav.toFixed(2)}
-              </span>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
-                <button
-                  onClick={toggleAutoMode}
-                  disabled={autoModeLoading}
-                  style={{ padding: "4px 10px", borderRadius: 6, cursor: autoModeLoading ? "default" : "pointer", fontSize: 11, fontWeight: 600, border: `1px solid ${autoMode ? "#238636" : "#30363d"}`, background: autoMode ? "rgba(35,134,54,0.15)" : "#161b22", color: autoMode ? "#3fb950" : "#8b949e", opacity: autoModeLoading ? 0.6 : 1 }}
-                >
-                  {autoModeLoading ? "…" : autoMode ? "⚡ Auto" : "Auto"}
-                </button>
-                {autoMode && (
-                  <span style={{ fontSize: 9, color: "#3fb950", fontFamily: FONT_MONO }}>
-                    {autoSettings.minConfidence}% · {autoSettings.maxTradesPerHour}/hr · {autoSettings.maxHeat}R
-                  </span>
-                )}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 9, color: "#484f58", letterSpacing: "0.4px", lineHeight: 1, marginBottom: 2 }}>NAV</div>
+                <div style={{ fontFamily: FONT_MONO, fontSize: 13, fontWeight: 700, color: displayUPL >= 0 ? "#1D9E75" : "#E24B4A", lineHeight: 1 }}>{navShort}</div>
               </div>
+              <button
+                onClick={toggleAutoMode}
+                disabled={autoModeLoading}
+                style={{ padding: "5px 10px", borderRadius: 6, cursor: autoModeLoading ? "default" : "pointer", fontSize: 11, fontWeight: 700, border: `1px solid ${autoMode ? "#238636" : "#30363d"}`, background: autoMode ? "rgba(35,134,54,0.12)" : "#161b22", color: autoMode ? "#3fb950" : "#6e7681", opacity: autoModeLoading ? 0.6 : 1, whiteSpace: "nowrap", fontFamily: "inherit", transition: "all 0.2s" }}
+              >
+                {autoModeLoading ? "…" : autoMode ? "⚡ Auto AI" : "Auto AI"}
+              </button>
             </div>
           </div>
-          {paperTodayCount > 0 && (
-            <div style={{ fontSize: 10, color: "#8b949e", marginBottom: 6, paddingLeft: 2 }}>
-              Auto: {paperTodayCount} paper trade{paperTodayCount !== 1 ? "s" : ""} today
+
+          {/* Row 2 — Risk params · Active session · Settings */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0 14px 6px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+              <span style={{ fontSize: 10, color: autoMode ? "#484f58" : "#30363d", fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>
+                {autoMode
+                  ? `${autoSettings.minConfidence}% · ${autoSettings.maxTradesPerHour}/hr · ${autoSettings.maxHeat}R`
+                  : `${(displayUPL >= 0 ? "+" : "") + displayUPL.toFixed(2)} UPL`}
+              </span>
+              {paperTodayCount > 0 && (
+                <span style={{ fontSize: 9, color: "#30363d", fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>· {paperTodayCount}p</span>
+              )}
             </div>
-          )}
-          <div className="qb-hscroll" style={{ overflowX: "auto" }}>
-            <MarketSession isMobile />
+            <div style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
+              <span style={{ fontSize: 10, color: "#8b949e", whiteSpace: "nowrap" }}>
+                Active: <span style={{ color: activeSessionColor, fontWeight: 600 }}>{activeSessionName}</span>
+              </span>
+              <button
+                onClick={() => setShowAutoSettings(true)}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#484f58", padding: "2px", fontSize: 13, lineHeight: 1, display: "flex", alignItems: "center" }}
+                title="Settings"
+              >⚙</button>
+            </div>
+          </div>
+
+          {/* Row 3 — Session indicators */}
+          <div style={{ display: "flex", alignItems: "center", padding: "5px 14px 7px", borderTop: "1px solid #161b22", gap: 0 }}>
+            {SESSIONS.map((s, i) => {
+              const active = isSessionActive(s);
+              return (
+                <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 3, flexShrink: 0 }}>
+                  {i > 0 && <span style={{ color: "#21262d", fontSize: 11, padding: "0 5px" }}>·</span>}
+                  <span style={{ width: 5, height: 5, borderRadius: "50%", display: "inline-block", background: active ? s.color : "#21262d", boxShadow: active ? `0 0 6px ${s.color}88` : "none", transition: "all 0.4s", flexShrink: 0 }} />
+                  <span style={{ fontSize: 10, fontWeight: active ? 600 : 400, color: active ? s.color : "#484f58", transition: "color 0.4s", marginLeft: 3 }}>{s.name}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
       ) : (

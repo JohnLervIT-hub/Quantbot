@@ -29,9 +29,15 @@ app.get('/trades', async (req, res) => {
 
 app.post('/order', async (req, res) => {
   const { instrument, units } = req.body;
+  const direction = Number(units) >= 0 ? 'LONG' : 'SHORT';
+  console.log(`POST /order — ${instrument} ${direction} ${Math.abs(Number(units))} units`);
   const body = JSON.stringify({ order: { type: 'MARKET', instrument, units: String(units), timeInForce: 'FOK', positionFill: 'DEFAULT' } });
   const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body });
-  res.json(await r.json());
+  const data = await r.json();
+  const fillPrice = data?.orderFillTransaction?.price ?? data?.relatedTransactionIDs?.[0] ?? null;
+  if (fillPrice) console.log(`  ✓ filled @ ${fillPrice}`);
+  else if (!r.ok)  console.log(`  ✗ rejected — ${JSON.stringify(data?.errorMessage ?? data).slice(0, 120)}`);
+  res.json(data);
 });
 
 app.post('/close/:tradeId', async (req, res) => {
