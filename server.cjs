@@ -27,20 +27,50 @@ app.get('/trades', async (req, res) => {
   res.json(await r.json());
 });
 
+app.get('/positions', async (req, res) => {
+  const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
+  res.json(await r.json());
+});
+
+app.get('/closed-trades', async (req, res) => {
+  const count = Math.min(parseInt(req.query.count) || 50, 500);
+  const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades?state=CLOSED&count=${count}`, { headers: H });
+  res.json(await r.json());
+});
+
 app.post('/order', async (req, res) => {
   console.log('[ORDER] body:', JSON.stringify(req.body));
   console.log('[ORDER] BASE:', BASE, '| ACCOUNT:', ACCOUNT ? ACCOUNT.slice(0, 8) + '…' : 'MISSING');
-  const { instrument, units } = req.body;
+  const { instrument, units, atr, price } = req.body;
   const direction = Number(units) >= 0 ? 'LONG' : 'SHORT';
   console.log(`POST /order — ${instrument} ${direction} ${Math.abs(Number(units))} units`);
-  const body = JSON.stringify({ order: { type: 'MARKET', instrument, units: String(units), timeInForce: 'FOK', positionFill: 'DEFAULT' } });
+
+  const entryPrice = parseFloat(price) || 0;
+  const atrVal     = parseFloat(atr)   || 0;
+  const slPrice    = atrVal > 0 && entryPrice > 0
+    ? (direction === 'LONG' ? entryPrice - atrVal * 1.5 : entryPrice + atrVal * 1.5)
+    : null;
+
+  const order = {
+    type: 'MARKET', instrument, units: String(units),
+    timeInForce: 'FOK', positionFill: 'DEFAULT',
+  };
+  console.log(`[ORDER] SL decision — atrVal=${atrVal} | entryPrice=${entryPrice} | slPrice=${slPrice}`);
+  if (slPrice) {
+    order.stopLossOnFill = { price: slPrice.toFixed(5), timeInForce: 'GTC' };
+    console.log('[ORDER] stopLossOnFill:', JSON.stringify(order.stopLossOnFill));
+  } else {
+    console.log('[ORDER] stopLossOnFill SKIPPED — atr=' + atrVal + ' or price=' + entryPrice + ' is zero/missing');
+  }
+
+  const body = JSON.stringify({ order });
   console.log('[ORDER] OANDA payload:', body);
   const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body });
   const data = await r.json();
   console.log('[OANDA RESPONSE]', r.status, JSON.stringify(data));
-  const fillPrice = data?.orderFillTransaction?.price ?? data?.relatedTransactionIDs?.[0] ?? null;
+  const fillPrice = data?.orderFillTransaction?.price ?? null;
   if (fillPrice) console.log(`  ✓ filled @ ${fillPrice}`);
-  else if (!r.ok)  console.log(`  ✗ rejected — ${JSON.stringify(data?.errorMessage ?? data).slice(0, 200)}`);
+  else if (!r.ok) console.log(`  ✗ rejected — ${JSON.stringify(data?.errorMessage ?? data).slice(0, 200)}`);
   res.json(data);
 });
 

@@ -235,6 +235,72 @@ function usePriceSimulator(basePrice) {
   return { price, history };
 }
 
+// ─── REAL OANDA PRICE HOOK ────────────────────────────────────────────────────
+// Fetches M5 candle history on mount, then polls live mid-price every 5s.
+// Returns { price, history, isReal } — isReal becomes true once ≥20 real candles loaded.
+// usePriceSimulator() remains the fallback when OANDA is unreachable.
+function useOandaPrice(pair) {
+  const instrument = pair.replace("/", "_");
+  const [oandaHistory, setOandaHistory] = useState([]);
+  const [oandaPrice, setOandaPrice]     = useState(null);
+  const [isReal, setIsReal]             = useState(false);
+  const isRealRef                       = useRef(false);
+
+  // Seed history from M5 candles on mount
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const r    = await fetch(`${BRIDGE}/candles/${instrument}?count=60&granularity=M5`);
+        const data = await r.json();
+        if (!active || !Array.isArray(data.candles)) return;
+        const closes = data.candles
+          .filter(c => c.mid?.c)
+          .map(c => parseFloat(c.mid.c))
+          .filter(v => v > 0 && !isNaN(v));
+        if (closes.length < 5) return;
+        setOandaHistory(closes);
+        setOandaPrice(closes[closes.length - 1]);
+        if (closes.length >= 20) {
+          isRealRef.current = true;
+          setIsReal(true);
+        }
+      } catch {}
+    })();
+    return () => { active = false; };
+  }, [instrument]);
+
+  // Append live mid-price every 5 seconds
+  useEffect(() => {
+    const tick = async () => {
+      try {
+        const r    = await fetch(`${BRIDGE}/prices?instruments=${instrument}`);
+        const data = await r.json();
+        const px   = data.prices?.[0];
+        if (!px) return;
+        const bid  = parseFloat(px.bids?.[0]?.price ?? 0);
+        const ask  = parseFloat(px.asks?.[0]?.price ?? 0);
+        const mid  = (bid + ask) / 2;
+        if (!mid || isNaN(mid) || mid <= 0) return;
+        setOandaPrice(mid);
+        setOandaHistory(prev => {
+          const next = [...prev.slice(-59), mid];
+          if (!isRealRef.current && next.length >= 20) {
+            isRealRef.current = true;
+            setIsReal(true);
+          }
+          return next;
+        });
+      } catch {}
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => clearInterval(id);
+  }, [instrument]);
+
+  return { price: oandaPrice, history: oandaHistory, isReal };
+}
+
 // ─── SIGNAL ENGINE ────────────────────────────────────────────────────────────
 function generateSignal(history, strategy, pair) {
   if (history.length < 20) return null;
@@ -353,7 +419,9 @@ function calcRegime(history) {
   return { regime, ema9, ema21, ema50, atr5, atr20, bullTrend };
 }
 
-function runGatekeepers(history, signal, openTrades, pair) {
+const SESSION_TRADE_LIMITS = { PRIME: 4, LONDON: 4, NY: 4, TOKYO: 2, SYDNEY: 3, AVOID: 0 };
+
+function runGatekeepers(history, signal, openTrades, pair, strategy = "") {
   const rejections = [];
   const pairKey = pair.replace("/", "_");
   const pip     = PIP_SIZE[pair] || 0.0001;
@@ -399,7 +467,7 @@ function runGatekeepers(history, signal, openTrades, pair) {
     });
   }
 
-  // 4. Correlated USD pairs — block if 2+ same-direction USD pairs open
+  // 4. Correlated USD pairs — max 1 same-direction USD position
   if (USD_PAIRS_SET.has(pair)) {
     const pairLeadsUSD = pair.startsWith("USD");
     const thisLongUSD  = pairLeadsUSD ? signal.direction === "LONG" : signal.direction === "SHORT";
@@ -410,18 +478,18 @@ function runGatekeepers(history, signal, openTrades, pair) {
       const tLongUSD  = tp.startsWith("USD") ? units > 0 : units < 0;
       return tLongUSD === thisLongUSD;
     }).length;
-    if (sameCount >= 2) {
+    if (sameCount >= 1) {
       rejections.push({
         condition: "Correlated pairs",
-        actual: `${sameCount} USD pairs`,
-        threshold: "< 2",
-        reason: `${sameCount} same-direction USD pairs open — concentration risk too high`,
+        actual: `${sameCount} USD pair${sameCount > 1 ? "s" : ""}`,
+        threshold: "0",
+        reason: `${sameCount} same-direction USD pair already open — max 1 per direction`,
       });
     }
   }
 
-  // 5. Higher timeframe bias — price must be above EMA50 for LONG, below for SHORT
-  if (history.length >= 50) {
+  // 5. Higher timeframe bias — Trend Follow only: price must be on correct side of EMA50
+  if (strategy === "Trend Follow" && history.length >= 50) {
     const ema50 = history.slice(-50).reduce((a, b) => a + b, 0) / 50;
     const last  = history[history.length - 1];
     const biasOk = signal.direction === "LONG" ? last > ema50 : last < ema50;
@@ -442,6 +510,45 @@ function runGatekeepers(history, signal, openTrades, pair) {
       actual: `${(atr5 / atr20).toFixed(1)}× avg ATR`,
       threshold: "< 2.0×",
       reason: `Volatility spike — 5-bar ATR is ${(atr5 / atr20).toFixed(1)}× the 20-bar average`,
+    });
+  }
+
+  // 7. Duplicate trade prevention — block same pair within 60 seconds
+  const recentDupe = (openTrades || []).some(t => {
+    if ((t.instrument ?? "") !== pairKey) return false;
+    const age = Date.now() - new Date(t.openTime).getTime();
+    return age < 60_000;
+  });
+  if (recentDupe) {
+    rejections.push({
+      condition: "Duplicate prevention",
+      actual: "Trade < 60s ago",
+      threshold: "60s cooldown",
+      reason: `${pair} was opened within the last 60 seconds — duplicate blocked`,
+    });
+  }
+
+  // 8. Session trade cap
+  const sessionLimit = SESSION_TRADE_LIMITS[session] ?? 4;
+  const sessionTrades = (openTrades || []).filter(t => {
+    const openTime = new Date(t.openTime).getTime();
+    const nowUtc   = Date.now();
+    const hour     = new Date(nowUtc).getUTCHours();
+    const SESSION_WINDOWS = {
+      PRIME:  [13, 17], LONDON: [8, 13], NY: [17, 20],
+      TOKYO:  [4, 8],   SYDNEY: [22, 28], AVOID: [20, 22],
+    };
+    const [start, end] = SESSION_WINDOWS[session] || [0, 24];
+    const tradeHour = new Date(openTime).getUTCHours();
+    const tradeHourAdj = tradeHour < (start > 20 ? 4 : 0) ? tradeHour + 24 : tradeHour;
+    return tradeHourAdj >= start && tradeHourAdj < end;
+  }).length;
+  if (sessionTrades >= sessionLimit) {
+    rejections.push({
+      condition: "Session cap",
+      actual: `${sessionTrades} trades`,
+      threshold: `${sessionLimit} max`,
+      reason: `${session} session limit of ${sessionLimit} trades reached`,
     });
   }
 
@@ -1285,8 +1392,15 @@ function RegimeBadge({ regime }) {
 const MOBILE_ACTION_ROW_H = 62;
 
 function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignalUpdate, onRegimeUpdate, onRejection, openTrades, marketOpen, isMobile }) {
-  const { price, history } = usePriceSimulator(basePrice);
-  const rawSignal = generateSignal(history, strategy, pair);
+  const { price: simPrice, history: simHistory } = usePriceSimulator(basePrice);
+  const { price: oandaPrice, history: oandaHistory, isReal } = useOandaPrice(pair);
+
+  // Real OANDA data takes priority; simulator is fallback only
+  const price   = (isReal && oandaPrice != null) ? oandaPrice   : simPrice;
+  const history = (isReal && oandaHistory.length >= 20) ? oandaHistory : simHistory;
+
+  // Block signals until ≥20 real candles are loaded
+  const rawSignal = isReal ? generateSignal(history, strategy, pair) : null;
   const signal = isMobile ? useStableSignal(rawSignal) : rawSignal;
   const prev = history[history.length - 2] ?? price;
   const [showAI, setShowAI] = useState(false);
@@ -1320,7 +1434,7 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
 
   const handleAICheck = () => {
     if (!signal) return;
-    const gk = runGatekeepers(history, signal, openTrades, pair);
+    const gk = runGatekeepers(history, signal, openTrades, pair, strategy);
     if (!gk.passed) {
       const first = gk.rejections[0];
       setGkReject(first);
@@ -1372,7 +1486,7 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
           <AISignalConfirm
             pair={pair} signal={signal} price={price} history={history}
             currentHeadline={currentHeadline} marketOpen={marketOpen}
-            onConfirmed={(verdict) => { onTrade(pair, signal, price, verdict); setShowAI(false); }}
+            onConfirmed={(verdict) => { onTrade(pair, signal, price, { ...verdict, atr: regimeData.atr5 }); setShowAI(false); }}
             onRejected={() => setShowAI(false)}
           />
         </motion.div>
@@ -1819,22 +1933,23 @@ function statusBadge(status) {
   return <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: s.bg, color: s.color, border: `0.5px solid ${s.border}`, fontWeight: 500 }}>{status}</span>;
 }
 
-function RiskTab({ trades, balance }) {
-  const openTrades = trades.length;
-  const riskPct = Math.min(openTrades * 1.2, 8);
+function RiskTab({ trades, openTrades = [], balance }) {
+  const positionCount = openTrades.length;          // live OANDA open positions
+  const sessionCount  = trades.length;              // trades executed this session
+  const riskPct = Math.min(positionCount * 1.2, 8);
   const drawdown = ((100 - balance) / 100 * 100).toFixed(2);
   const heatColor = riskPct > 6 ? "#E24B4A" : riskPct > 4 ? "#BA7517" : "#1D9E75";
 
   const metrics = [
     { label: "Portfolio Heat",  value: `${riskPct.toFixed(1)}R`, color: heatColor },
     { label: "Max Drawdown",    value: `${drawdown}%`,           color: parseFloat(drawdown) > 5 ? "#E24B4A" : "#1D9E75" },
-    { label: "Open Positions",  value: openTrades,               color: "#e6edf3" },
+    { label: "Open Positions",  value: positionCount,            color: "#e6edf3" },
     { label: "Circuit Breaker", value: riskPct > 6 ? "ACTIVE" : "Standby", color: riskPct > 6 ? "#E24B4A" : "#1D9E75" },
   ];
 
   const sessionSummary = [
     { label: "Session P&L",  value: `${(balance - 100).toFixed(2)}%`, status: balance >= 100 ? "Safe" : "Monitor" },
-    { label: "Trades taken", value: openTrades,                        status: openTrades < 3 ? "Safe" : openTrades < 5 ? "Monitor" : "Standby" },
+    { label: "Trades taken", value: sessionCount,                      status: sessionCount < 3 ? "Safe" : sessionCount < 5 ? "Monitor" : "Standby" },
     { label: "Risk used",    value: `${riskPct.toFixed(1)}R`,          status: riskPct < 4 ? "Safe" : riskPct < 6 ? "Monitor" : "Standby" },
     { label: "Daily heat",   value: `${Math.min(riskPct * 1.5, 10).toFixed(1)}R`, status: riskPct < 3 ? "Safe" : riskPct < 5 ? "Monitor" : "Standby" },
   ];
@@ -2075,6 +2190,75 @@ function AICoachTab({ trades, isMobile }) {
 
 function openTradesFingerprint(trades) {
   return trades.map(t => `${t.id}:${t.unrealizedPL}:${t.currentUnits}`).join("|");
+}
+
+// ─── CLOSED TRADES PANEL ─────────────────────────────────────────────────────
+function ClosedTradesPanel({ trades, isMobile }) {
+  if (trades.length === 0) return null;
+  const wins = trades.filter(t => t.realizedPL > 0);
+  const winRate = Math.round(wins.length / trades.length * 100);
+  const totalPL = trades.reduce((s, t) => s + t.realizedPL, 0);
+
+  return (
+    <div style={isMobile
+      ? { background: "#0d1117", padding: "12px", marginTop: 4 }
+      : { background: "#161b22", border: "1px solid #21262d", borderRadius: 10, padding: "12px 14px", margin: "8px 16px 0" }
+    }>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "#8b949e", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+            Closed Trades
+          </span>
+          <span style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO }}>
+            {trades.length}T · {winRate}% WR
+          </span>
+        </div>
+        <span style={{ fontSize: 11, fontWeight: 600, fontFamily: FONT_MONO, color: totalPL >= 0 ? "#3fb950" : "#f85149" }}>
+          {totalPL >= 0 ? "+" : ""}${totalPL.toFixed(2)}
+        </span>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 280, overflowY: "auto" }}>
+        {trades.slice(0, 30).map((t) => {
+          const isWin = t.realizedPL > 0;
+          const closeDate = t.closeTime ? new Date(t.closeTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
+          const decimals = t.pair?.includes("JPY") ? 3 : t.pair?.includes("BTC") ? 2 : t.pair?.includes("XAU") || t.pair?.includes("SPX") ? 2 : 5;
+          return (
+            <div
+              key={t.oandaId}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "7px 10px", borderRadius: 7,
+                background: "#0d1117",
+                border: `1px solid ${isWin ? "rgba(63,185,80,0.15)" : "rgba(248,81,73,0.15)"}`,
+                borderLeft: `2.5px solid ${isWin ? "#3fb950" : "#f85149"}`,
+                fontSize: 11,
+              }}
+            >
+              <span style={{ fontFamily: FONT_MONO, fontWeight: 600, color: "#e6edf3", minWidth: 62 }}>{t.pair}</span>
+              <span style={{ fontWeight: 600, color: t.dir === "LONG" ? "#3fb950" : "#f85149", minWidth: 34 }}>{t.dir}</span>
+              <span style={{ color: "#484f58", fontFamily: FONT_MONO, flex: 1, fontSize: 10 }}>
+                {t.entryPrice?.toFixed(decimals)} → {t.closePrice?.toFixed(decimals)}
+              </span>
+              <span style={{ fontFamily: FONT_MONO, fontWeight: 600, color: isWin ? "#3fb950" : "#f85149", minWidth: 60, textAlign: "right" }}>
+                {isWin ? "+" : ""}${t.realizedPL?.toFixed(2)}
+              </span>
+              <span style={{ color: isWin ? "#3fb950" : "#f85149", fontFamily: FONT_MONO, fontSize: 10, minWidth: 44, textAlign: "right" }}>
+                {t.pips >= 0 ? "+" : ""}{t.pips}p
+              </span>
+              {t.rMultiple != null && (
+                <span style={{ color: isWin ? "#3fb950" : "#f85149", fontFamily: FONT_MONO, fontSize: 10, minWidth: 36, textAlign: "right" }}>
+                  {t.rMultiple >= 0 ? "+" : ""}{t.rMultiple}R
+                </span>
+              )}
+              <span style={{ color: "#484f58", fontSize: 10, minWidth: 34, textAlign: "right" }}>{t.duration}</span>
+              <span style={{ color: "#484f58", fontSize: 10, minWidth: 30, textAlign: "right" }}>{closeDate}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 // ─── NEWS TAB ─────────────────────────────────────────────────────────────────
@@ -2475,7 +2659,7 @@ function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile }) {
             const units = parseFloat(trade.currentUnits);
             const isLong = units > 0;
             const pnl = parseFloat(trade.unrealizedPL);
-            const entry = parseFloat(trade.averageOpenPrice);
+            const entry = parseFloat(trade.price);
             const dec = priceDecimals(pair);
             const current = livePrices[pair];
             const dur = tradeDuration(trade.openTime);
@@ -2538,8 +2722,11 @@ function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile }) {
 }
 
 // ─── PERFORMANCE DASHBOARD ───────────────────────────────────────────────────
-function PerformanceDashboard({ trades, balance, isMobile }) {
-  if (trades.length === 0) {
+function PerformanceDashboard({ trades, closedTrades = [], balance, isMobile }) {
+  const hasClosed = closedTrades.length > 0;
+  const analyticsData = hasClosed ? closedTrades : trades;
+
+  if (analyticsData.length === 0) {
     return (
       <div style={{ padding: "60px 16px", textAlign: "center" }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>📊</div>
@@ -2549,28 +2736,32 @@ function PerformanceDashboard({ trades, balance, isMobile }) {
     );
   }
 
-  const wins = trades.filter(t => t.pnl > 0);
-  const losses = trades.filter(t => t.pnl <= 0);
-  const winRate = wins.length / trades.length * 100;
-  const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
-  const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
-  const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0) / losses.length) : 0;
-  const expectancy = avgWin * (winRate / 100) - avgLoss * (1 - winRate / 100);
-  const maxWin = wins.length > 0 ? Math.max(...wins.map(t => t.pnl)) : 0;
-  const maxLoss = losses.length > 0 ? Math.min(...losses.map(t => t.pnl)) : 0;
-  const avgScore = trades.reduce((s, t) => s + (t.score || 0), 0) / trades.length;
+  const getPL = (t) => t.realizedPL ?? t.pnl ?? 0;
 
-  const equityCurve = trades.reduce((acc, t) => {
-    acc.push(acc[acc.length - 1] + (t.pnl || 0));
-    return acc;
-  }, [100]);
+  const wins = analyticsData.filter(t => getPL(t) > 0);
+  const losses = analyticsData.filter(t => getPL(t) <= 0);
+  const winRate = analyticsData.length > 0 ? wins.length / analyticsData.length * 100 : 0;
+  const totalPnl = analyticsData.reduce((s, t) => s + getPL(t), 0);
+  const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + getPL(t), 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, t) => s + getPL(t), 0) / losses.length) : 0;
+  const expectancy = avgWin * (winRate / 100) - avgLoss * (1 - winRate / 100);
+  const maxWin = wins.length > 0 ? Math.max(...wins.map(t => getPL(t))) : 0;
+  const maxLoss = losses.length > 0 ? Math.min(...losses.map(t => getPL(t))) : 0;
+
+  const equityCurve = hasClosed
+    ? closedTrades.slice().reverse().reduce((acc, t) => {
+        acc.push(acc[acc.length - 1] + (t.realizedPL || 0));
+        return acc;
+      }, [0])
+    : trades.reduce((acc, t) => { acc.push(acc[acc.length - 1] + (t.pnl || 0)); return acc; }, [100]);
 
   const pairStats = {};
-  trades.forEach(t => {
+  analyticsData.forEach(t => {
     if (!pairStats[t.pair]) pairStats[t.pair] = { wins: 0, total: 0, pnl: 0 };
     pairStats[t.pair].total++;
-    pairStats[t.pair].pnl += t.pnl || 0;
-    if (t.pnl > 0) pairStats[t.pair].wins++;
+    const p = getPL(t);
+    pairStats[t.pair].pnl += p;
+    if (p > 0) pairStats[t.pair].wins++;
   });
   const pairRows = Object.entries(pairStats).sort((a, b) => b[1].pnl - a[1].pnl);
   const bestPair = pairRows.length > 0 ? pairRows[0][0] : "—";
@@ -2582,34 +2773,50 @@ function PerformanceDashboard({ trades, balance, isMobile }) {
     if (!stratStats[key]) stratStats[key] = { wins: 0, total: 0, pnl: 0 };
     stratStats[key].total++;
     stratStats[key].pnl += t.pnl || 0;
-    if (t.pnl > 0) stratStats[key].wins++;
+    if ((t.pnl || 0) > 0) stratStats[key].wins++;
   });
 
-  const longs = trades.filter(t => t.dir === "LONG");
-  const shorts = trades.filter(t => t.dir === "SHORT");
-  const longWr = longs.length > 0 ? longs.filter(t => t.pnl > 0).length / longs.length * 100 : 0;
-  const shortWr = shorts.length > 0 ? shorts.filter(t => t.pnl > 0).length / shorts.length * 100 : 0;
+  const longs = analyticsData.filter(t => t.dir === "LONG");
+  const shorts = analyticsData.filter(t => t.dir === "SHORT");
+  const longWr = longs.length > 0 ? longs.filter(t => getPL(t) > 0).length / longs.length * 100 : 0;
+  const shortWr = shorts.length > 0 ? shorts.filter(t => getPL(t) > 0).length / shorts.length * 100 : 0;
 
   const pc = (v) => v > 0 ? "#3fb950" : v < 0 ? "#f85149" : "#8b949e";
-  const fmt = (v, d = 2) => `${v >= 0 ? "+" : ""}${v.toFixed(d)}%`;
+  const fmtD = (v) => `${v >= 0 ? "+" : ""}$${Math.abs(v).toFixed(2)}`;
+  const fmtPct = (v, d = 2) => `${v >= 0 ? "+" : ""}${v.toFixed(d)}%`;
 
   const CARD = { background: "#0d1117", border: "1px solid #21262d", borderRadius: 12, padding: "14px 16px" };
   const LBL = { fontSize: 10, color: "#8b949e", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 };
   const BIG = { fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO };
 
-  const summaryCards = [
-    { label: "Total Trades",  value: trades.length,               color: "#e6edf3" },
-    { label: "Win Rate",      value: `${winRate.toFixed(1)}%`,    color: winRate >= 50 ? "#3fb950" : "#f85149" },
-    { label: "Total P&L",    value: fmt(totalPnl),                color: pc(totalPnl) },
-    { label: "Expectancy",   value: fmt(expectancy, 3),           color: pc(expectancy) },
-    { label: "Best Pair",    value: bestPair,                      color: "#a5d6ff" },
-    { label: "Max Win",      value: `+${maxWin.toFixed(2)}%`,    color: "#3fb950" },
-    { label: "Max Loss",     value: `${maxLoss.toFixed(2)}%`,    color: "#f85149" },
-    { label: "Avg Score",    value: avgScore.toFixed(0),          color: avgScore >= 75 ? "#3fb950" : avgScore >= 50 ? "#d29922" : "#f85149" },
+  const summaryCards = hasClosed ? [
+    { label: "Closed Trades", value: closedTrades.length,              color: "#e6edf3" },
+    { label: "Win Rate",      value: `${winRate.toFixed(1)}%`,         color: winRate >= 50 ? "#3fb950" : "#f85149" },
+    { label: "Total P&L",    value: fmtD(totalPnl),                    color: pc(totalPnl) },
+    { label: "Expectancy",   value: fmtD(expectancy),                  color: pc(expectancy) },
+    { label: "Best Pair",    value: bestPair,                           color: "#a5d6ff" },
+    { label: "Max Win",      value: fmtD(maxWin),                      color: "#3fb950" },
+    { label: "Max Loss",     value: fmtD(maxLoss),                     color: "#f85149" },
+    { label: "Avg Win",      value: fmtD(avgWin),                      color: "#3fb950" },
+  ] : [
+    { label: "Pending Fills", value: trades.length,                    color: "#e6edf3" },
+    { label: "Win Rate",      value: `${winRate.toFixed(1)}%`,         color: "#484f58" },
+    { label: "Total P&L",    value: fmtPct(totalPnl),                  color: pc(totalPnl) },
+    { label: "Expectancy",   value: fmtPct(expectancy, 3),             color: pc(expectancy) },
+    { label: "Best Pair",    value: bestPair,                           color: "#a5d6ff" },
+    { label: "Max Win",      value: fmtPct(maxWin),                    color: "#3fb950" },
+    { label: "Max Loss",     value: fmtPct(maxLoss),                   color: "#f85149" },
+    { label: "Avg Score",    value: trades.length > 0 ? (trades.reduce((s, t) => s + (t.score || 0), 0) / trades.length).toFixed(0) : "—", color: "#8b949e" },
   ];
 
   return (
     <div style={{ padding: "0 16px 24px" }}>
+      {hasClosed && (
+        <div style={{ fontSize: 10, color: "#484f58", textAlign: "right", marginBottom: 8, fontFamily: FONT_MONO }}>
+          Based on {closedTrades.length} closed OANDA trades
+        </div>
+      )}
+
       {/* Summary cards */}
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
         {summaryCards.map((c, i) => (
@@ -2621,40 +2828,58 @@ function PerformanceDashboard({ trades, balance, isMobile }) {
       </div>
 
       {/* Equity curve */}
-      <div style={{ ...CARD, marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3", marginBottom: 10 }}>Equity Curve</div>
-        <BezierSpark history={equityCurve} height={80} fullWidth />
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 10, color: "#8b949e" }}>
-          <span>$100.00 start</span>
-          <span style={{ color: pc(balance - 100) }}>${balance.toFixed(4)} now</span>
+      {equityCurve.length > 1 && (
+        <div style={{ ...CARD, marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3" }}>Equity Curve</div>
+            {hasClosed && <div style={{ fontSize: 10, color: "#484f58" }}>Cumulative realized P&L</div>}
+          </div>
+          <BezierSpark history={equityCurve} height={80} fullWidth />
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 10, color: "#8b949e" }}>
+            {hasClosed ? (
+              <>
+                <span>$0 baseline</span>
+                <span style={{ color: pc(totalPnl) }}>{fmtD(totalPnl)} total</span>
+              </>
+            ) : (
+              <>
+                <span>$100.00 start</span>
+                <span style={{ color: pc(balance - 100) }}>${balance.toFixed(4)} now</span>
+              </>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16, marginBottom: 16 }}>
         {/* Pair performance */}
         <div style={CARD}>
           <div style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3", marginBottom: 12 }}>Pair Performance</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {pairRows.map(([pair, s]) => {
-              const barW = Math.abs(s.pnl) / maxAbsPnl * 100;
-              const wr = (s.wins / s.total * 100).toFixed(0);
-              const isPos = s.pnl >= 0;
-              return (
-                <div key={pair}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
-                    <span style={{ color: "#e6edf3", fontFamily: FONT_MONO }}>{pair}</span>
-                    <div style={{ display: "flex", gap: 12 }}>
-                      <span style={{ color: "#8b949e" }}>{wr}% WR · {s.total}T</span>
-                      <span style={{ color: pc(s.pnl), fontFamily: FONT_MONO }}>{fmt(s.pnl)}</span>
+          {pairRows.length === 0 ? (
+            <div style={{ fontSize: 12, color: "#484f58" }}>No data yet</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {pairRows.map(([pair, s]) => {
+                const barW = Math.abs(s.pnl) / maxAbsPnl * 100;
+                const wr = (s.wins / s.total * 100).toFixed(0);
+                const isPos = s.pnl >= 0;
+                return (
+                  <div key={pair}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
+                      <span style={{ color: "#e6edf3", fontFamily: FONT_MONO }}>{pair}</span>
+                      <div style={{ display: "flex", gap: 12 }}>
+                        <span style={{ color: "#8b949e" }}>{wr}% WR · {s.total}T</span>
+                        <span style={{ color: pc(s.pnl), fontFamily: FONT_MONO }}>{hasClosed ? fmtD(s.pnl) : fmtPct(s.pnl)}</span>
+                      </div>
+                    </div>
+                    <div style={{ height: 6, background: "#161b22", borderRadius: 3, overflow: "hidden" }}>
+                      <div style={{ width: `${barW}%`, height: "100%", background: isPos ? "#238636" : "#8e1a17", borderRadius: 3 }} />
                     </div>
                   </div>
-                  <div style={{ height: 6, background: "#161b22", borderRadius: 3, overflow: "hidden" }}>
-                    <div style={{ width: `${barW}%`, height: "100%", background: isPos ? "#238636" : "#8e1a17", borderRadius: 3 }} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Direction + Strategy */}
@@ -2684,7 +2909,7 @@ function PerformanceDashboard({ trades, balance, isMobile }) {
                   <div style={{ display: "flex", gap: 10, fontSize: 11, fontFamily: FONT_MONO }}>
                     <span style={{ color: "#e6edf3" }}>{s.total}T</span>
                     <span style={{ color: "#a5d6ff" }}>{(s.wins / s.total * 100).toFixed(0)}%</span>
-                    <span style={{ color: pc(s.pnl) }}>{fmt(s.pnl)}</span>
+                    <span style={{ color: pc(s.pnl) }}>{fmtPct(s.pnl)}</span>
                   </div>
                 </div>
               ))
@@ -2695,24 +2920,51 @@ function PerformanceDashboard({ trades, balance, isMobile }) {
 
       {/* Trade log */}
       <div style={CARD}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3", marginBottom: 10 }}>Trade Log</div>
-        <div style={{ overflowX: "auto" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "80px 80px 55px 55px 65px 1fr", gap: "0 8px", fontSize: 10, color: "#8b949e", textTransform: "uppercase", letterSpacing: "0.05em", paddingBottom: 6, borderBottom: "0.5px solid #21262d", minWidth: 400 }}>
-            {["Pair", "Time", "Dir", "Score", "P&L", "AI Reason"].map(h => <div key={h}>{h}</div>)}
-          </div>
-          <div style={{ maxHeight: 240, overflowY: "auto" }}>
-            {[...trades].reverse().map((t, i) => (
-              <div key={t.id || i} style={{ display: "grid", gridTemplateColumns: "80px 80px 55px 55px 65px 1fr", gap: "0 8px", padding: "7px 0", borderBottom: "0.5px solid #161b22", alignItems: "center", fontSize: 11, minWidth: 400 }}>
-                <span style={{ fontFamily: FONT_MONO, color: "#a5d6ff" }}>{t.pair}</span>
-                <span style={{ color: "#8b949e" }}>{t.time}</span>
-                <span style={{ color: t.dir === "LONG" ? "#3fb950" : "#f85149", fontWeight: 600 }}>{t.dir}</span>
-                <span style={{ fontFamily: FONT_MONO, color: t.score >= 75 ? "#3fb950" : "#d29922" }}>{t.score}</span>
-                <span style={{ fontFamily: FONT_MONO, color: pc(t.pnl ?? 0) }}>{t.pnl !== undefined ? fmt(t.pnl) : "—"}</span>
-                <span style={{ color: "#8b949e", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.aiReason || "—"}</span>
-              </div>
-            ))}
-          </div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3", marginBottom: 10 }}>
+          {hasClosed ? "Closed Trade Log" : "Trade Log"}
         </div>
+        {hasClosed ? (
+          <div style={{ overflowX: "auto" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "70px 55px 52px 65px 50px 44px 44px", gap: "0 8px", fontSize: 10, color: "#8b949e", textTransform: "uppercase", letterSpacing: "0.05em", paddingBottom: 6, borderBottom: "0.5px solid #21262d", minWidth: 380 }}>
+              {["Pair", "Dir", "Time", "P&L ($)", "Pips", "R", "Dur"].map(h => <div key={h}>{h}</div>)}
+            </div>
+            <div style={{ maxHeight: 280, overflowY: "auto" }}>
+              {closedTrades.slice(0, 50).map((t, i) => {
+                const isWin = t.realizedPL > 0;
+                const closeDate = t.closeTime ? new Date(t.closeTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
+                return (
+                  <div key={t.oandaId || i} style={{ display: "grid", gridTemplateColumns: "70px 55px 52px 65px 50px 44px 44px", gap: "0 8px", padding: "6px 0", borderBottom: "0.5px solid #161b22", alignItems: "center", fontSize: 11, minWidth: 380 }}>
+                    <span style={{ fontFamily: FONT_MONO, color: "#a5d6ff" }}>{t.pair}</span>
+                    <span style={{ color: t.dir === "LONG" ? "#3fb950" : "#f85149", fontWeight: 600 }}>{t.dir}</span>
+                    <span style={{ color: "#484f58" }}>{closeDate}</span>
+                    <span style={{ fontFamily: FONT_MONO, color: isWin ? "#3fb950" : "#f85149", fontWeight: 600 }}>{isWin ? "+" : ""}${t.realizedPL?.toFixed(2)}</span>
+                    <span style={{ fontFamily: FONT_MONO, color: isWin ? "#3fb950" : "#f85149" }}>{t.pips >= 0 ? "+" : ""}{t.pips}</span>
+                    <span style={{ fontFamily: FONT_MONO, color: t.rMultiple != null ? (t.rMultiple >= 0 ? "#3fb950" : "#f85149") : "#484f58" }}>{t.rMultiple != null ? `${t.rMultiple >= 0 ? "+" : ""}${t.rMultiple}` : "—"}</span>
+                    <span style={{ color: "#484f58" }}>{t.duration}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "80px 80px 55px 55px 65px 1fr", gap: "0 8px", fontSize: 10, color: "#8b949e", textTransform: "uppercase", letterSpacing: "0.05em", paddingBottom: 6, borderBottom: "0.5px solid #21262d", minWidth: 400 }}>
+              {["Pair", "Time", "Dir", "Score", "P&L", "AI Reason"].map(h => <div key={h}>{h}</div>)}
+            </div>
+            <div style={{ maxHeight: 240, overflowY: "auto" }}>
+              {[...trades].reverse().map((t, i) => (
+                <div key={t.id || i} style={{ display: "grid", gridTemplateColumns: "80px 80px 55px 55px 65px 1fr", gap: "0 8px", padding: "7px 0", borderBottom: "0.5px solid #161b22", alignItems: "center", fontSize: 11, minWidth: 400 }}>
+                  <span style={{ fontFamily: FONT_MONO, color: "#a5d6ff" }}>{t.pair}</span>
+                  <span style={{ color: "#8b949e" }}>{t.time}</span>
+                  <span style={{ color: t.dir === "LONG" ? "#3fb950" : "#f85149", fontWeight: 600 }}>{t.dir}</span>
+                  <span style={{ fontFamily: FONT_MONO, color: t.score >= 75 ? "#3fb950" : "#d29922" }}>{t.score}</span>
+                  <span style={{ fontFamily: FONT_MONO, color: pc(t.pnl ?? 0) }}>{t.pnl !== undefined ? fmtPct(t.pnl) : "—"}</span>
+                  <span style={{ color: "#8b949e", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.aiReason || "—"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2766,6 +3018,13 @@ export default function TradingRobot() {
   const [oandaNav, setOandaNav] = useState(null);
   const [oandaUnrealizedPL, setOandaUnrealizedPL] = useState(null);
   const [paperTrades, setPaperTrades] = useState([]);
+  const [closedTrades, setClosedTrades] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("qb_closed_trades") || "[]"); } catch { return []; }
+  });
+  const seenClosedIdsRef = useRef(new Set(
+    (() => { try { return JSON.parse(localStorage.getItem("qb_closed_trades") || "[]").map(t => t.oandaId); } catch { return []; } })()
+  ));
+  const oandaNavRef = useRef(null);
 
   const signalCount = Object.values(signalMap).filter(Boolean).length;
 
@@ -2783,6 +3042,25 @@ export default function TradingRobot() {
     };
     fetchOpenTrades();
     const id = setInterval(fetchOpenTrades, 3000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Authoritative OANDA position sync — ensures Risk tab, heat, and circuit breaker
+  // reflect positions opened outside this session (direct OANDA, server auto-trades, etc.)
+  useEffect(() => {
+    const syncPositions = async () => {
+      try {
+        const r = await fetch(`${BRIDGE}/positions`);
+        const data = await r.json();
+        if (Array.isArray(data.trades)) {
+          setOpenTrades(prev =>
+            openTradesFingerprint(prev) === openTradesFingerprint(data.trades) ? prev : data.trades
+          );
+        }
+      } catch {}
+    };
+    syncPositions();
+    const id = setInterval(syncPositions, 30_000);
     return () => clearInterval(id);
   }, []);
 
@@ -2807,14 +3085,114 @@ export default function TradingRobot() {
     }).catch(() => {});
   }, []);
 
+  // Persist closed trades to localStorage on change
+  useEffect(() => {
+    localStorage.setItem("qb_closed_trades", JSON.stringify(closedTrades.slice(0, 200)));
+  }, [closedTrades]);
+
+  // Sync journal from OANDA open positions — adds entries for trades not placed in this session
+  const journalledOandaIdsRef = useRef(new Set());
+  useEffect(() => {
+    openTrades.forEach(t => {
+      const key = `oanda-${t.id}`;
+      if (journalledOandaIdsRef.current.has(key)) return;
+      journalledOandaIdsRef.current.add(key);
+      const pair = (t.instrument || "").replace("_", "/");
+      const units = parseInt(t.currentUnits || 0);
+      const dir = units > 0 ? "LONG" : "SHORT";
+      const fillPrice = parseFloat(t.price || 0);
+      const dec = pair.includes("JPY") ? 3 : pair.includes("BTC") ? 2 : pair.includes("XAU") || pair.includes("SPX") ? 2 : 5;
+      const timeStr = t.openTime
+        ? new Date(t.openTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        : new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      setTrades(prev => {
+        if (prev.some(j => j.id === key)) return prev;
+        return [...prev, {
+          id: key,
+          pair, dir,
+          price: fillPrice > 0 ? fillPrice.toFixed(dec) : "—",
+          strategy: localStorage.getItem("active_strategy") || "—",
+          time: timeStr,
+          score: 0,
+          aiReason: "Synced from OANDA",
+          pnl: 0,
+        }];
+      });
+    });
+  }, [openTrades]);
+
+  // Close detection — polls OANDA closed trades, detects new closes, computes P&L
+  useEffect(() => {
+    const fetchClosed = async () => {
+      try {
+        const r = await fetch(`${BRIDGE}/closed-trades?count=50`);
+        const data = await r.json();
+        if (!Array.isArray(data.trades)) return;
+
+        const newEntries = [];
+        for (const t of data.trades) {
+          if (seenClosedIdsRef.current.has(t.id)) continue;
+          seenClosedIdsRef.current.add(t.id);
+
+          const instrument = t.instrument || "";
+          const pair = instrument.replace("_", "/");
+          const initialUnits = parseInt(t.initialUnits || 0);
+          const dir = initialUnits > 0 ? "LONG" : "SHORT";
+          const entryPrice = parseFloat(t.price || 0);
+          const closePrice = parseFloat(t.averageClosePrice || 0);
+          const realizedPL = parseFloat(t.realizedPL || 0);
+          const pipSize = PIP_SIZE[pair] || 0.0001;
+          const rawPips = (closePrice - entryPrice) / pipSize;
+          const pips = parseFloat((dir === "LONG" ? rawPips : -rawPips).toFixed(1));
+
+          const openMs = new Date(t.openTime).getTime();
+          const closeMs = new Date(t.closeTime || Date.now()).getTime();
+          const diffMins = Math.round(Math.max((closeMs - openMs) / 60_000, 0));
+          const duration = diffMins >= 60
+            ? `${Math.floor(diffMins / 60)}h ${diffMins % 60}m`
+            : `${diffMins}m`;
+
+          const nav = oandaNavRef.current;
+          const rMultiple = nav > 0
+            ? parseFloat((realizedPL / (nav * 0.015)).toFixed(2))
+            : null;
+
+          newEntries.push({
+            oandaId: t.id,
+            pair,
+            dir,
+            entryPrice,
+            closePrice,
+            realizedPL: parseFloat(realizedPL.toFixed(2)),
+            pips,
+            rMultiple,
+            duration,
+            openTime: t.openTime,
+            closeTime: t.closeTime,
+          });
+        }
+
+        if (newEntries.length > 0) {
+          setClosedTrades(prev => [...newEntries, ...prev].slice(0, 200));
+        }
+      } catch {}
+    };
+    fetchClosed();
+    const id = setInterval(fetchClosed, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   // Refs so the interval never captures stale closures
   const signalDataRef = useRef({});
   const autoSettingsRef = useRef(autoSettings);
   const openTradesRef = useRef(openTrades);
+  const strategyRef = useRef(strategy);
   const onTradeRef = useRef(null);
   const onRejectionRef = useRef(null);
   autoSettingsRef.current = autoSettings;
   openTradesRef.current = openTrades;
+  strategyRef.current = strategy;
+  oandaNavRef.current = oandaNav;
 
   // Auto-execution interval — syncs server state AND triggers execution on qualifying signals
   useEffect(() => {
@@ -2847,7 +3225,7 @@ export default function TradingRobot() {
         if (autoExecTimestamps.filter(t => Date.now() - t < 3_600_000).length >= settings.maxTradesPerHour) break;
 
         // Gatekeepers
-        const gk = runGatekeepers(history, signal, openTradesRef.current, pair);
+        const gk = runGatekeepers(history, signal, openTradesRef.current, pair, strategyRef.current);
         if (!gk.passed) {
           onRejectionRef.current?.({
             pair, direction: signal.direction, score: signal.score,
@@ -2881,7 +3259,10 @@ export default function TradingRobot() {
 
           autoExecTimestamps.push(Date.now());
           const topReason = verdict.models?.find(m => m.verdict === "CONFIRM")?.reason ?? "Auto consensus";
-          onTradeRef.current?.(pair, signal, price, { REASON: topReason });
+          const bars = history.slice(-6);
+          const trs = bars.slice(1).map((v, i) => Math.abs(v - bars[i]));
+          const atr = trs.length ? trs.reduce((a, b) => a + b, 0) / trs.length : 0;
+          onTradeRef.current?.(pair, signal, price, { REASON: topReason, atr });
         } catch {}
       }
     };
@@ -2985,13 +3366,14 @@ export default function TradingRobot() {
   const onTrade = useCallback(async (pair, signal, price, aiVerdict) => {
     const instrument = pair.replace("/", "_");
     const units = signal.direction === "LONG" ? 1000 : -1000;
+    const atr = aiVerdict?.atr ?? 0;
 
     let fillPrice = price;
     try {
       const r = await fetch(`${BRIDGE}/order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ instrument, units }),
+        body: JSON.stringify({ instrument, units, atr, price }),
       });
       const data = await r.json();
       if (!r.ok || !data?.orderFillTransaction) {
@@ -3277,6 +3659,7 @@ export default function TradingRobot() {
             )}
             <div>
               <OpenPositionsPanel openTrades={openTrades} livePrices={livePrices} onClose={closeTrade} isMobile={isMobile} />
+              <ClosedTradesPanel trades={closedTrades} isMobile={isMobile} />
               <PaperTradesPanel trades={paperTrades} isMobile={isMobile} />
               <TradeLog trades={trades} isMobile={isMobile} />
               <RejectionLogPanel log={rejectionLog} isMobile={isMobile} />
@@ -3329,7 +3712,7 @@ export default function TradingRobot() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
           >
-            <RiskTab trades={trades} balance={balance} />
+            <RiskTab trades={trades} openTrades={openTrades} balance={balance} />
           </motion.div>
         )}
 
@@ -3353,7 +3736,7 @@ export default function TradingRobot() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
           >
-            <PerformanceDashboard trades={trades} balance={balance} isMobile={isMobile} />
+            <PerformanceDashboard trades={trades} closedTrades={closedTrades} balance={balance} isMobile={isMobile} />
           </motion.div>
         )}
       </AnimatePresence>
