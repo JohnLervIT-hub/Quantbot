@@ -2714,6 +2714,7 @@ export default function TradingRobot() {
   const [balance, setBalance] = useState(100.0);
   const [activeRule, setActiveRule] = useState(null);
   const [autoMode, setAutoMode] = useState(() => localStorage.getItem("autoMode") === "true");
+  const [autoTradeLog, setAutoTradeLog] = useState([]);
   const [autoModeLoading, setAutoModeLoading] = useState(false);
   const [showAutoSettings, setShowAutoSettings] = useState(false);
   const [autoSettings, setAutoSettings] = useState({
@@ -2781,6 +2782,31 @@ export default function TradingRobot() {
     }).catch(() => {});
   }, []);
 
+  // Auto-execution watchdog — syncs server auto-trades into UI and keeps window._autoInterval visible
+  useEffect(() => {
+    if (!autoMode) {
+      if (window._autoInterval) {
+        clearInterval(window._autoInterval);
+        window._autoInterval = undefined;
+      }
+      return;
+    }
+    const poll = async () => {
+      try {
+        const r = await fetch(`${BRIDGE}/auto-trades`);
+        const data = await r.json();
+        if (Array.isArray(data.trades)) setAutoTradeLog(data.trades);
+      } catch {}
+    };
+    poll();
+    const id = setInterval(poll, 30_000);
+    window._autoInterval = id;
+    return () => {
+      clearInterval(id);
+      window._autoInterval = undefined;
+    };
+  }, [autoMode]);
+
   const toggleAutoMode = () => {
     if (!autoMode) { setShowAutoSettings(true); return; }
     enableAutoMode(false);
@@ -2829,6 +2855,7 @@ export default function TradingRobot() {
 
   const handleStrategyChange = useCallback((s) => {
     setStrategy(s);
+    localStorage.setItem("active_strategy", s);
     setSignalHeaderFlash(true);
     setTimeout(() => setSignalHeaderFlash(false), 1000);
   }, []);
