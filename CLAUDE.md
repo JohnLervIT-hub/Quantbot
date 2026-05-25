@@ -32,3 +32,5 @@ Check: `curl http://localhost:3001/health`
 
 For **phone testing**, set `VITE_OANDA_BRIDGE=http://YOUR_LAN_IP:3001` and restart `npm run dev`.
 For **desktop dev**, leave `VITE_OANDA_BRIDGE` unset so the app uses the `/bridge` proxy.
+## Implementation Skill
+Before any code change, read .claude/QUANTBOT_SKILL.md — it contains protected code rules, design system, and safe modification zones.
