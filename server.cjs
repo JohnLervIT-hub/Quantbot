@@ -28,15 +28,19 @@ app.get('/trades', async (req, res) => {
 });
 
 app.post('/order', async (req, res) => {
+  console.log('[ORDER] body:', JSON.stringify(req.body));
+  console.log('[ORDER] BASE:', BASE, '| ACCOUNT:', ACCOUNT ? ACCOUNT.slice(0, 8) + '…' : 'MISSING');
   const { instrument, units } = req.body;
   const direction = Number(units) >= 0 ? 'LONG' : 'SHORT';
   console.log(`POST /order — ${instrument} ${direction} ${Math.abs(Number(units))} units`);
   const body = JSON.stringify({ order: { type: 'MARKET', instrument, units: String(units), timeInForce: 'FOK', positionFill: 'DEFAULT' } });
+  console.log('[ORDER] OANDA payload:', body);
   const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body });
   const data = await r.json();
+  console.log('[OANDA RESPONSE]', r.status, JSON.stringify(data));
   const fillPrice = data?.orderFillTransaction?.price ?? data?.relatedTransactionIDs?.[0] ?? null;
   if (fillPrice) console.log(`  ✓ filled @ ${fillPrice}`);
-  else if (!r.ok)  console.log(`  ✗ rejected — ${JSON.stringify(data?.errorMessage ?? data).slice(0, 120)}`);
+  else if (!r.ok)  console.log(`  ✗ rejected — ${JSON.stringify(data?.errorMessage ?? data).slice(0, 200)}`);
   res.json(data);
 });
 

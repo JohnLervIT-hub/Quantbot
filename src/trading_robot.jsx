@@ -301,7 +301,7 @@ function generateSignal(history, strategy, pair) {
     if (direction === "SHORT" && rsi > 55) { score += 15; reason.push("RSI overbought"); }
   }
 
-  // Display threshold raised to 50 (v3.0). Execution gated separately at 75 via runGatekeepers.
+  // Display threshold: 50. Execution gated at 65 via runGatekeepers.
   if (!direction || score < 50) return null;
   return { direction, score: Math.min(score, 100), reason, rsi: parseFloat(rsi.toFixed(1)) };
 }
@@ -312,10 +312,27 @@ const PIP_SIZE = {
   "AUD/USD": 0.0001, "USD/CAD": 0.0001,
   "XAU/USD": 0.01, "BTC/USD": 1, "SPX500": 0.1,
 };
-const NORMAL_SPREAD_PIPS = {
-  "EUR/USD": 0.5, "GBP/USD": 0.8, "USD/JPY": 0.8,
-  "AUD/USD": 0.6, "USD/CAD": 0.7,
-  "XAU/USD": 20, "BTC/USD": 50, "SPX500": 0.5,
+const TYPICAL_SPREAD_PIPS = {
+  EUR_USD: 1.2, GBP_USD: 1.8, USD_JPY: 1.2, AUD_USD: 1.5,
+  USD_CAD: 1.8, EUR_GBP: 1.5, NZD_USD: 2.0, XAU_USD: 35.0,
+  BTC_USD: 50.0, SPX500: 0.4,
+};
+const TYPICAL_SLIPPAGE_PIPS = {
+  EUR_USD: 0.3, GBP_USD: 0.4, USD_JPY: 0.3, AUD_USD: 0.4,
+  USD_CAD: 0.4, EUR_GBP: 0.4, NZD_USD: 0.5, XAU_USD: 8.0,
+  BTC_USD: 15.0, SPX500: 0.2,
+};
+const PAIR_SPREAD_LIMITS = {
+  EUR_USD: { PRIME: 1.5, LONDON: 2.0, NY: 2.5, TOKYO: 3.5, SYDNEY: 3.5, AVOID: 4.0 },
+  GBP_USD: { PRIME: 2.0, LONDON: 2.5, NY: 3.0, TOKYO: 5.0, SYDNEY: 5.0, AVOID: 6.0 },
+  USD_JPY: { PRIME: 1.5, LONDON: 2.0, NY: 2.0, TOKYO: 2.0, SYDNEY: 2.5, AVOID: 3.5 },
+  AUD_USD: { PRIME: 1.8, LONDON: 2.2, NY: 2.5, TOKYO: 2.5, SYDNEY: 2.0, AVOID: 4.5 },
+  USD_CAD: { PRIME: 2.0, LONDON: 2.5, NY: 2.5, TOKYO: 4.0, SYDNEY: 4.5, AVOID: 5.0 },
+  EUR_GBP: { PRIME: 1.8, LONDON: 2.0, NY: 2.5, TOKYO: 4.0, SYDNEY: 4.0, AVOID: 5.0 },
+  NZD_USD: { PRIME: 2.5, LONDON: 3.0, NY: 3.5, TOKYO: 3.0, SYDNEY: 2.5, AVOID: 5.0 },
+  XAU_USD: { PRIME: 40.0, LONDON: 45.0, NY: 45.0, TOKYO: 60.0, SYDNEY: 65.0, AVOID: 80.0 },
+  BTC_USD: { PRIME: 60.0, LONDON: 70.0, NY: 70.0, TOKYO: 80.0, SYDNEY: 90.0, AVOID: 120.0 },
+  SPX500:  { PRIME: 0.5, LONDON: 0.6, NY: 0.5, TOKYO: 1.0, SYDNEY: 1.2, AVOID: 1.5 },
 };
 const USD_PAIRS_SET = new Set(["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD"]);
 
@@ -338,44 +355,47 @@ function calcRegime(history) {
 
 function runGatekeepers(history, signal, openTrades, pair) {
   const rejections = [];
-  const pip             = PIP_SIZE[pair] || 0.0001;
-  const normalSpreadPips = NORMAL_SPREAD_PIPS[pair] || 1;
-  const bars  = history.slice(-21);
+  const pairKey = pair.replace("/", "_");
+  const pip     = PIP_SIZE[pair] || 0.0001;
+  const bars    = history.slice(-21);
   const tr    = bars.slice(1).map((p, i) => Math.abs(p - bars[i]));
   const atr5  = tr.slice(-5).reduce((a, b) => a + b, 0) / 5;
   const atr20 = tr.reduce((a, b) => a + b, 0) / tr.length || atr5;
   const atr5Pips = atr5 / pip;
 
-  // 1. Score ≥ 75 (raised from 65)
-  if (signal.score < 75) {
+  // 1. Score ≥ 65
+  if (signal.score < 65) {
     rejections.push({
       condition: "Score threshold",
       actual: `${signal.score}%`,
-      threshold: "75%",
-      reason: `Signal confidence ${signal.score}% is below the 75% minimum`,
+      threshold: "65%",
+      reason: `Signal confidence ${signal.score}% is below the 65% minimum`,
     });
   }
 
-  // 2. Spread check — abort if spread > 2× normal
-  const spreadPips = atr5Pips * 0.15;
-  const spreadLimit = normalSpreadPips * 2;
+  // 2. Spread check — compare typical spread vs per-session limit
+  const session     = getCurrentSession();
+  const spreadPips  = TYPICAL_SPREAD_PIPS[pairKey] ?? (atr5Pips * 0.12);
+  const spreadLimit = PAIR_SPREAD_LIMITS[pairKey]?.[session] ?? (spreadPips * 2);
   if (spreadPips > spreadLimit) {
     rejections.push({
       condition: "Spread check",
       actual: `${spreadPips.toFixed(1)}p`,
       threshold: `${spreadLimit.toFixed(1)}p`,
-      reason: `Spread ~${spreadPips.toFixed(1)} pips exceeds 2× normal (${normalSpreadPips}p)`,
+      reason: `Typical spread ${spreadPips.toFixed(1)}p exceeds ${session} session limit of ${spreadLimit.toFixed(1)}p`,
     });
   }
 
-  // 3. Slippage estimate — block if > 0.5 pip
-  const slippagePips = atr5Pips * 0.1;
-  if (slippagePips > 0.5) {
+  // 3. Slippage estimate — block if > 2× typical for this pair
+  const typicalSlippage = TYPICAL_SLIPPAGE_PIPS[pairKey] ?? 1.0;
+  const slippageLimit   = typicalSlippage * 2;
+  const slippagePips    = TYPICAL_SLIPPAGE_PIPS[pairKey] ?? (atr5Pips * 0.1);
+  if (slippagePips > slippageLimit) {
     rejections.push({
       condition: "Slippage estimate",
       actual: `${slippagePips.toFixed(2)}p`,
-      threshold: "0.50p",
-      reason: `Estimated slippage ${slippagePips.toFixed(2)} pips exceeds 0.5 pip limit`,
+      threshold: `${slippageLimit.toFixed(2)}p`,
+      reason: `Estimated slippage ${slippagePips.toFixed(2)}p exceeds 2× typical (${typicalSlippage}p) for ${pair}`,
     });
   }
 
@@ -469,7 +489,7 @@ function BezierSpark({ history, height = 40, fullWidth = false }) {
           <path d={fillD} fill={`url(#${gid})`} />
         </>
       )}
-      <path d={d} fill="none" stroke={color} strokeWidth={fullWidth ? "1.8" : "1.5"} strokeLinecap="round" strokeLinejoin="round" />
+      <path d={d} fill="none" stroke={color} strokeWidth={fullWidth ? "1.1" : "0.9"} strokeLinecap="square" strokeLinejoin="miter" />
     </svg>
   );
 }
@@ -483,10 +503,10 @@ function toOandaSymbol(pair) {
 function buildGradient(ctx, chartArea, isUp) {
   const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
   if (isUp) {
-    g.addColorStop(0, "rgba(29,158,117,0.32)");
+    g.addColorStop(0, "rgba(29,158,117,0.14)");
     g.addColorStop(1, "rgba(29,158,117,0)");
   } else {
-    g.addColorStop(0, "rgba(226,75,74,0.32)");
+    g.addColorStop(0, "rgba(226,75,74,0.14)");
     g.addColorStop(1, "rgba(226,75,74,0)");
   }
   return g;
@@ -531,8 +551,8 @@ function CandleChart({ pair, history, signal }) {
     let active = true;
 
     const chart = createChart(el, {
-      width:  el.clientWidth,
-      height: 260,
+      autoSize: true,
+      height:   260,
       layout: {
         background:      { type: "solid", color: "#0d1117" },
         textColor:       "#8b949e",
@@ -549,9 +569,13 @@ function CandleChart({ pair, history, signal }) {
         scaleMargins: { top: 0.1, bottom: 0.1 },
       },
       timeScale: {
-        borderColor:      "transparent",
-        timeVisible:      true,
-        secondsVisible:   false,
+        borderColor:    "transparent",
+        timeVisible:    true,
+        secondsVisible: false,
+        tickMarkFormatter: (t) => {
+          const d = new Date(t * 1000);
+          return `${d.getUTCHours().toString().padStart(2, "0")}:${d.getUTCMinutes().toString().padStart(2, "0")}`;
+        },
       },
       crosshair: {
         vertLine: { color: "#30363d", width: 1, style: 3, labelBackgroundColor: "#161b22" },
@@ -623,28 +647,24 @@ function CandleChart({ pair, history, signal }) {
         setLoaded(true);
       })
       .catch(() => {
-        if (!active || history.length < 5) return;
-        const now = Math.floor(Date.now() / 1000);
-        const fb = history.slice(-80).map((close, i) => ({
-          time:  now - (80 - i) * 900,
-          open:  close * 0.9998,
-          high:  close * 1.0004,
-          low:   close * 0.9996,
-          close,
-        })).filter((c, i, arr) => i === 0 || c.time > arr[i - 1].time);
-        candleSeries.setData(fb);
-        chart.timeScale().fitContent();
+        if (!active) return;
+        if (history.length >= 5) {
+          const now = Math.floor(Date.now() / 1000);
+          const fb = history.slice(-80).map((close, i) => ({
+            time:  now - (80 - i) * 900,
+            open:  close * 0.9998,
+            high:  close * 1.0004,
+            low:   close * 0.9996,
+            close,
+          })).filter((c, i, arr) => i === 0 || c.time > arr[i - 1].time);
+          candleSeries.setData(fb);
+          chart.timeScale().fitContent();
+        }
         setLoaded(true);
       });
 
-    const ro = new ResizeObserver(() => {
-      if (containerRef.current) chart.applyOptions({ width: containerRef.current.clientWidth });
-    });
-    ro.observe(el);
-
     return () => {
       active = false;
-      ro.disconnect();
       chart.remove();
       chartRef.current = null;
     };
@@ -777,9 +797,9 @@ function OandaChart({ pair, history: simHistory, height = 40 }) {
               if (!chartArea) return "transparent";
               return buildGradient(c, chartArea, isUpRef.current);
             },
-            borderWidth: 1.5,
+            borderWidth: 0.9,
             fill: true,
-            tension: 0.4,
+            tension: 0.15,
             pointRadius: 0,
             pointHoverRadius: 0,
           }],
@@ -1285,13 +1305,18 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
   }, [regimeData.regime, pair, onRegimeUpdate]);
 
   const hasSignal = !!signal;
-  const prevHasSignal = useRef(null);
+  const priceRef = useRef(price);
+  const historyRef = useRef(history);
+  priceRef.current = price;
+  historyRef.current = history;
+  const prevSignalKey = useRef(null);
   useEffect(() => {
-    if (hasSignal !== prevHasSignal.current) {
-      prevHasSignal.current = hasSignal;
-      onSignalUpdate?.(pair, hasSignal);
-    }
-  }, [hasSignal, pair, onSignalUpdate]);
+    if (signalKey === prevSignalKey.current) return;
+    prevSignalKey.current = signalKey;
+    onSignalUpdate?.(pair, signal
+      ? { signal, price: priceRef.current, history: historyRef.current.slice(-50) }
+      : null);
+  }, [signalKey, pair, onSignalUpdate]);
 
   const handleAICheck = () => {
     if (!signal) return;
@@ -2718,7 +2743,7 @@ export default function TradingRobot() {
   const [autoModeLoading, setAutoModeLoading] = useState(false);
   const [showAutoSettings, setShowAutoSettings] = useState(false);
   const [autoSettings, setAutoSettings] = useState({
-    minConfidence: 75,
+    minConfidence: 65,
     maxTradesPerHour: 2,
     maxHeat: 3,
     consensusRequired: 3,
@@ -2782,7 +2807,16 @@ export default function TradingRobot() {
     }).catch(() => {});
   }, []);
 
-  // Auto-execution watchdog — syncs server auto-trades into UI and keeps window._autoInterval visible
+  // Refs so the interval never captures stale closures
+  const signalDataRef = useRef({});
+  const autoSettingsRef = useRef(autoSettings);
+  const openTradesRef = useRef(openTrades);
+  const onTradeRef = useRef(null);
+  const onRejectionRef = useRef(null);
+  autoSettingsRef.current = autoSettings;
+  openTradesRef.current = openTrades;
+
+  // Auto-execution interval — syncs server state AND triggers execution on qualifying signals
   useEffect(() => {
     if (!autoMode) {
       if (window._autoInterval) {
@@ -2791,13 +2825,67 @@ export default function TradingRobot() {
       }
       return;
     }
+    const autoExecTimestamps = [];
+
     const poll = async () => {
+      // 1. Sync server display state
       try {
         const r = await fetch(`${BRIDGE}/auto-trades`);
         const data = await r.json();
         if (Array.isArray(data.trades)) setAutoTradeLog(data.trades);
       } catch {}
+
+      // 2. Execute qualifying signals
+      const settings = autoSettingsRef.current;
+      const now = Date.now();
+      if (autoExecTimestamps.filter(t => now - t < 3_600_000).length >= settings.maxTradesPerHour) return;
+
+      for (const [pair, data] of Object.entries(signalDataRef.current)) {
+        if (!data) continue;
+        const { signal, price, history } = data;
+        if ((signal.score ?? 0) < settings.minConfidence) continue;
+        if (autoExecTimestamps.filter(t => Date.now() - t < 3_600_000).length >= settings.maxTradesPerHour) break;
+
+        // Gatekeepers
+        const gk = runGatekeepers(history, signal, openTradesRef.current, pair);
+        if (!gk.passed) {
+          onRejectionRef.current?.({
+            pair, direction: signal.direction, score: signal.score,
+            ...gk.rejections[0],
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+          });
+          continue;
+        }
+
+        // AI consensus
+        try {
+          const change = history.length > 1
+            ? ((history[history.length - 1] - history[0]) / history[0] * 100).toFixed(3)
+            : "0.000";
+          const cr = await fetch(`${BRIDGE}/consensus`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              instrument: pair.replace("/", "_"),
+              direction: signal.direction,
+              score: signal.score,
+              price,
+              change,
+              rsi: signal.rsi,
+              reason: signal.reason?.join(", ") ?? "",
+              headline: "",
+            }),
+          });
+          const verdict = await cr.json();
+          if (!verdict.executeAllowed || (verdict.votes?.confirm ?? 0) < settings.consensusRequired) continue;
+
+          autoExecTimestamps.push(Date.now());
+          const topReason = verdict.models?.find(m => m.verdict === "CONFIRM")?.reason ?? "Auto consensus";
+          onTradeRef.current?.(pair, signal, price, { REASON: topReason });
+        } catch {}
+      }
     };
+
     poll();
     const id = setInterval(poll, 30_000);
     window._autoInterval = id;
@@ -2866,6 +2954,7 @@ export default function TradingRobot() {
   const onRejection = useCallback((entry) => {
     setRejectionLog(prev => [entry, ...prev].slice(0, 10));
   }, []);
+  onRejectionRef.current = onRejection;
 
   const onRegimeUpdate = useCallback((pair, regime) => {
     setRegimeMap(prev => prev[pair] === regime ? prev : { ...prev, [pair]: regime });
@@ -2879,14 +2968,43 @@ export default function TradingRobot() {
 
   const STRATEGY_DISABLED = {
     "Mean Revert":  globalRegime === "TRENDING"  ? "Trending market — mean reversion signals unreliable" : null,
-    "Trend Follow": globalRegime === "RANGING"   ? "Ranging market — no clear trend to follow" : null,
+    "Trend Follow": globalRegime === "VOLATILE"  ? "Extreme volatility — trend signals unreliable" : null,
+  };
+  const STRATEGY_WARNING = {
+    "Trend Follow": globalRegime === "RANGING"   ? "Ranging market — no strong trend · proceed with caution" : null,
   };
 
-  const onSignalUpdate = useCallback((pair, hasSignal) => {
-    setSignalMap(prev => prev[pair] === hasSignal ? prev : { ...prev, [pair]: hasSignal });
+  const onSignalUpdate = useCallback((pair, data) => {
+    signalDataRef.current[pair] = data;
+    setSignalMap(prev => {
+      const hasSig = !!data;
+      return prev[pair] === hasSig ? prev : { ...prev, [pair]: hasSig };
+    });
   }, []);
 
-  const onTrade = useCallback((pair, signal, price, aiVerdict) => {
+  const onTrade = useCallback(async (pair, signal, price, aiVerdict) => {
+    const instrument = pair.replace("/", "_");
+    const units = signal.direction === "LONG" ? 1000 : -1000;
+
+    let fillPrice = price;
+    try {
+      const r = await fetch(`${BRIDGE}/order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instrument, units }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.orderFillTransaction) {
+        console.error("[onTrade] OANDA rejected:", JSON.stringify(data).slice(0, 200));
+        return;
+      }
+      const oandaFill = parseFloat(data.orderFillTransaction.price);
+      if (oandaFill) fillPrice = oandaFill;
+    } catch (err) {
+      console.error("[onTrade] bridge unreachable:", err.message);
+      return;
+    }
+
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     const rule = KNOWLEDGE_BASE.vanTharpRules[Math.floor(Math.random() * KNOWLEDGE_BASE.vanTharpRules.length)];
@@ -2894,16 +3012,17 @@ export default function TradingRobot() {
     setTimeout(() => setActiveRule(null), 4000);
     const balanceChange = (Math.random() > 0.45 ? 1 : -1) * (1.5 * (0.5 + Math.random() * 2.5)) / 100;
     setBalance(prev => parseFloat((prev + balanceChange).toFixed(4)));
-    setLivePrices(prev => ({ ...prev, [pair]: price }));
+    setLivePrices(prev => ({ ...prev, [pair]: fillPrice }));
     setTrades(prev => [...prev, {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       pair, dir: signal.direction,
-      price: price.toFixed(pair.includes("BTC") ? 2 : pair.includes("JPY") ? 3 : 5),
+      price: fillPrice.toFixed(pair.includes("BTC") ? 2 : pair.includes("JPY") ? 3 : 5),
       strategy, time: timeStr, score: signal.score,
       aiReason: aiVerdict?.REASON || null,
       pnl: parseFloat((balanceChange * 100).toFixed(4)),
     }]);
   }, [strategy]);
+  onTradeRef.current = onTrade;
 
   const pnl = (balance - 100).toFixed(4);
   const displayNav = oandaNav != null ? oandaNav : (100 + parseFloat(pnl));
@@ -3055,20 +3174,22 @@ export default function TradingRobot() {
         {!isMobile && <span style={{ fontSize: 11, color: "#8b949e", marginRight: 4 }}>Strategy</span>}
         {STRATEGIES.map(s => {
           const disabledReason = STRATEGY_DISABLED[s];
+          const warningReason  = !disabledReason ? STRATEGY_WARNING[s] : null;
           const isDisabled = !!disabledReason;
+          const isWarning  = !!warningReason;
           return (
             <div key={s} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2, flexShrink: 0 }}>
               <button
                 onClick={() => !isDisabled && handleStrategyChange(s)}
-                title={disabledReason || ""}
+                title={disabledReason || warningReason || ""}
                 style={{
                   fontSize: isMobile ? 11 : 12,
                   padding: isMobile ? "5px 14px" : "6px 14px",
                   borderRadius: isMobile ? "20px" : "6px",
                   cursor: isDisabled ? "not-allowed" : "pointer",
-                  border: isDisabled ? "1px solid #21262d" : strategy === s ? "1px solid #58a6ff" : "1px solid #30363d",
-                  background: isDisabled ? "#0d1117" : strategy === s ? "#132f4c" : "#161b22",
-                  color: isDisabled ? "#484f58" : strategy === s ? "#58a6ff" : "#8b949e",
+                  border: isDisabled ? "1px solid #21262d" : isWarning ? "1px solid #7a5200" : strategy === s ? "1px solid #58a6ff" : "1px solid #30363d",
+                  background: isDisabled ? "#0d1117" : isWarning ? "rgba(210,153,34,0.06)" : strategy === s ? "#132f4c" : "#161b22",
+                  color: isDisabled ? "#484f58" : isWarning ? "#d29922" : strategy === s ? "#58a6ff" : "#8b949e",
                   fontWeight: strategy === s ? 600 : 400,
                   fontFamily: "inherit",
                   transition: "all 0.15s",
@@ -3085,6 +3206,10 @@ export default function TradingRobot() {
               {isDisabled ? (
                 <span style={{ fontSize: 9, color: "#484f58", fontFamily: FONT_MONO, lineHeight: 1, maxWidth: 80, textAlign: "center", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                   {globalRegime}
+                </span>
+              ) : isWarning ? (
+                <span style={{ fontSize: 9, color: "#7a5200", fontFamily: FONT_MONO, lineHeight: 1 }}>
+                  caution
                 </span>
               ) : strategy === s && (
                 <span style={{ fontSize: 9, color: signalCount > 0 ? "#3fb950" : "#484f58", fontFamily: FONT_MONO, lineHeight: 1 }}>
