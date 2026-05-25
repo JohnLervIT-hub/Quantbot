@@ -2713,7 +2713,7 @@ export default function TradingRobot() {
   const [trades, setTrades] = useState([]);
   const [balance, setBalance] = useState(100.0);
   const [activeRule, setActiveRule] = useState(null);
-  const [autoMode, setAutoMode] = useState(false);
+  const [autoMode, setAutoMode] = useState(() => localStorage.getItem("autoMode") === "true");
   const [autoModeLoading, setAutoModeLoading] = useState(false);
   const [showAutoSettings, setShowAutoSettings] = useState(false);
   const [autoSettings, setAutoSettings] = useState({
@@ -2774,7 +2774,11 @@ export default function TradingRobot() {
   }, []);
 
   useEffect(() => {
-    fetch(`${BRIDGE}/health`).then(r => r.json()).then(d => setAutoMode(d.autoMode === true)).catch(() => {});
+    fetch(`${BRIDGE}/health`).then(r => r.json()).then(d => {
+      const val = d.autoMode === true;
+      setAutoMode(val);
+      localStorage.setItem("autoMode", String(val));
+    }).catch(() => {});
   }, []);
 
   const toggleAutoMode = () => {
@@ -2791,7 +2795,10 @@ export default function TradingRobot() {
         body: JSON.stringify({ enabled }),
       });
       const data = await r.json();
-      if (typeof data.autoMode === "boolean") setAutoMode(data.autoMode);
+      if (typeof data.autoMode === "boolean") {
+        setAutoMode(data.autoMode);
+        localStorage.setItem("autoMode", String(data.autoMode));
+      }
     } catch {}
     setAutoModeLoading(false);
   };
