@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { motion, AnimatePresence, animate } from "framer-motion";
+import { createChart, CandlestickSeries, LineSeries } from "lightweight-charts";
 import {
   Chart,
   LineElement,
@@ -478,6 +479,261 @@ function buildGradient(ctx, chartArea, isUp) {
     g.addColorStop(1, "rgba(226,75,74,0)");
   }
   return g;
+}
+
+// ─── CHART HELPERS ───────────────────────────────────────────────────────────
+function buildEMA(candles, period) {
+  const k = 2 / (period + 1);
+  const out = [];
+  let ema = 0;
+  for (let i = 0; i < candles.length; i++) {
+    if (i < period - 1) continue;
+    if (i === period - 1) {
+      ema = candles.slice(0, period).reduce((s, c) => s + c.close, 0) / period;
+    } else {
+      ema = candles[i].close * k + ema * (1 - k);
+    }
+    out.push({ time: candles[i].time, value: parseFloat(ema.toFixed(6)) });
+  }
+  return out;
+}
+
+function buildATR(candles, period = 14) {
+  if (candles.length < 2) return 0.0005;
+  const trs = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i], p = candles[i - 1];
+    trs.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
+  }
+  return trs.slice(-period).reduce((a, b) => a + b, 0) / Math.min(period, trs.length);
+}
+
+// ─── CANDLESTICK CHART (Lightweight Charts v5) ───────────────────────────────
+function CandleChart({ pair, history, signal }) {
+  const containerRef = useRef(null);
+  const chartRef     = useRef(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let active = true;
+
+    const chart = createChart(el, {
+      width:  el.clientWidth,
+      height: 260,
+      layout: {
+        background:      { type: "solid", color: "#0d1117" },
+        textColor:       "#8b949e",
+        fontSize:        11,
+        fontFamily:      "'JetBrains Mono', monospace",
+        attributionLogo: false,
+      },
+      grid: {
+        vertLines: { color: "#161b22" },
+        horzLines: { color: "#161b22" },
+      },
+      rightPriceScale: {
+        borderColor:  "transparent",
+        scaleMargins: { top: 0.1, bottom: 0.1 },
+      },
+      timeScale: {
+        borderColor:      "transparent",
+        timeVisible:      true,
+        secondsVisible:   false,
+      },
+      crosshair: {
+        vertLine: { color: "#30363d", width: 1, style: 3, labelBackgroundColor: "#161b22" },
+        horzLine: { color: "#30363d", width: 1, style: 3, labelBackgroundColor: "#161b22" },
+      },
+    });
+    chartRef.current = chart;
+
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor:        "#238636",
+      downColor:      "#c0392b",
+      borderUpColor:  "#3fb950",
+      borderDownColor:"#f85149",
+      wickUpColor:    "#3fb950",
+      wickDownColor:  "#f85149",
+    });
+
+    const ema9Series = chart.addSeries(LineSeries, {
+      color:               "#58a6ff",
+      lineWidth:           1,
+      priceLineVisible:    false,
+      lastValueVisible:    false,
+      crosshairMarkerVisible: false,
+    });
+
+    const ema21Series = chart.addSeries(LineSeries, {
+      color:               "#d29922",
+      lineWidth:           1,
+      priceLineVisible:    false,
+      lastValueVisible:    false,
+      crosshairMarkerVisible: false,
+    });
+
+    const instrument = pair.replace("/", "_");
+    fetch(`${BRIDGE}/candles/${instrument}?count=100&granularity=M15`)
+      .then(r => r.json())
+      .then(data => {
+        if (!active || !Array.isArray(data.candles)) throw new Error("no candles");
+        const candles = data.candles
+          .filter(c => c.mid)
+          .map(c => ({
+            time:  Math.floor(new Date(c.time).getTime() / 1000),
+            open:  parseFloat(c.mid.o),
+            high:  parseFloat(c.mid.h),
+            low:   parseFloat(c.mid.l),
+            close: parseFloat(c.mid.c),
+          }))
+          .filter((c, i, arr) => i === 0 || c.time > arr[i - 1].time);
+
+        if (candles.length < 5) throw new Error("too few");
+        candleSeries.setData(candles);
+        ema9Series.setData(buildEMA(candles, 9));
+        ema21Series.setData(buildEMA(candles, 21));
+
+        if (signal) {
+          const atr   = buildATR(candles);
+          const entry = candles[candles.length - 1].close;
+          const slDist = atr * 1.5;
+          const tpDist = atr * 3.0;
+          const sl = signal.direction === "LONG" ? entry - slDist : entry + slDist;
+          const tp = signal.direction === "LONG" ? entry + tpDist : entry - tpDist;
+          const entryColor = signal.direction === "LONG" ? "#58a6ff" : "#8b5cf6";
+          candleSeries.createPriceLine({ price: entry, color: entryColor, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "Entry" });
+          candleSeries.createPriceLine({ price: sl,    color: "#f85149",  lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "SL" });
+          candleSeries.createPriceLine({ price: tp,    color: "#3fb950",  lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "TP" });
+        }
+
+        chart.timeScale().fitContent();
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (!active || history.length < 5) return;
+        const now = Math.floor(Date.now() / 1000);
+        const fb = history.slice(-80).map((close, i) => ({
+          time:  now - (80 - i) * 900,
+          open:  close * 0.9998,
+          high:  close * 1.0004,
+          low:   close * 0.9996,
+          close,
+        })).filter((c, i, arr) => i === 0 || c.time > arr[i - 1].time);
+        candleSeries.setData(fb);
+        chart.timeScale().fitContent();
+        setLoaded(true);
+      });
+
+    const ro = new ResizeObserver(() => {
+      if (containerRef.current) chart.applyOptions({ width: containerRef.current.clientWidth });
+    });
+    ro.observe(el);
+
+    return () => {
+      active = false;
+      ro.disconnect();
+      chart.remove();
+      chartRef.current = null;
+    };
+  }, [pair]);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <div ref={containerRef} style={{ width: "100%", height: 260, borderRadius: "0 0 4px 4px", overflow: "hidden" }} />
+      {!loaded && (
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#0d1117", borderRadius: 4 }}>
+          <span style={{ fontSize: 11, color: "#484f58", fontFamily: FONT_MONO }}>Loading chart…</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── TRADE STRUCTURE PANEL ────────────────────────────────────────────────────
+function TradeStructurePanel({ signal, history, pair }) {
+  if (!signal) return null;
+  const pip     = PIP_SIZE[pair] || 0.0001;
+  const bars    = history.slice(-21);
+  const tr      = bars.slice(1).map((p, i) => Math.abs(p - bars[i]));
+  const atr5    = tr.slice(-5).reduce((a, b) => a + b, 0) / 5 || 0.0001;
+  const atr5Pip = atr5 / pip;
+  const last    = history[history.length - 1] ?? 0;
+  const slDist  = atr5 * 1.5;
+  const tpDist  = atr5 * 3.0;
+  const sl      = signal.direction === "LONG" ? last - slDist : last + slDist;
+  const tp      = signal.direction === "LONG" ? last + tpDist : last - tpDist;
+  const decimals = priceDecimals(pair);
+  const rr      = (tpDist / slDist).toFixed(1);
+  const session = getCurrentSession();
+  const sessionColors = { PRIME: "#3fb950", LONDON: "#58a6ff", NY: "#d29922", TOKYO: "#8b5cf6", SYDNEY: "#1D9E75", AVOID: "#484f58" };
+  const sessionCol = sessionColors[session] || "#8b949e";
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 1, borderTop: "1px solid #21262d", background: "#161b22" }}>
+      {[
+        { label: "ENTRY",    value: last.toFixed(decimals),   color: signal.direction === "LONG" ? "#58a6ff" : "#8b5cf6" },
+        { label: "SL",       value: sl.toFixed(decimals),     color: "#f85149" },
+        { label: "TP",       value: tp.toFixed(decimals),     color: "#3fb950" },
+        { label: "R:R",      value: `1:${rr}`,                color: parseFloat(rr) >= 2 ? "#3fb950" : "#d29922" },
+        { label: "ATR",      value: `${atr5Pip.toFixed(1)}p`, color: "#8b949e" },
+        { label: session,    value: signal.score + "%",       color: sessionCol },
+      ].map(({ label, value, color }) => (
+        <div key={label} style={{ padding: "7px 10px", background: "#0d1117", textAlign: "center" }}>
+          <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 3 }}>{label}</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color, fontFamily: FONT_MONO }}>{value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── INSTITUTIONAL METRICS STRIP ─────────────────────────────────────────────
+function MetricsStrip({ openTrades, signalCount, globalRegime }) {
+  const heat    = openTrades.length * 1.5;
+  const maxHeat = 6;
+  const heatPct = Math.min(heat / maxHeat * 100, 100);
+  const heatColor = heat >= maxHeat ? "#f85149" : heat >= 4 ? "#f0883e" : heat >= 2 ? "#d29922" : "#3fb950";
+  const session = getCurrentSession();
+  const sessionColors = { PRIME: "#3fb950", LONDON: "#58a6ff", NY: "#d29922", TOKYO: "#8b5cf6", SYDNEY: "#1D9E75", AVOID: "#f85149" };
+  const sessionCol = sessionColors[session] || "#8b949e";
+  const regimeColor = globalRegime === "TRENDING" ? "#3fb950" : globalRegime === "VOLATILE" ? "#f85149" : "#d29922";
+
+  return (
+    <div style={{ display: "flex", gap: 1, padding: "0 16px 12px", alignItems: "stretch" }}>
+      {/* Portfolio Heat */}
+      <div style={{ flex: 1, background: "#161b22", border: "1px solid #21262d", borderRadius: 8, padding: "8px 12px" }}>
+        <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>Portfolio Heat</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ flex: 1, height: 3, background: "#21262d", borderRadius: 2, overflow: "hidden" }}>
+            <motion.div animate={{ width: `${heatPct}%` }} transition={{ duration: 0.5 }} style={{ height: "100%", background: heatColor, borderRadius: 2 }} />
+          </div>
+          <span style={{ fontSize: 11, fontWeight: 600, color: heatColor, fontFamily: FONT_MONO, minWidth: 28 }}>{heat.toFixed(1)}R</span>
+        </div>
+      </div>
+      {/* Open Positions */}
+      <div style={{ flex: "0 0 auto", background: "#161b22", border: "1px solid #21262d", borderRadius: 8, padding: "8px 14px", minWidth: 80, textAlign: "center" }}>
+        <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>Open</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: openTrades.length > 0 ? "#58a6ff" : "#484f58", fontFamily: FONT_MONO }}>{openTrades.length}</div>
+      </div>
+      {/* AI Signals */}
+      <div style={{ flex: "0 0 auto", background: "#161b22", border: "1px solid #21262d", borderRadius: 8, padding: "8px 14px", minWidth: 80, textAlign: "center" }}>
+        <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>Signals</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: signalCount > 0 ? "#3fb950" : "#484f58", fontFamily: FONT_MONO }}>{signalCount}</div>
+      </div>
+      {/* Session */}
+      <div style={{ flex: "0 0 auto", background: "#161b22", border: "1px solid #21262d", borderRadius: 8, padding: "8px 14px", minWidth: 90, textAlign: "center" }}>
+        <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>Session</div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: sessionCol, letterSpacing: "0.5px" }}>{session}</div>
+      </div>
+      {/* Regime */}
+      <div style={{ flex: "0 0 auto", background: "#161b22", border: "1px solid #21262d", borderRadius: 8, padding: "8px 14px", minWidth: 90, textAlign: "center" }}>
+        <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>Regime</div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: globalRegime ? regimeColor : "#484f58" }}>{globalRegime || "—"}</div>
+      </div>
+    </div>
+  );
 }
 
 function OandaChart({ pair, history: simHistory, height = 40 }) {
@@ -1004,6 +1260,7 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
   const prev = history[history.length - 2] ?? price;
   const [showAI, setShowAI] = useState(false);
   const [gkReject, setGkReject] = useState(null);
+  const [chartExpanded, setChartExpanded] = useState(false);
   const decimals = priceDecimals(pair);
   const signalKey = signal ? `${signal.direction}-${signal.score}` : null;
 
@@ -1135,13 +1392,22 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
 
   return (
     <>
+      {/* ── Compact table row ── */}
       <div
-        style={{ display: "grid", gridTemplateColumns: TABLE_COLS, gap: TABLE_GAP, alignItems: "center", padding: TABLE_PAD, borderBottom: (showAI || gkReject) ? "none" : "1px solid #21262d", minHeight: 52, fontSize: 12, transition: "background 0.15s", width: "100%", boxSizing: "border-box" }}
+        style={{ display: "grid", gridTemplateColumns: TABLE_COLS, gap: TABLE_GAP, alignItems: "center", padding: TABLE_PAD, borderBottom: (chartExpanded || showAI || gkReject) ? "none" : "1px solid #21262d", minHeight: 52, fontSize: 12, transition: "background 0.15s", width: "100%", boxSizing: "border-box" }}
         onMouseEnter={e => e.currentTarget.style.background = "#1c2333"}
         onMouseLeave={e => e.currentTarget.style.background = ""}
       >
-        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-          <span style={{ fontWeight: 700, color: "#e6edf3", fontSize: 14, letterSpacing: "0.3px" }}>{pair}</span>
+        {/* Pair + regime + expand toggle */}
+        <div
+          style={{ display: "flex", flexDirection: "column", gap: 3, cursor: "pointer", userSelect: "none" }}
+          onClick={() => setChartExpanded(v => !v)}
+          title={chartExpanded ? "Collapse chart" : "Expand chart"}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ fontWeight: 700, color: "#e6edf3", fontSize: 14, letterSpacing: "0.3px" }}>{pair}</span>
+            <span style={{ fontSize: 9, color: chartExpanded ? "#58a6ff" : "#484f58", transition: "color 0.15s", transform: chartExpanded ? "rotate(180deg)" : "rotate(0deg)", display: "inline-block", transition: "transform 0.2s, color 0.15s" }}>▼</span>
+          </div>
           <RegimeBadge regime={regimeData.regime} />
         </div>
         <AnimatedNumber value={price} decimals={decimals} style={{ ...priceStyle, fontSize: 15, textAlign: "left" }} />
@@ -1192,6 +1458,31 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
           )}
         </div>
       </div>
+
+      {/* ── Expandable candlestick chart panel ── */}
+      <AnimatePresence>
+        {chartExpanded && (
+          <motion.div
+            key="candle-panel"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            style={{ overflow: "hidden", borderBottom: (showAI || gkReject) ? "none" : "1px solid #21262d" }}
+          >
+            {/* Chart legend */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px 4px", background: "#0d1117" }}>
+              <span style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO }}>M15</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 20, height: 1.5, background: "#58a6ff", display: "inline-block" }} /><span style={{ fontSize: 10, color: "#58a6ff" }}>EMA9</span></span>
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 20, height: 1.5, background: "#d29922", display: "inline-block" }} /><span style={{ fontSize: 10, color: "#d29922" }}>EMA21</span></span>
+              {signal && <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 20, height: 1, borderTop: "1px dashed #58a6ff", display: "inline-block" }} /><span style={{ fontSize: 10, color: "#8b949e" }}>Entry / SL / TP</span></span>}
+            </div>
+            <CandleChart pair={pair} history={history} signal={signal} />
+            <TradeStructurePanel pair={pair} signal={signal} history={history} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {rejectPanel}
       {aiPanel}
     </>
@@ -2760,6 +3051,8 @@ export default function TradingRobot() {
                 ))}
               </div>
             ) : (
+              <>
+              <MetricsStrip openTrades={openTrades} signalCount={signalCount} globalRegime={globalRegime} />
               <div style={{ background: "#161b22", border: "1px solid #21262d", borderRadius: 12, overflow: "hidden", margin: "0 16px 16px" }}>
                 <div style={{ display: "grid", gridTemplateColumns: TABLE_COLS, gap: TABLE_GAP, padding: TABLE_PAD, background: "#0d1117", borderBottom: "1px solid #21262d", width: "100%", boxSizing: "border-box" }}>
                   <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>Pair</span>
@@ -2779,6 +3072,7 @@ export default function TradingRobot() {
                   <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} openTrades={openTrades} marketOpen={marketOpen} isMobile={false} />
                 ))}
               </div>
+              </>
             )}
             <div>
               <OpenPositionsPanel openTrades={openTrades} livePrices={livePrices} onClose={closeTrade} isMobile={isMobile} />
