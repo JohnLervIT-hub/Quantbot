@@ -192,6 +192,19 @@ app.patch('/order/:tradeId/sl', async (req, res) => {
   }
 });
 
+app.get('/candles/weekly', async (req, res) => {
+  const { instrument, count = 10 } = req.query;
+  if (!instrument) return res.status(400).json({ error: 'instrument required' });
+  if (!VALID_INSTRUMENTS.has(instrument)) return res.status(400).json({ error: `Invalid instrument: ${instrument}` });
+  const n = Math.min(parseInt(count) || 10, 52);
+  try {
+    const r = await fetch(`${BASE}/v3/instruments/${instrument}/candles?count=${n}&granularity=W&price=M`, { headers: H });
+    res.json(await r.json());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/candles/:instrument', async (req, res) => {
   const { instrument } = req.params;
   const count = Math.min(parseInt(req.query.count) || 60, 500);

@@ -7290,9 +7290,99 @@ export default function TradingRobot() {
     return () => clearInterval(id);
   }, [swingEnabled, swingTrades]); // eslint-disable-line
 
+  // ── Swing TP management — poll every 30s, partial-close at each TP level ──
+  useEffect(() => {
+    if (!swingEnabled) return;
+    const manageSwingTPs = async () => {
+      const activeSwing = swingTrades.filter(t => !t.closed && t.oandaId);
+      if (activeSwing.length === 0) return;
+      // Fetch current prices for all active swing instruments
+      const syms = [...new Set(activeSwing.map(t => t.pair.replace("/", "_")))].join(",");
+      let priceMap = {};
+      try {
+        const pr = await fetch(`${BRIDGE}/prices?instruments=${syms}`);
+        const pd = pr.ok ? await pr.json() : null;
+        (pd?.prices || []).forEach(p => {
+          const mid = p.bids && p.asks ? ((parseFloat(p.bids[0]?.price) + parseFloat(p.asks[0]?.price)) / 2) : null;
+          if (mid) priceMap[p.instrument] = mid;
+        });
+      } catch { return; }
+
+      for (const t of activeSwing) {
+        const sym   = t.pair.replace("/", "_");
+        const price = priceMap[sym];
+        if (!price) continue;
+        const isLong = t.direction === "LONG";
+
+        // TP1 — 30% partial close (150 units)
+        if (!t.tp1Hit && (isLong ? price >= t.tp1 : price <= t.tp1)) {
+          try {
+            await fetch(`${BRIDGE}/close/${t.oandaId}/partial`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ units: "150" }),
+            });
+            setSwingTrades(prev => {
+              const next = prev.map(x => x.id === t.id ? { ...x, tp1Hit: true, remainingUnits: (x.remainingUnits || 500) - 150 } : x);
+              localStorage.setItem("swing_trades", JSON.stringify(next));
+              return next;
+            });
+            notifyRef.current?.("take_profit", { pair: t.pair, realizedPL: 1 });
+          } catch {}
+        }
+
+        // TP2 — 40% partial close (200 units)
+        if (t.tp1Hit && !t.tp2Hit && (isLong ? price >= t.tp2 : price <= t.tp2)) {
+          try {
+            await fetch(`${BRIDGE}/close/${t.oandaId}/partial`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ units: "200" }),
+            });
+            setSwingTrades(prev => {
+              const next = prev.map(x => x.id === t.id ? { ...x, tp2Hit: true, remainingUnits: (x.remainingUnits || 350) - 200 } : x);
+              localStorage.setItem("swing_trades", JSON.stringify(next));
+              return next;
+            });
+            notifyRef.current?.("take_profit", { pair: t.pair, realizedPL: 2 });
+          } catch {}
+        }
+
+        // TP3 — trail remaining 30% (150 units) with SL at price ∓ ATR×0.5
+        if (t.tp1Hit && t.tp2Hit && !t.trailActive && (isLong ? price >= t.tp3 : price <= t.tp3)) {
+          const slDist = Math.abs(t.entry - t.sl);
+          const trailSL = isLong ? price - slDist * 0.5 : price + slDist * 0.5;
+          try {
+            await fetch(`${BRIDGE}/order/${t.oandaId}/sl`, {
+              method: "PATCH", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ price: trailSL.toFixed(5) }),
+            });
+            setSwingTrades(prev => {
+              const next = prev.map(x => x.id === t.id ? { ...x, trailActive: true } : x);
+              localStorage.setItem("swing_trades", JSON.stringify(next));
+              return next;
+            });
+          } catch {}
+        }
+      }
+    };
+    manageSwingTPs();
+    const id = setInterval(manageSwingTPs, 30_000);
+    return () => clearInterval(id);
+  }, [swingEnabled, swingTrades]); // eslint-disable-line
+
   const executeKillShot = useCallback(async (pair, sig) => {
+    // ── Conflict prevention ──────────────────────────────────────────────────
+    const current = openTradesRef.current;
+    const sym = pair.replace("/", "_");
+    const oppositeOpen = current.some(t => {
+      const tInstr = t.instrument?.replace("_", "/") || "";
+      return tInstr === pair && t.direction !== sig.direction;
+    });
+    if (oppositeOpen) { alert(`⚔️ Blocked: Opposing M5 trade already open on ${pair}. Close it first.`); return; }
+    if (current.length >= 4) { alert(`⚔️ Blocked: Max 4 open trades reached (currently ${current.length}). Close a position first.`); return; }
+    const heat = current.length * 1.5;
+    if (heat >= 4) { alert(`⚔️ Blocked: Combined heat at ${heat.toFixed(1)}R — circuit breaker at 4R. Close a position first.`); return; }
+    // ────────────────────────────────────────────────────────────────────────
     if (!window.confirm(`⚔️ Execute Kill Shot: ${pair} ${sig.direction} @ ${swingFmt(pair, sig.entry)}?\nScore: ${sig.score}% · SL: ${swingFmt(pair, sig.sl)} · TP1: ${swingFmt(pair, sig.tp1)}`)) return;
-    const sym   = pair.replace("/", "_");
     const units = sig.direction === "LONG" ? 500 : -500;
     try {
       const r = await fetch(`${BRIDGE}/swing/order`, {
@@ -7312,7 +7402,7 @@ export default function TradingRobot() {
           score: sig.score, ema21: sig.ema21, ema50: sig.ema50, rsi: sig.rsi,
           openedAt: Date.now(),
           thesis: `Score ${sig.score}% | EMA21 pullback | RSI ${sig.rsi?.toFixed(0) ?? "—"} | ${sig.score >= 85 ? "Perfect Kill Shot" : "Kill Shot setup"}`,
-          closed: false,
+          closed: false, tp1Hit: false, tp2Hit: false, trailActive: false, remainingUnits: 500,
         };
         setSwingTrades(prev => {
           const next = [...prev, newTrade];
