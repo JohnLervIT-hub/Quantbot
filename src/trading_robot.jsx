@@ -175,11 +175,12 @@ function getCurrentSession() {
   const h = new Date().getUTCHours();
   const d = new Date().getUTCDay();
   if (d === 6 || (d === 0 && h < 22)) return "AVOID";
-  if (h >= 13 && h < 17) return "PRIME";
+  if (h >= 22 || h < 4)  return "SYDNEY";  // crosses midnight UTC
+  if (h >= 4  && h < 8)  return "TOKYO";
   if (h >= 8  && h < 13) return "LONDON";
+  if (h >= 13 && h < 17) return "PRIME";
   if (h >= 17 && h < 20) return "NY";
-  if ((h >= 0 && h < 4) || (h >= 20 && h < 24)) return "TOKYO";
-  return "SYDNEY";
+  return "AVOID";  // 20-22 UTC
 }
 
 function getNextSessionInfo() {
