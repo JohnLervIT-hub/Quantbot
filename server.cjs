@@ -167,20 +167,24 @@ app.get('/candles/:instrument', async (req, res) => {
   }
 });
 
-// ─── BACKTEST CANDLES — fetches up to 90 days via sequential 5000-candle requests ─
+// ─── BACKTEST CANDLES — fetches up to 365 days via sequential 5000-candle requests ─
 app.get('/backtest/candles', async (req, res) => {
   const { instrument, granularity = 'M5' } = req.query;
-  const days = Math.min(parseInt(req.query.days) || 30, 90);
+  const days = Math.min(parseInt(req.query.days) || 30, 365);
   if (!instrument) return res.status(400).json({ error: 'instrument required' });
 
-  const VALID = new Set(['EUR_USD','GBP_USD','USD_JPY','AUD_USD','USD_CAD','EUR_GBP','NZD_USD','XAU_USD','SPX500_USD','BCO_USD']);
+  const VALID = new Set([
+    'EUR_USD','GBP_USD','USD_JPY','AUD_USD','USD_CAD','EUR_GBP','NZD_USD',
+    'XAU_USD','SPX500_USD','BCO_USD','XAG_USD','WTICO_USD',
+    'NAS100_USD','JP225_USD','UK100_GBP','AU200_AUD',
+  ]);
   if (!VALID.has(instrument)) return res.status(400).json({ error: `Invalid instrument: ${instrument}` });
 
   const now = Date.now();
   const fromMs = now - days * 24 * 3600 * 1000;
   const allCandles = [];
   let currentFrom = fromMs;
-  const MAX_REQUESTS = 10;
+  const MAX_REQUESTS = 25;
 
   try {
     for (let i = 0; i < MAX_REQUESTS; i++) {

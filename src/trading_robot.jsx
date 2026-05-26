@@ -5099,7 +5099,7 @@ function HistoricalBacktest({ isMobile }) {
   const STRAT_COLOR   = { "Mean Revert": "#1D9E75", "Trend Follow": "#58a6ff", "Breakout": "#F97316", "Momentum": "#8B5CF6", "Range Scalp": "#d29922" };
   const BT_PAIRS      = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD", "NZD/USD", "SPX500_USD"];
   const BT_TIMEFRAMES = ["M5", "M15", "H1"];
-  const BT_DURATIONS  = ["7 days", "30 days", "60 days", "90 days"];
+  const BT_DURATIONS  = ["7 days", "30 days", "90 days", "180 days", "365 days"];
   const BT_SESSIONS   = ["All", "Tokyo", "London", "Prime", "NY", "Sydney"];
   const SESSION_UTC   = { All: null, Tokyo: { start: 0, end: 9 }, London: { start: 7, end: 16 }, Prime: { start: 13, end: 17 }, NY: { start: 17, end: 20 }, Sydney: { start: 22, end: 4 } };
 
@@ -5195,8 +5195,10 @@ function HistoricalBacktest({ isMobile }) {
     let maxConsecLosses = 0, curStreak = 0;
     for (const t of trades) { if (!t.win) { curStreak++; maxConsecLosses = Math.max(maxConsecLosses, curStreak); } else curStreak = 0; }
 
-    // Validity confidence
-    const validityScore = trades.length >= 100 ? "High" : trades.length >= 30 ? "Moderate" : "Low";
+    // Validity confidence — higher bar for longer backtests (more data = more signals expected)
+    const minMod = parseInt(btDur) >= 180 ? 50 : 30;
+    const minHi  = parseInt(btDur) >= 180 ? 200 : 100;
+    const validityScore = trades.length >= minHi ? "High" : trades.length >= minMod ? "Moderate" : "Low";
 
     return { trades, winRate, expectancyR, profitFactor, equityCurve, maxDD, totalR: equityCurve[equityCurve.length - 1], sharpe, maxConsecLosses, validityScore };
   };
@@ -5208,9 +5210,19 @@ function HistoricalBacktest({ isMobile }) {
     const instrument = btPair.replace("/", "_");
     const days = parseInt(btDur);
     let candles = [];
+    let fetchTimer = null;
     try {
-      setRunLabel(`Fetching ${btDur} of ${btTf} candles…`);
+      // Estimate candle-fetch progress: each OANDA request returns 5000 candles
+      const minsPerCandle = btTf === "H1" ? 60 : btTf === "M15" ? 15 : 5;
+      const daysPerReq    = (5000 * minsPerCandle) / (60 * 24);
+      let fetchedDay = 0;
+      setRunLabel(`Fetching candles… day 0 of ${days}`);
+      fetchTimer = setInterval(() => {
+        fetchedDay = Math.min(Math.round(fetchedDay + daysPerReq), days);
+        setRunLabel(`Fetching candles… day ${fetchedDay} of ${days}`);
+      }, 2200);
       const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${instrument}&granularity=${btTf}&days=${days}`);
+      clearInterval(fetchTimer);
       const data = await r.json();
       if (!Array.isArray(data.candles) || data.candles.length < 22) {
         setBtError("Not enough candles returned. Check bridge connection.");
@@ -5222,7 +5234,7 @@ function HistoricalBacktest({ isMobile }) {
         fromDate: candles[0]?.time ? fmtDate(candles[0].time) : "—",
         toDate:   candles[candles.length - 1]?.time ? fmtDate(candles[candles.length - 1].time) : "—",
       });
-    } catch { setBtError("Failed to fetch candles. Is the bridge running?"); setRunning(false); return; }
+    } catch { clearInterval(fetchTimer); setBtError("Failed to fetch candles. Is the bridge running?"); setRunning(false); return; }
 
     setProgress(15);
     const closes = candles.map(c => parseFloat(c.mid?.c ?? 0)).filter(v => v > 0 && !isNaN(v));
@@ -5276,7 +5288,7 @@ function HistoricalBacktest({ isMobile }) {
     <div style={{ marginTop: 24, borderTop: "1px solid #21262d", paddingTop: 24 }}>
       <div style={{ marginBottom: 14 }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: "#e6edf3" }}>Historical Backtest Engine</div>
-        <div style={{ fontSize: 10, color: "#484f58", marginTop: 2 }}>Fetches up to 90 days of real OANDA candles · tests all 5 strategies simultaneously · ranks by expectancy</div>
+        <div style={{ fontSize: 10, color: "#484f58", marginTop: 2 }}>Fetches up to 365 days of real OANDA candles · tests all 5 strategies simultaneously · ranks by expectancy</div>
       </div>
 
       {/* Controls */}
@@ -5295,6 +5307,12 @@ function HistoricalBacktest({ isMobile }) {
             </select>
           </div>
         ))}
+        {btDur === "365 days" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", background: "rgba(210,153,34,0.08)", border: "1px solid rgba(210,153,34,0.25)", borderRadius: 6, fontSize: 10, color: "#d29922" }}>
+            <span style={{ fontWeight: 700, letterSpacing: "0.05em" }}>SLOW</span>
+            <span style={{ color: "#8b949e" }}>365-day backtest may take 3–5 minutes to complete (22 OANDA requests)</span>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 6, alignItems: "flex-end" }}>
           <button onClick={runBacktest} disabled={running}
             style={{ fontSize: 11, padding: "7px 16px", borderRadius: 6, cursor: running ? "not-allowed" : "pointer", border: "1px solid #238636", background: running ? "#0d1117" : "rgba(35,134,54,0.15)", color: running ? "#484f58" : "#3fb950", fontFamily: "inherit", fontWeight: 600, opacity: running ? 0.5 : 1 }}>
@@ -6052,10 +6070,10 @@ function useAutonomousBacktest() {
     const allCombos = []; let combosDone = 0;
     for (const pair of PAIRS) {
       if (cancelRef.current) break;
-      setLabel(`Fetching ${pair} (30d M5)…`);
+      setLabel(`Fetching ${pair} (90d M5)…`);
       let candles = [];
       try {
-        const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M5&days=30`);
+        const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M5&days=90`);
         const data = await r.json();
         if (!Array.isArray(data.candles) || data.candles.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
         candles = data.candles;
