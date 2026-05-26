@@ -13,8 +13,18 @@ const H       = { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'applicati
 // ─── OANDA PROXY ENDPOINTS ────────────────────────────────────────────────────
 app.get('/prices', async (req, res) => {
   const instruments = req.query.instruments || 'EUR_USD,GBP_USD,USD_JPY';
-  const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/pricing?instruments=${instruments}`, { headers: H });
-  res.json(await r.json());
+  try {
+    const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/pricing?instruments=${instruments}`, { headers: H });
+    const data = await r.json();
+    if (!r.ok) {
+      console.error('[/prices] OANDA error:', JSON.stringify(data));
+      return res.status(r.status).json(data);
+    }
+    res.json(data);
+  } catch (err) {
+    console.error('[/prices] fetch threw:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/account', async (req, res) => {
