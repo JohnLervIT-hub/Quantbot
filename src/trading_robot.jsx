@@ -1337,6 +1337,12 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
   const [queryCount, setQueryCount] = useState(0);
   const [analysisCount, setAnalysisCount] = useState(0);
   const chatEndRef = useRef(null);
+  const lastChatRef = useRef(null);
+  const prevSessionRef = useRef(session);
+  const runAnalysisRef = useRef(null);
+  const briefLoadingRef = useRef(false);
+  const [lastRefreshMs, setLastRefreshMs] = useState(null);
+  const [refreshLabel, setRefreshLabel] = useState(null);
 
   const heat = (openTrades.length * 1.5).toFixed(1);
   const openCount = openTrades.length;
@@ -1352,6 +1358,7 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
     `You are Xavier, a seasoned forex prop trader based in Calgary. Session: ${session}. Strategy: ${strategy}. Portfolio heat: ${heat}R. Open trades: ${openCount}. Active signals: ${signalPairs}. Current headline: "${currentHeadline}". Talk like a human — direct, confident, occasionally dry. Contractions always. No bullet points, no corporate phrasing. Max 80 words.`;
 
   const runAnalysis = async () => {
+    briefLoadingRef.current = true;
     setBriefLoading(true);
     const snap = Object.entries(prices).map(([p, v]) => `${p}: ${v}`).join(", ");
     try {
@@ -1374,15 +1381,20 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
       setMetrics(newMetrics);
       onIntelUpdate?.(newMetrics);
       setAnalysisCount(c => c + 1);
+      const nowMs = Date.now();
+      setLastRefreshMs(nowMs);
+      setRefreshLabel("just now");
     } catch {
       setMetrics({ sentiment: "NEUTRAL", bestPair: "—", keyRisk: "Check connection", brief: "Market analysis unavailable." });
     }
+    briefLoadingRef.current = false;
     setBriefLoading(false);
   };
 
   const askQuestion = async (override) => {
     const text = (override ?? question).trim();
     if (!text || chatLoading) return;
+    lastChatRef.current = Date.now();
     setQuestion("");
     const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     setChatHistory(h => [...h, { role: "user", text, ts }]);
@@ -1418,14 +1430,47 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
     setRiskLoading(false);
   };
 
+  // Keep runAnalysisRef current so intervals always call the latest closure
+  runAnalysisRef.current = runAnalysis;
+
   // Auto-send session greeting and trigger analysis on mount
   useEffect(() => {
     const greeting = SESSION_GREETINGS[session] || SESSION_GREETINGS.AVOID;
     const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     setChatHistory([{ role: "ai", text: greeting, ts }]);
-    runAnalysis();
+    runAnalysisRef.current();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-refresh every 15 minutes — skip if user chatted < 2min ago or already loading
+  useEffect(() => {
+    const tryRefresh = () => {
+      if (briefLoadingRef.current) return;
+      if (lastChatRef.current && Date.now() - lastChatRef.current < 2 * 60_000) return;
+      runAnalysisRef.current?.();
+    };
+    const id = setInterval(tryRefresh, 15 * 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Trigger refresh on session change (Tokyo→London etc)
+  useEffect(() => {
+    if (session === prevSessionRef.current) return;
+    prevSessionRef.current = session;
+    if (briefLoadingRef.current) return;
+    if (lastChatRef.current && Date.now() - lastChatRef.current < 2 * 60_000) return;
+    runAnalysisRef.current?.();
+  }, [session]);
+
+  // Update "X min ago" label every 60 seconds
+  useEffect(() => {
+    if (!lastRefreshMs) return;
+    const id = setInterval(() => {
+      const mins = Math.floor((Date.now() - lastRefreshMs) / 60_000);
+      setRefreshLabel(mins === 0 ? "just now" : `${mins} min ago`);
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [lastRefreshMs]);
 
   const sessColors = SESSION_BADGE_COLORS[session] || SESSION_BADGE_COLORS.AVOID;
   const heatNum = parseFloat(heat);
@@ -1478,16 +1523,21 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
           />
           <IntelCard label="Key Risk" value={metrics?.keyRisk} color="#f85149" bgColor="rgba(248,81,73,0.04)" borderColor="rgba(248,81,73,0.18)" loading={briefLoading} placeholder="Run analysis →" />
 
-          {/* Refresh button */}
-          <button
-            onClick={runAnalysis}
-            disabled={briefLoading}
-            style={{ fontSize: 11, padding: "8px 14px", borderRadius: 8, cursor: briefLoading ? "default" : "pointer", border: "1px solid #21262d", background: "transparent", color: briefLoading ? "#484f58" : "#8b949e", fontFamily: "inherit", transition: "all 0.15s", textAlign: "center" }}
-            onMouseEnter={e => { if (!briefLoading) { e.currentTarget.style.borderColor = "#388bfd"; e.currentTarget.style.color = "#58a6ff"; } }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = "#21262d"; e.currentTarget.style.color = briefLoading ? "#484f58" : "#8b949e"; }}
-          >
-            {briefLoading ? "Scanning markets…" : "↻  Refresh analysis"}
-          </button>
+          {/* Refresh button + timestamp */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              onClick={runAnalysis}
+              disabled={briefLoading}
+              style={{ flex: 1, fontSize: 11, padding: "8px 14px", borderRadius: 8, cursor: briefLoading ? "default" : "pointer", border: "1px solid #21262d", background: "transparent", color: briefLoading ? "#484f58" : "#8b949e", fontFamily: "inherit", transition: "all 0.15s", textAlign: "center" }}
+              onMouseEnter={e => { if (!briefLoading) { e.currentTarget.style.borderColor = "#388bfd"; e.currentTarget.style.color = "#58a6ff"; } }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = "#21262d"; e.currentTarget.style.color = briefLoading ? "#484f58" : "#8b949e"; }}
+            >
+              {briefLoading ? "Scanning markets…" : "↻  Refresh analysis"}
+            </button>
+            {refreshLabel && !briefLoading && (
+              <span style={{ fontSize: 10, color: "#484f58", whiteSpace: "nowrap" }}>Updated {refreshLabel}</span>
+            )}
+          </div>
 
           {/* Xavier's read */}
           {metrics?.brief && (
