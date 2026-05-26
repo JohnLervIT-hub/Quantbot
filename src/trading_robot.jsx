@@ -1196,6 +1196,8 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
           xavierBestPair: xavierIntel?.bestPair || null,
           xavierSentiment: xavierIntel?.sentiment || null,
           xavierBrief: xavierIntel?.brief || null,
+          // Retail sentiment (contrarian indicator, server-cached 30 min)
+          retailSentiment: await fetch(`${BRIDGE}/sentiment?instruments=${pairKey}`).then(r => r.ok ? r.json().then(d => d.sentiment?.[pairKey] || null) : null).catch(() => null),
         }),
       });
       const data = await r.json();
@@ -1410,6 +1412,7 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
   const [queryCount, setQueryCount] = useState(0);
   const [analysisCount, setAnalysisCount] = useState(0);
   const chatEndRef = useRef(null);
+  const [retailSentiment, setRetailSentiment] = useState(null);
   const lastChatRef = useRef(null);
   const prevSessionRef = useRef(session);
   const runAnalysisRef = useRef(null);
@@ -1545,6 +1548,21 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
     return () => clearInterval(id);
   }, [lastRefreshMs]);
 
+  // Retail sentiment polling — every 30 minutes via OANDA position book
+  useEffect(() => {
+    const fetchSentiment = async () => {
+      try {
+        const r = await fetch(`${BRIDGE}/sentiment?instruments=EUR_USD,GBP_USD,USD_JPY,AUD_USD,USD_CAD,XAU_USD`);
+        if (!r.ok) return;
+        const d = await r.json();
+        if (d.sentiment) setRetailSentiment(d.sentiment);
+      } catch {}
+    };
+    fetchSentiment();
+    const id = setInterval(fetchSentiment, 30 * 60_000);
+    return () => clearInterval(id);
+  }, []); // eslint-disable-line
+
   const sessColors = SESSION_BADGE_COLORS[session] || SESSION_BADGE_COLORS.AVOID;
   const heatNum = parseFloat(heat);
 
@@ -1619,6 +1637,33 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
               <div style={{ fontSize: 12, color: "#c9d1d9", lineHeight: 1.7 }}>{metrics.brief}</div>
             </div>
           )}
+
+          {/* Retail sentiment — contrarian indicator */}
+          {retailSentiment && (() => {
+            const extremes = Object.entries(retailSentiment)
+              .filter(([, v]) => v && v.contrarian !== "NEUTRAL")
+              .sort(([, a], [, b]) => Math.max(b.longPct, b.shortPct) - Math.max(a.longPct, a.shortPct))
+              .slice(0, 3);
+            if (extremes.length === 0) return null;
+            return (
+              <div style={{ background: "#0d1117", border: "1px solid #21262d", borderRadius: 10, padding: "11px 14px" }}>
+                <div style={{ fontSize: 10, color: "#484f58", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Retail Positioning · Contrarian</div>
+                {extremes.map(([pair, d]) => {
+                  const crowded = d.longPct > d.shortPct ? "LONG" : "SHORT";
+                  const contrDir = d.contrarian === "BULLISH" ? "BUY" : "SELL";
+                  const contrColor = d.contrarian === "BULLISH" ? "#3fb950" : "#f85149";
+                  return (
+                    <div key={pair} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: "#8b949e", fontFamily: FONT_MONO }}>{pair.replace("_", "/")}</span>
+                      <span style={{ fontSize: 10, color: "#484f58" }}>{d.longPct}% retail {crowded.toLowerCase()} →</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: contrColor }}>{contrDir} signal</span>
+                    </div>
+                  );
+                })}
+                <div style={{ fontSize: 10, color: "#484f58", marginTop: 4, lineHeight: 1.5 }}>Retail crowds extremes — institutions fade them.</div>
+              </div>
+            );
+          })()}
         </div>
 
         {/* ── RIGHT: Conversation Panel ── */}

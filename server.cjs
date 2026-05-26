@@ -286,6 +286,11 @@ function buildGeminiPrompt(p) {
 - Best opportunity: ${p.xavierBestPair || 'none'}
 - Key risk: ${p.xavierKeyRisk || 'none'}${p.xavierBrief ? `\n- Analysis: ${p.xavierBrief}` : ''}`
     : '';
+  const retailBlock = p.retailSentiment
+    ? `\nRetail positioning (OANDA position book — contrarian indicator):
+- ${p.retailSentiment.longPct}% retail LONG, ${p.retailSentiment.shortPct}% retail SHORT
+- Contrarian read: ${p.retailSentiment.contrarian} (institutions fade crowded retail positions)`
+    : '';
   return `You are the Macro & Liquidity Analyst. Validate market context and liquidity only.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
@@ -295,7 +300,7 @@ Spread: ${p.spread || '?'} pips (limit: ${p.spreadLimit || '?'} pips)
 Correlated pairs: ${p.correlatedPairs || 'N/A'}
 Market sentiment: ${p.sentiment || 'NEUTRAL'}
 Volatility state: ${p.regime || 'RANGING'}
-Change: ${p.change}%${xavierBlock}
+Change: ${p.change}%${xavierBlock}${retailBlock}
 
 CONFIRM only if:
 - News sentiment supports ${p.direction}
@@ -303,6 +308,7 @@ CONFIRM only if:
 - Spread within acceptable limits
 - No macro tail risk events
 - Xavier's key risk does not directly threaten this trade
+- Retail positioning is not heavily crowded AGAINST ${p.direction} (contrarian pressure)
 
 Respond in this EXACT format:
 VERDICT: CONFIRM or REJECT
@@ -508,6 +514,88 @@ app.get('/news', async (req, res) => {
     res.json({ category, items, commentary, fetchedAt: new Date().toISOString(), cached: false });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── SENTIMENT ENDPOINT (OANDA position book — retail positioning) ────────────
+const sentimentCache = new Map(); // instrument → { data, fetchedAt }
+
+app.get('/sentiment', async (req, res) => {
+  const instruments = (req.query.instruments || 'EUR_USD,GBP_USD,USD_JPY,AUD_USD,USD_CAD,XAU_USD').split(',');
+  const results = {};
+
+  await Promise.all(instruments.map(async (instrument) => {
+    const cached = sentimentCache.get(instrument);
+    if (cached && Date.now() - cached.fetchedAt < 30 * 60_000) {
+      results[instrument] = cached.data;
+      return;
+    }
+    try {
+      const r = await fetch(
+        `${BASE}/v3/instruments/${instrument}/positionBook`,
+        { headers: H }
+      );
+      const d = await r.json();
+      if (!r.ok || !d.positionBook?.buckets) { results[instrument] = null; return; }
+
+      const buckets = d.positionBook.buckets;
+      let longUnits = 0, shortUnits = 0;
+      buckets.forEach(b => {
+        longUnits  += parseFloat(b.longCountPercent  || 0);
+        shortUnits += parseFloat(b.shortCountPercent || 0);
+      });
+      const total = longUnits + shortUnits;
+      const longPct  = total > 0 ? Math.round((longUnits  / total) * 100) : 50;
+      const shortPct = 100 - longPct;
+      // Contrarian read: >65% retail long → institutions likely short
+      const contrarian = longPct >= 65 ? "BEARISH" : shortPct >= 65 ? "BULLISH" : "NEUTRAL";
+      const data = { longPct, shortPct, contrarian, price: d.positionBook.price, time: d.positionBook.time };
+      sentimentCache.set(instrument, { data, fetchedAt: Date.now() });
+      results[instrument] = data;
+    } catch {
+      results[instrument] = null;
+    }
+  }));
+
+  res.json({ sentiment: results, fetchedAt: new Date().toISOString() });
+});
+
+// ─── ECONOMIC CALENDAR ENDPOINT (ForexFactory RSS) ────────────────────────────
+let calendarCache = null;
+let calendarFetchedAt = 0;
+
+function parseCalendarRSS(xml) {
+  const events = [];
+  for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+    const b = m[1];
+    const title    = (b.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/s)?.[1] || b.match(/<title>(.*?)<\/title>/s)?.[1] || '').trim();
+    const date     = (b.match(/<title>[\s\S]*?<\/title>[\s\S]*?<description><!\[CDATA\[(.*?)\]\]><\/description>/s)?.[1] || '').trim();
+    const link     = (b.match(/<link>(.*?)<\/link>/s)?.[1] || '').trim();
+    const impact   = /high/i.test(b) ? 'HIGH' : /medium/i.test(b) ? 'MEDIUM' : 'LOW';
+    if (title) events.push({ title, date, link, impact });
+    if (events.length >= 20) break;
+  }
+  return events;
+}
+
+app.get('/economic-calendar', async (_req, res) => {
+  if (calendarCache && Date.now() - calendarFetchedAt < 60 * 60_000) {
+    return res.json({ events: calendarCache, fetchedAt: new Date(calendarFetchedAt).toISOString(), cached: true });
+  }
+  try {
+    const r = await fetch('https://www.forexfactory.com/ff_calendar_thisweek.xml', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QuantBot/1.0; +https://quantbot.app)' },
+    });
+    if (!r.ok) throw new Error(`ForexFactory HTTP ${r.status}`);
+    const xml = await r.text();
+    const events = parseCalendarRSS(xml);
+    calendarCache = events;
+    calendarFetchedAt = Date.now();
+    res.json({ events, fetchedAt: new Date().toISOString(), cached: false });
+  } catch (e) {
+    // Return cached data if available, even if stale
+    if (calendarCache) return res.json({ events: calendarCache, fetchedAt: new Date(calendarFetchedAt).toISOString(), cached: true, stale: true });
+    res.status(500).json({ error: e.message, events: [] });
   }
 });
 
