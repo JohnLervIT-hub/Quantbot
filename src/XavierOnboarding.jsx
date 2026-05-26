@@ -152,113 +152,154 @@ const STEPS = [
   },
 ];
 
-// ── Xavier SVG character
+// ── Xavier SVG character — dark-suited human, angular face, CSS-animated arms
 function XavierCharacter({ pose, isSpeaking }) {
-  // shoulder pivot points: left (24, 90), right (96, 90)
-  const arms = {
-    welcome: { L: "rotate(-5,24,90)",  R: "rotate(5,96,90)"   },
-    explain: { L: "rotate(-5,24,90)",  R: "rotate(-55,96,90)" },
-    stop:    { L: "rotate(-5,24,90)",  R: "rotate(-85,96,90)" },
-    gesture: { L: "rotate(-5,24,90)",  R: "rotate(35,96,90)"  },
-    tap:     { L: "rotate(-5,24,90)",  R: "rotate(25,96,90)"  },
-    aside:   { L: "rotate(30,24,90)",  R: "rotate(-40,96,90)" },
-    ready:   { L: "rotate(-20,24,90)", R: "rotate(20,96,90)"  },
+  // Degrees only; CSS transform-box:view-box handles pivot in SVG coords
+  const deg = {
+    welcome: { L: -4,  R: 4   },
+    explain: { L: -4,  R: -58 },
+    stop:    { L: -4,  R: -88 },
+    gesture: { L: -10, R: 44  },
+    tap:     { L: -4,  R: 28  },
+    aside:   { L: 28,  R: -36 },
+    ready:   { L: -22, R: 22  },
   };
-  const { L, R } = arms[pose] || arms.welcome;
-  const eyeAnim = isSpeaking
+  const { L, R } = deg[pose] || deg.welcome;
+
+  // CSS transform with view-box pivot — this is what makes transitions actually work
+  const arm = (d, px, py) => ({
+    transform: `rotate(${d}deg)`,
+    transformBox: "view-box",
+    transformOrigin: `${px}px ${py}px`,
+    transition: "transform 0.65s cubic-bezier(0.22,1,0.36,1)",
+  });
+
+  const eyeRim = isSpeaking
     ? "xav-eye-speak 0.45s ease-in-out infinite"
     : "xav-eye-glow 2.5s ease-in-out infinite";
 
   return (
     <svg viewBox="0 0 120 215" style={{ width: "100%", height: "100%", overflow: "visible" }}>
       <defs>
-        <radialGradient id="xavEye" cx="50%" cy="50%" r="50%">
-          <stop offset="0%"   stopColor="#00FFFF" stopOpacity="1" />
-          <stop offset="100%" stopColor="#00FFFF" stopOpacity="0.2" />
-        </radialGradient>
-        <linearGradient id="xavBody" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%"   stopColor="#1a1a2e" />
-          <stop offset="100%" stopColor="#0c0c1c" />
+        <linearGradient id="xSuit" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#0d0d1e" />
+          <stop offset="100%" stopColor="#070710" />
+        </linearGradient>
+        <linearGradient id="xFace" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="#28294a" />
+          <stop offset="100%" stopColor="#1c1d38" />
+        </linearGradient>
+        <linearGradient id="xHair" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="#0d0d1c" />
+          <stop offset="100%" stopColor="#070712" />
         </linearGradient>
       </defs>
 
-      {/* ── Legs */}
-      <rect x="38" y="156" width="16" height="50" rx="6" fill="url(#xavBody)" stroke="#00FFFF" strokeWidth="0.3" strokeOpacity="0.2" />
-      <rect x="66" y="156" width="16" height="50" rx="6" fill="url(#xavBody)" stroke="#00FFFF" strokeWidth="0.3" strokeOpacity="0.2" />
-      <circle cx="46" cy="176" r="5" fill="#0e0e20" stroke="#00FFFF" strokeWidth="0.5" strokeOpacity="0.3" />
-      <circle cx="74" cy="176" r="5" fill="#0e0e20" stroke="#00FFFF" strokeWidth="0.5" strokeOpacity="0.3" />
+      {/* ── Trouser legs */}
+      <rect x="40" y="154" width="15" height="54" rx="4" fill="url(#xSuit)" />
+      <rect x="65" y="154" width="15" height="54" rx="4" fill="url(#xSuit)" />
+      {/* crease lines */}
+      <line x1="47.5" y1="158" x2="47.5" y2="206" stroke="#00FFFF" strokeWidth="0.25" strokeOpacity="0.18" />
+      <line x1="72.5" y1="158" x2="72.5" y2="206" stroke="#00FFFF" strokeWidth="0.25" strokeOpacity="0.18" />
 
-      {/* ── Left arm */}
-      <g transform={L} style={{ transition: "transform 0.6s cubic-bezier(0.22,1,0.36,1)" }}>
-        <rect x="16" y="90" width="16" height="54" rx="7" fill="url(#xavBody)" stroke="#00FFFF" strokeWidth="0.3" strokeOpacity="0.25" />
-        <circle cx="24" cy="144" r="6" fill="#0e0e20" stroke="#00FFFF" strokeWidth="0.5" strokeOpacity="0.4" />
+      {/* ── Jacket body */}
+      <path d="M24,88 L43,80 L60,91 L77,80 L96,88 L96,157 L24,157 Z" fill="url(#xSuit)" />
+      {/* jacket edge highlight */}
+      <line x1="24" y1="88" x2="24" y2="157" stroke="#00FFFF" strokeWidth="0.3" strokeOpacity="0.12" />
+      <line x1="96" y1="88" x2="96" y2="157" stroke="#00FFFF" strokeWidth="0.3" strokeOpacity="0.12" />
+
+      {/* Left lapel */}
+      <path d="M43,80 L60,91 L55,120 L34,96 Z" fill="#0a0a1c" />
+      {/* Right lapel */}
+      <path d="M77,80 L60,91 L65,120 L86,96 Z" fill="#0a0a1c" />
+
+      {/* Shirt between lapels */}
+      <path d="M55,120 L65,120 L68,157 L52,157 Z" fill="#d8dced" opacity="0.82" />
+
+      {/* Tie */}
+      <path d="M57,91 L63,91 L66,116 L60,121 L54,116 Z" fill="#00313e" />
+      <line x1="60" y1="91" x2="60" y2="121" stroke="#00FFFF" strokeWidth="0.7" strokeOpacity="0.45" />
+
+      {/* Circuit accent lines on jacket */}
+      <path d="M31,110 L44,110 L44,124 L54,124"
+        fill="none" stroke="#00FFFF" strokeWidth="0.7" strokeOpacity="0.28" strokeDasharray="3 2"
+        style={{ animation: "xav-circuit 3.5s ease-in-out infinite" }} />
+      <path d="M89,110 L76,110 L76,130 L66,130"
+        fill="none" stroke="#00FFFF" strokeWidth="0.7" strokeOpacity="0.28" strokeDasharray="3 2"
+        style={{ animation: "xav-circuit 3.5s ease-in-out infinite 1.6s" }} />
+      <circle cx="31" cy="110" r="1.5" fill="#00FFFF" opacity="0.45" />
+      <circle cx="89" cy="110" r="1.5" fill="#00FFFF" opacity="0.45" />
+
+      {/* Pocket square */}
+      <rect x="28" y="98" width="9" height="5" rx="1" fill="#00FFFF" opacity="0.18" />
+
+      {/* ── Left arm — pivot at shoulder (28, 86) */}
+      <g style={arm(L, 28, 86)}>
+        <rect x="11" y="86" width="17" height="58" rx="7" fill="url(#xSuit)" />
+        <line x1="19.5" y1="100" x2="19.5" y2="120" stroke="#00FFFF" strokeWidth="0.35" strokeOpacity="0.18" />
+        {/* cuff */}
+        <rect x="12" y="136" width="15" height="6" rx="3" fill="#d8dced" opacity="0.4" />
       </g>
 
-      {/* ── Right arm */}
-      <g transform={R} style={{ transition: "transform 0.6s cubic-bezier(0.22,1,0.36,1)" }}>
-        <rect x="88" y="90" width="16" height="54" rx="7" fill="url(#xavBody)" stroke="#00FFFF" strokeWidth="0.3" strokeOpacity="0.25" />
-        <circle cx="96" cy="144" r="6" fill="#0e0e20" stroke="#00FFFF" strokeWidth="0.5" strokeOpacity="0.4" />
+      {/* ── Right arm — pivot at shoulder (92, 86) */}
+      <g style={arm(R, 92, 86)}>
+        <rect x="92" y="86" width="17" height="58" rx="7" fill="url(#xSuit)" />
+        <line x1="100.5" y1="100" x2="100.5" y2="120" stroke="#00FFFF" strokeWidth="0.35" strokeOpacity="0.18" />
+        <rect x="93" y="136" width="15" height="6" rx="3" fill="#d8dced" opacity="0.4" />
       </g>
-
-      {/* ── Torso */}
-      <rect x="30" y="82" width="60" height="75" rx="11" fill="url(#xavBody)" stroke="#00FFFF" strokeWidth="0.5" strokeOpacity="0.25" />
-
-      {/* Circuit patterns */}
-      <g style={{ animation: "xav-circuit 3.5s ease-in-out infinite", strokeDasharray: "4 2" }}>
-        <line x1="42" y1="102" x2="58" y2="102" stroke="#00FFFF" strokeWidth="0.8" />
-        <line x1="58" y1="102" x2="58" y2="114" stroke="#00FFFF" strokeWidth="0.8" />
-        <line x1="58" y1="114" x2="78" y2="114" stroke="#00FFFF" strokeWidth="0.8" />
-        <line x1="44" y1="132" x2="76" y2="132" stroke="#00FFFF" strokeWidth="0.8" />
-        <line x1="66" y1="120" x2="66" y2="132" stroke="#00FFFF" strokeWidth="0.8" />
-        <circle cx="42" cy="102" r="2" fill="#00FFFF" />
-        <circle cx="78" cy="114" r="2" fill="#00FFFF" />
-        <circle cx="66" cy="132" r="2" fill="#00FFFF" />
-      </g>
-
-      {/* Chest panel */}
-      <rect x="47" y="90" width="26" height="22" rx="4" fill="#080818" stroke="#00FFFF" strokeWidth="0.4" strokeOpacity="0.35" />
-      <rect x="51" y="94" width="18" height="3"  rx="1.5" fill="#00FFFF" opacity="0.55" />
-      <rect x="53" y="99" width="14" height="2"  rx="1"   fill="#00FFFF" opacity="0.3"  />
-      <rect x="55" y="104" width="10" height="2" rx="1"   fill="#00FFFF" opacity={isSpeaking ? 0.7 : 0.15} style={{ transition: "opacity 0.2s" }} />
-
-      {/* Shoulder joints */}
-      <circle cx="32" cy="90" r="6" fill="#0e0e20" stroke="#00FFFF" strokeWidth="0.6" strokeOpacity="0.35" />
-      <circle cx="88" cy="90" r="6" fill="#0e0e20" stroke="#00FFFF" strokeWidth="0.6" strokeOpacity="0.35" />
 
       {/* ── Neck */}
-      <rect x="52" y="72" width="16" height="12" rx="4" fill="url(#xavBody)" />
+      <rect x="52" y="68" width="16" height="14" rx="4" fill="url(#xFace)" />
 
-      {/* ── Head */}
-      <rect x="28" y="26" width="64" height="50" rx="14" fill="url(#xavBody)" stroke="#00FFFF" strokeWidth="0.5" strokeOpacity="0.25" />
+      {/* Shirt collar */}
+      <path d="M46,79 L52,68 L68,68 L74,79 L70,83 L50,83 Z" fill="#d8dced" opacity="0.78" />
 
-      {/* Head circuit accents */}
-      <line x1="33" y1="40" x2="42" y2="40" stroke="#00FFFF" strokeWidth="0.5" strokeOpacity="0.3" />
-      <line x1="78" y1="40" x2="87" y2="40" stroke="#00FFFF" strokeWidth="0.5" strokeOpacity="0.3" />
-      <line x1="33" y1="60" x2="39" y2="60" stroke="#00FFFF" strokeWidth="0.5" strokeOpacity="0.3" />
-      <line x1="81" y1="60" x2="87" y2="60" stroke="#00FFFF" strokeWidth="0.5" strokeOpacity="0.3" />
+      {/* ── Hair */}
+      <path d="M36,42 Q38,20 60,18 Q82,20 84,42 L82,44 Q78,26 60,24 Q42,26 38,44 Z"
+        fill="url(#xHair)" />
 
-      {/* Forehead indicator */}
-      <rect x="50" y="29" width="20" height="4" rx="2" fill="#00FFFF" opacity="0.1" />
-      <rect x="53" y="30" width="14" height="2" rx="1" fill="#00FFFF" opacity={isSpeaking ? 0.85 : 0.35} style={{ transition: "opacity 0.25s" }} />
+      {/* ── Face — angular polygon, not a rounded rect */}
+      <path d="M38,44 Q39,26 60,24 Q81,26 82,44 L82,60 Q80,72 73,78 L60,82 L47,78 Q40,72 38,60 Z"
+        fill="url(#xFace)" />
 
-      {/* ── Eyes */}
-      <ellipse cx="48" cy="50" rx="7.5" ry="7.5" fill="url(#xavEye)" style={{ animation: eyeAnim }} />
-      <ellipse cx="72" cy="50" rx="7.5" ry="7.5" fill="url(#xavEye)" style={{ animation: eyeAnim }} />
-      {/* Pupil / highlight */}
-      <circle cx="50" cy="48" r="2.5" fill="white" opacity="0.35" />
-      <circle cx="74" cy="48" r="2.5" fill="white" opacity="0.35" />
+      {/* Jaw shadow for depth */}
+      <path d="M43,66 Q46,74 53,78 L60,81 L67,78 Q74,74 77,66"
+        fill="none" stroke="#14142a" strokeWidth="0.6" strokeOpacity="0.5" />
 
-      {/* ── Mouth / jaw */}
-      <g style={{ transformOrigin: "60px 68px", animation: isSpeaking ? "xav-jaw 0.42s ease-in-out infinite" : "none" }}>
-        <rect x="48" y="64" width="24" height="8" rx="3.5" fill="#080818" stroke="#00FFFF" strokeWidth="0.4" strokeOpacity="0.35" />
-        {isSpeaking && (
-          <>
-            <rect x="51" y="66" width="5" height="4" rx="1" fill="#00FFFF" opacity="0.25" />
-            <rect x="58" y="66" width="4" height="4" rx="1" fill="#00FFFF" opacity="0.25" />
-            <rect x="64" y="66" width="5" height="4" rx="1" fill="#00FFFF" opacity="0.25" />
-          </>
-        )}
-      </g>
+      {/* ── Brow — sharp, angular */}
+      <path d="M41,44 Q49,40 57,44" fill="none" stroke="#0a0a1c" strokeWidth="1.6" strokeLinecap="round" />
+      <path d="M63,44 Q71,40 79,44" fill="none" stroke="#0a0a1c" strokeWidth="1.6" strokeLinecap="round" />
+
+      {/* ── Left eye — human: sclera → iris → pupil → catchlight → cyan rim */}
+      <ellipse cx="49" cy="51" rx="8" ry="5.5" fill="#eae6f5" />
+      <ellipse cx="49" cy="51" rx="5.5" ry="4.5" fill="#0c2248" />
+      <circle  cx="49" cy="51" r="3"   fill="#060610" />
+      <ellipse cx="51" cy="49.5" rx="1.6" ry="1" fill="white" opacity="0.7" />
+      <ellipse cx="49" cy="51" rx="5.5" ry="4.5" fill="none" stroke="#00FFFF" strokeWidth="0.7"
+        strokeOpacity="0.55" style={{ animation: eyeRim }} />
+      {/* upper lid */}
+      <path d="M41,51 Q49,46 57,51" fill="none" stroke="#08081a" strokeWidth="1.3" strokeLinecap="round" />
+
+      {/* ── Right eye */}
+      <ellipse cx="71" cy="51" rx="8" ry="5.5" fill="#eae6f5" />
+      <ellipse cx="71" cy="51" rx="5.5" ry="4.5" fill="#0c2248" />
+      <circle  cx="71" cy="51" r="3"   fill="#060610" />
+      <ellipse cx="73" cy="49.5" rx="1.6" ry="1" fill="white" opacity="0.7" />
+      <ellipse cx="71" cy="51" rx="5.5" ry="4.5" fill="none" stroke="#00FFFF" strokeWidth="0.7"
+        strokeOpacity="0.55" style={{ animation: eyeRim }} />
+      <path d="M63,51 Q71,46 79,51" fill="none" stroke="#08081a" strokeWidth="1.3" strokeLinecap="round" />
+
+      {/* ── Nose — implied with two short strokes */}
+      <path d="M58,57 L57,64 Q60,66.5 63,64 L62,57"
+        fill="none" stroke="#12122a" strokeWidth="0.5" strokeOpacity="0.5" />
+
+      {/* ── Mouth */}
+      <path d="M52,71 Q60,75.5 68,71"
+        fill="none" stroke="#0e0e26" strokeWidth="1.3" strokeLinecap="round" />
+      {isSpeaking && (
+        <ellipse cx="60" cy="72" rx="6" ry="2.5" fill="#0e0e26" opacity="0.4"
+          style={{ animation: "xav-jaw 0.42s ease-in-out infinite", transformOrigin: "60px 71px" }} />
+      )}
     </svg>
   );
 }
