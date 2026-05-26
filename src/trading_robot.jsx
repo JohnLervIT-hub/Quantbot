@@ -6428,6 +6428,11 @@ export default function TradingRobot() {
     const autoExecTimestamps = [];
 
     const poll = async () => {
+      // Read ref immediately at top — before any awaits — to capture true current state
+      const refSnapshot = signalDataRef.current;
+      console.log('[REF_READ]', Object.keys(refSnapshot), JSON.stringify(refSnapshot));
+      console.log('[AUTO] checking signals:', Object.entries(refSnapshot).map(([p, s]) => `${p}:${s?.signal?.score ?? 'none'}`));
+
       // 1. Sync server display state
       try {
         const r = await fetch(`${BRIDGE}/auto-trades`);
@@ -6438,10 +6443,9 @@ export default function TradingRobot() {
       // 2. Execute qualifying signals
       const settings = autoSettingsRef.current;
       const now = Date.now();
-      console.log('[AUTO] checking signals:', Object.entries(signalDataRef.current).map(([p, s]) => `${p}:${s?.signal?.score ?? 'none'}`));
       if (autoExecTimestamps.filter(t => now - t < 3_600_000).length >= settings.maxTradesPerHour) return;
 
-      for (const [pair, data] of Object.entries(signalDataRef.current)) {
+      for (const [pair, data] of Object.entries(refSnapshot)) {
         if (!data) continue;
         const { signal, price, history } = data;
         if ((signal.score ?? 0) < settings.minConfidence) continue;
@@ -6599,9 +6603,22 @@ export default function TradingRobot() {
   }, [recommendedStrategy]); // eslint-disable-line
 
   const onSignalUpdate = useCallback((pair, data) => {
-    signalDataRef.current[pair] = data;
+    console.log('[SIGNAL_UPDATE]', pair, data?.signal?.score ?? null);
     if (data?.signal) {
+      // New signal — store with timestamp so the auto interval can find it
+      signalDataRef.current[pair] = { ...data, timestamp: Date.now() };
+      console.log('[REF_WRITE]', pair, data.signal.score, 'ref keys:', Object.keys(signalDataRef.current));
       console.log(`[SIGNAL] ${pair} → ${data.signal.direction} score:${data.signal.score} threshold:${data.signal.threshold ?? 65}`);
+    } else {
+      // Signal cleared by useStableSignal — only evict if the entry is stale (> 35s old)
+      // so the auto interval (30s) has time to execute it before it disappears
+      const existing = signalDataRef.current[pair];
+      if (existing && Date.now() - existing.timestamp > 35_000) {
+        delete signalDataRef.current[pair];
+        console.log('[REF_EVICT]', pair, 'stale — removed');
+      } else if (existing) {
+        console.log('[REF_HOLD]', pair, 'keeping for auto-exec, age:', Date.now() - existing.timestamp, 'ms');
+      }
     }
     setSignalMap(prev => {
       const hasSig = !!data;
