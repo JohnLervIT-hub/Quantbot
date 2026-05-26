@@ -6580,154 +6580,80 @@ export default function TradingRobot() {
         </div>
       )}
 
-      <AnimatePresence mode="wait">
-        {tab === "markets" && (
-          <motion.div
-            key="markets"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            style={isMobile ? {} : { padding: "0 16px" }}
-          >
-            {isMobile ? (
-              <div style={{ marginBottom: 12 }}>
-                {PAIRS.map(pair => (
-                  <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} onClose={closeTrade} openTrades={openTrades} marketOpen={marketOpen} balance={balance} isMobile />
-                ))}
-              </div>
-            ) : (
-              <>
-              <MetricsStrip openTrades={openTrades} signalCount={signalCount} globalRegime={globalRegime} />
-              <div style={{ background: "#161b22", border: "1px solid #21262d", borderRadius: 12, overflow: "hidden", margin: "0 16px 16px" }}>
-                <div style={{ display: "grid", gridTemplateColumns: TABLE_COLS, gap: TABLE_GAP, padding: TABLE_PAD, background: "#0d1117", borderBottom: "1px solid #21262d", width: "100%", boxSizing: "border-box" }}>
-                  <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>Pair</span>
-                  <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>Price</span>
-                  <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>Chart</span>
-                  <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>Change</span>
-                  <motion.span
-                    animate={{ color: signalHeaderFlash ? "#58a6ff" : "#8b949e" }}
-                    transition={{ duration: 0.2 }}
-                    style={{ fontSize: 11, fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px", textAlign: "center" }}
-                  >
-                    Signal
-                  </motion.span>
-                  <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px", textAlign: "right" }}>Action</span>
-                </div>
-                {PAIRS.map(pair => (
-                  <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} onClose={closeTrade} openTrades={openTrades} marketOpen={marketOpen} balance={balance} isMobile={false} />
-                ))}
-              </div>
-              </>
-            )}
-            <div>
-              <OpenPositionsPanel openTrades={openTrades} livePrices={livePrices} onClose={closeTrade} isMobile={isMobile} />
-              <ClosedTradesPanel trades={closedTrades} isMobile={isMobile} />
-              <PaperTradesPanel trades={paperTrades} isMobile={isMobile} />
-              <TradeLog trades={trades} isMobile={isMobile} />
-              <RejectionLogPanel log={rejectionLog} isMobile={isMobile} />
-              <TradeManagementLog alerts={mgmtAlerts} onDismiss={id => setMgmtAlerts(prev => prev.filter(a => a.id !== id))} isMobile={isMobile} />
+      <div style={{ display: tab === "markets" ? "block" : "none" }}>
+        <div style={isMobile ? {} : { padding: "0 16px" }}>
+          {isMobile ? (
+            <div style={{ marginBottom: 12 }}>
+              {PAIRS.map(pair => (
+                <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} onClose={closeTrade} openTrades={openTrades} marketOpen={marketOpen} balance={balance} isMobile />
+              ))}
             </div>
-          </motion.div>
-        )}
+          ) : (
+            <>
+            <MetricsStrip openTrades={openTrades} signalCount={signalCount} globalRegime={globalRegime} />
+            <div style={{ background: "#161b22", border: "1px solid #21262d", borderRadius: 12, overflow: "hidden", margin: "0 16px 16px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: TABLE_COLS, gap: TABLE_GAP, padding: TABLE_PAD, background: "#0d1117", borderBottom: "1px solid #21262d", width: "100%", boxSizing: "border-box" }}>
+                <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>Pair</span>
+                <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>Price</span>
+                <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>Chart</span>
+                <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>Change</span>
+                <motion.span
+                  animate={{ color: signalHeaderFlash ? "#58a6ff" : "#8b949e" }}
+                  transition={{ duration: 0.2 }}
+                  style={{ fontSize: 11, fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px", textAlign: "center" }}
+                >
+                  Signal
+                </motion.span>
+                <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px", textAlign: "right" }}>Action</span>
+              </div>
+              {PAIRS.map(pair => (
+                <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} onClose={closeTrade} openTrades={openTrades} marketOpen={marketOpen} balance={balance} isMobile={false} />
+              ))}
+            </div>
+            </>
+          )}
+          <div>
+            <OpenPositionsPanel openTrades={openTrades} livePrices={livePrices} onClose={closeTrade} isMobile={isMobile} />
+            <ClosedTradesPanel trades={closedTrades} isMobile={isMobile} />
+            <PaperTradesPanel trades={paperTrades} isMobile={isMobile} />
+            <TradeLog trades={trades} isMobile={isMobile} />
+            <RejectionLogPanel log={rejectionLog} isMobile={isMobile} />
+            <TradeManagementLog alerts={mgmtAlerts} onDismiss={id => setMgmtAlerts(prev => prev.filter(a => a.id !== id))} isMobile={isMobile} />
+          </div>
+        </div>
+      </div>
 
-        {tab === "news" && (
-          <motion.div
-            key="news"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <NewsTab isMobile={isMobile} />
-          </motion.div>
-        )}
+      <div style={{ display: tab === "news" ? "block" : "none" }}>
+        <NewsTab isVisible={tab === "news"} isMobile={isMobile} />
+      </div>
 
-        {tab === "ai" && (
-          <motion.div
-            key="ai"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <AIAnalystTab headlines={LIVE_HEADLINES} prices={livePrices} trades={trades} balance={balance} currentHeadline={currentHeadline} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} signalMap={signalMap} />
-          </motion.div>
-        )}
+      <div style={{ display: tab === "ai" ? "block" : "none" }}>
+        <AIAnalystTab isVisible={tab === "ai"} headlines={LIVE_HEADLINES} prices={livePrices} trades={trades} balance={balance} currentHeadline={currentHeadline} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} signalMap={signalMap} />
+      </div>
 
-        {tab === "knowledge" && (
-          <motion.div
-            key="knowledge"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            style={{ padding: "0 16px", paddingBottom: 16 }}
-          >
-            <KnowledgePanel activeRule={activeRule} session={getCurrentSession()} openTrades={openTrades} balance={balance} prices={livePrices} headlines={LIVE_HEADLINES} isMobile={isMobile} />
-          </motion.div>
-        )}
+      <div style={{ display: tab === "knowledge" ? "block" : "none", padding: "0 16px", paddingBottom: 16 }}>
+        <KnowledgePanel isVisible={tab === "knowledge"} activeRule={activeRule} session={getCurrentSession()} openTrades={openTrades} balance={balance} prices={livePrices} headlines={LIVE_HEADLINES} isMobile={isMobile} />
+      </div>
 
-        {tab === "risk" && (
-          <motion.div
-            key="risk"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <RiskTab trades={trades} openTrades={openTrades} balance={balance} session={getCurrentSession()} />
-          </motion.div>
-        )}
+      <div style={{ display: tab === "risk" ? "block" : "none" }}>
+        <RiskTab isVisible={tab === "risk"} trades={trades} openTrades={openTrades} balance={balance} session={getCurrentSession()} />
+      </div>
 
-        {tab === "coach" && (
-          <motion.div
-            key="coach"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <AICoachTab trades={trades} closedTrades={closedTrades} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} />
-          </motion.div>
-        )}
+      <div style={{ display: tab === "coach" ? "block" : "none" }}>
+        <AICoachTab isVisible={tab === "coach"} trades={trades} closedTrades={closedTrades} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} />
+      </div>
 
-        {tab === "analytics" && (
-          <motion.div
-            key="analytics"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <PerformanceDashboard trades={trades} closedTrades={closedTrades} balance={balance} isMobile={isMobile} />
-          </motion.div>
-        )}
+      <div style={{ display: tab === "analytics" ? "block" : "none" }}>
+        <PerformanceDashboard isVisible={tab === "analytics"} trades={trades} closedTrades={closedTrades} balance={balance} isMobile={isMobile} />
+      </div>
 
-        {tab === "schedule" && (
-          <motion.div
-            key="schedule"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <ScheduleTab isMobile={isMobile} autoMode={autoMode} enableAutoMode={enableAutoMode} />
-          </motion.div>
-        )}
+      <div style={{ display: tab === "schedule" ? "block" : "none" }}>
+        <ScheduleTab isVisible={tab === "schedule"} isMobile={isMobile} autoMode={autoMode} enableAutoMode={enableAutoMode} />
+      </div>
 
-        {tab === "backtest" && (
-          <motion.div
-            key="backtest"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <BacktestTab closedTrades={closedTrades} trades={trades} isMobile={isMobile} />
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <div style={{ display: tab === "backtest" ? "block" : "none" }}>
+        <BacktestTab isVisible={tab === "backtest"} closedTrades={closedTrades} trades={trades} isMobile={isMobile} />
+      </div>
 
       {/* ── Auto Mode Settings Modal ── */}
       {showAutoSettings && (
