@@ -2657,6 +2657,55 @@ function swingFmt(pair, price) {
   return price.toFixed(5);
 }
 
+// ─── SWING PRODUCTION GUARDS ──────────────────────────────────────────────────
+const SWING_COMMODITY_PAIRS = ["XAU/USD", "BCO/USD"];
+
+// Guard 1 — Entry timing: detect 24/7, execute London(8-13 UTC)+NY(13-18 UTC)
+//           Commodities can also execute during Sydney (22-04 UTC)
+function canExecuteSwing(pair) {
+  const h = new Date().getUTCHours();
+  if (h >= 8 && h < 18) return true;
+  if (SWING_COMMODITY_PAIRS.includes(pair) && (h >= 22 || h < 4)) return true;
+  return false;
+}
+
+function nextSwingWindow(pair) {
+  const now = new Date();
+  const h = now.getUTCHours(), m = now.getUTCMinutes();
+  const dec = h + m / 60;
+  const wins = [{ label: "London", s: 8 }, { label: "NY", s: 13 }];
+  if (SWING_COMMODITY_PAIRS.includes(pair)) wins.push({ label: "Sydney", s: 22 });
+  for (const w of wins) {
+    if (dec < w.s) {
+      const mins = Math.round((w.s - dec) * 60);
+      return `${w.label} open in ${Math.floor(mins / 60)}h ${mins % 60}m`;
+    }
+  }
+  const mins = Math.round((24 + 8 - dec) * 60);
+  return `London open in ${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+// Guard 2 — Friday PM: no new swing entries after 18:00 UTC Friday (12pm Calgary)
+function isFridayPMBlock() {
+  const now = new Date();
+  return now.getUTCDay() === 5 && now.getUTCHours() >= 18;
+}
+
+// Guard 3 — News: block execution within 30 min of HIGH-impact events (MDT times)
+function isSwingNewsBlock() {
+  const now = new Date();
+  const dayName = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][now.getDay()];
+  const mdtH    = (now.getUTCHours() - 6 + 24) % 24;
+  const nowMins = mdtH * 60 + now.getUTCMinutes();
+  return WEEKLY_EVENTS.some(ev => {
+    if (ev.day !== dayName || ev.impact !== "HIGH") return false;
+    const [tp, ap] = ev.time.split(" ");
+    const [hh, mm] = tp.split(":").map(Number);
+    const evM = ((ap === "PM" && hh !== 12 ? hh + 12 : ap === "AM" && hh === 12 ? 0 : hh) * 60) + mm;
+    return Math.abs(nowMins - evM) <= 30;
+  });
+}
+
 function XavierKillShotNote({ score, pair, direction }) {
   let note = "";
   if (score >= 85) {
@@ -2673,7 +2722,7 @@ function XavierKillShotNote({ score, pair, direction }) {
   );
 }
 
-function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile }) {
+function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriPM, isNewsBlock, pendingSetups }) {
   const activePairs = KILL_SHOT_PAIRS.filter(p => signals[p]?.score >= 75);
   const watchPairs  = KILL_SHOT_PAIRS.filter(p => !signals[p] || signals[p].score < 75);
   return (
@@ -2689,10 +2738,28 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile }) {
         </div>
       </div>
 
+      {/* Guard 2 — Friday PM warning */}
+      {isFriPM && (
+        <div style={{ padding: "8px 14px", background: "#F9731610", borderBottom: "1px solid #F9731630", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 10, color: "#F97316", fontWeight: 700 }}>⚠ WEEKEND GAP RISK</span>
+          <span style={{ fontSize: 10, color: "#8b949e" }}>No new swing entries after Friday 12pm Calgary — market reopens Sunday with gaps</span>
+        </div>
+      )}
+
+      {/* Guard 3 — News block warning */}
+      {isNewsBlock && (
+        <div style={{ padding: "8px 14px", background: "#d2992210", borderBottom: "1px solid #d2992230", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 10, color: "#d29922", fontWeight: 700 }}>⚠ HIGH-IMPACT EVENT ±30m</span>
+          <span style={{ fontSize: 10, color: "#8b949e" }}>Execution paused — spreads wide, slippage risk elevated</span>
+        </div>
+      )}
+
       {/* Active setups */}
       {activePairs.map(pair => {
         const sig = signals[pair];
         const isAlreadyOpen = openTrades?.some(t => t.instrument?.replace("_", "/") === pair);
+        const canExec = canExecuteSwing(pair) && !isFriPM && !isNewsBlock;
+        const isPending = !!pendingSetups?.[pair];
         const labelColor = sig.label === "PERFECT" ? "#3fb950" : "#F97316";
         return (
           <div key={pair} style={{ padding: "12px 14px", borderBottom: "1px solid #21262d" }}>
@@ -2701,6 +2768,7 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile }) {
                 <span style={{ fontSize: 12, fontWeight: 700, color: "#e6edf3", fontFamily: FONT_MONO }}>{pair}</span>
                 <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: sig.direction === "LONG" ? "#3fb95022" : "#f8514922", color: sig.direction === "LONG" ? "#3fb950" : "#f85149", border: `1px solid ${sig.direction === "LONG" ? "#3fb95055" : "#f8514955"}`, fontWeight: 700 }}>{sig.direction}</span>
                 <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: labelColor + "22", color: labelColor, border: `1px solid ${labelColor}44`, fontWeight: 700 }}>{sig.label}</span>
+                {isPending && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "#58a6ff22", color: "#58a6ff", border: "1px solid #58a6ff44", fontWeight: 700 }}>QUEUED</span>}
               </div>
               <span style={{ fontSize: 13, fontWeight: 800, color: labelColor, fontFamily: FONT_MONO }}>{sig.score}%</span>
             </div>
@@ -2713,13 +2781,23 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile }) {
               <span>TP1 <span style={{ color: "#3fb950" }}>{swingFmt(pair, sig.tp1)}</span></span>
               <span>TP2 <span style={{ color: "#3fb950" }}>{swingFmt(pair, sig.tp2)}</span></span>
             </div>
+            {!canExec && !isAlreadyOpen && (
+              <div style={{ marginBottom: 6, fontSize: 10, color: "#8b949e", fontStyle: "italic" }}>
+                {isFriPM ? "⚠ Blocked — weekend gap risk" : isNewsBlock ? "⚠ Blocked — HIGH event nearby" : `DETECTED — ${nextSwingWindow(pair)}`}
+              </div>
+            )}
             <XavierKillShotNote score={sig.score} pair={pair} direction={sig.direction} />
             <button
-              onClick={() => onExecute(pair, sig)}
-              disabled={isAlreadyOpen}
-              style={{ marginTop: 8, width: "100%", padding: "7px 0", borderRadius: 6, border: `1px solid ${isAlreadyOpen ? "#30363d" : "#F97316"}`, background: isAlreadyOpen ? "#161b22" : "#F9731618", color: isAlreadyOpen ? "#484f58" : "#F97316", fontSize: 11, fontWeight: 700, cursor: isAlreadyOpen ? "default" : "pointer", fontFamily: "inherit", letterSpacing: "0.04em", transition: "all 0.15s" }}
+              onClick={() => canExec && !isAlreadyOpen && onExecute(pair, sig)}
+              disabled={isAlreadyOpen || !canExec}
+              style={{ marginTop: 8, width: "100%", padding: "7px 0", borderRadius: 6, fontFamily: "inherit", letterSpacing: "0.04em", transition: "all 0.15s", fontSize: 11, fontWeight: 700,
+                border: `1px solid ${isAlreadyOpen ? "#30363d" : canExec ? "#F97316" : "#30363d"}`,
+                background: isAlreadyOpen ? "#161b22" : canExec ? "#F9731618" : "#161b22",
+                color: isAlreadyOpen ? "#484f58" : canExec ? "#F97316" : "#484f58",
+                cursor: isAlreadyOpen || !canExec ? "default" : "pointer",
+              }}
             >
-              {isAlreadyOpen ? "Already Open" : "⚔️ Execute Kill Shot"}
+              {isAlreadyOpen ? "Already Open" : canExec ? "⚔️ Execute Kill Shot" : isPending ? `⏳ Auto-executes at ${nextSwingWindow(pair).split(" in ")[0]}` : `⏳ ${nextSwingWindow(pair)}`}
             </button>
           </div>
         );
@@ -7209,6 +7287,7 @@ export default function TradingRobot() {
   const [swingSignals, setSwingSignals] = useState({});
   const [swingTrades,  setSwingTrades]  = useState(() => { try { return JSON.parse(localStorage.getItem("swing_trades") || "[]"); } catch { return []; } });
   const [swingScanning, setSwingScanning] = useState(false);
+  const [pendingSwingSetups, setPendingSwingSetups] = useState({}); // { "XAU/USD": sig } — detected, waiting for window
   const swingEnabledRef = useRef(swingEnabled);
   swingEnabledRef.current = swingEnabled;
 
@@ -7257,7 +7336,13 @@ export default function TradingRobot() {
             fetch(`${BRIDGE}/candles/${sym}?count=10&granularity=W`).then(r => r.ok ? r.json() : null).catch(() => null),
           ]);
           const sig = generateSwingSignal(h4Res?.candles || [], wRes?.candles || []);
-          if (sig) results[pair] = sig;
+          if (sig) {
+            results[pair] = sig;
+            // Guard 1: queue valid setups detected outside the execution window
+            if (sig.score >= 75 && !canExecuteSwing(pair) && !isFridayPMBlock()) {
+              setPendingSwingSetups(prev => ({ ...prev, [pair]: sig }));
+            }
+          }
         } catch {}
       }
       setSwingSignals(results);
@@ -7368,6 +7453,60 @@ export default function TradingRobot() {
     const id = setInterval(manageSwingTPs, 30_000);
     return () => clearInterval(id);
   }, [swingEnabled, swingTrades]); // eslint-disable-line
+
+  // ── Guard 1: auto-execute pending setups when execution window opens ──────────
+  useEffect(() => {
+    if (!swingEnabled || Object.keys(pendingSwingSetups).length === 0) return;
+    const check = async () => {
+      if (isFridayPMBlock() || isSwingNewsBlock()) return;
+      for (const [pair, pendingSig] of Object.entries(pendingSwingSetups)) {
+        const currentSig = swingSignals[pair];
+        if (!currentSig || currentSig.score < 75) { // setup no longer valid
+          setPendingSwingSetups(prev => { const n = { ...prev }; delete n[pair]; return n; });
+          continue;
+        }
+        if (!canExecuteSwing(pair)) continue; // window not open yet
+        // Window just opened and setup still valid — auto-execute (no confirm for queued trades)
+        const sym   = pair.replace("/", "_");
+        const units = currentSig.direction === "LONG" ? 500 : -500;
+        const current = openTradesRef.current;
+        const oppositeOpen = current.some(t => (t.instrument?.replace("_", "/") || "") === pair && t.direction !== currentSig.direction);
+        if (oppositeOpen || current.length >= 4 || current.length * 1.5 >= 4) {
+          setPendingSwingSetups(prev => { const n = { ...prev }; delete n[pair]; return n; });
+          continue;
+        }
+        try {
+          const r = await fetch(`${BRIDGE}/swing/order`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ instrument: sym, units, slPrice: currentSig.sl, tp1Price: currentSig.tp1 }),
+          });
+          const data = await r.json();
+          const fp = data?.orderFillTransaction?.price;
+          if (fp) {
+            setSwingTrades(prev => {
+              const newTrade = {
+                id: `swing_${Date.now()}`, oandaId: data.orderFillTransaction.tradeOpened?.tradeID,
+                pair, direction: currentSig.direction, entry: parseFloat(fp),
+                sl: currentSig.sl, tp1: currentSig.tp1, tp2: currentSig.tp2, tp3: currentSig.tp3,
+                score: currentSig.score, ema21: currentSig.ema21, ema50: currentSig.ema50, rsi: currentSig.rsi,
+                openedAt: Date.now(),
+                thesis: `Auto-executed at window open · Score ${currentSig.score}% · ${currentSig.score >= 85 ? "Perfect Kill Shot" : "Kill Shot setup"}`,
+                closed: false, tp1Hit: false, tp2Hit: false, trailActive: false, remainingUnits: 500,
+              };
+              const next = [...prev, newTrade];
+              localStorage.setItem("swing_trades", JSON.stringify(next));
+              return next;
+            });
+            notifyRef.current?.("trade_open", { pair, direction: currentSig.direction, fillPrice: fp, score: currentSig.score, atr: currentSig.atr });
+          }
+        } catch {}
+        setPendingSwingSetups(prev => { const n = { ...prev }; delete n[pair]; return n; });
+      }
+    };
+    check();
+    const id = setInterval(check, 2 * 60 * 1000); // poll every 2 min
+    return () => clearInterval(id);
+  }, [swingEnabled, pendingSwingSetups, swingSignals]); // eslint-disable-line
 
   const executeKillShot = useCallback(async (pair, sig) => {
     // ── Conflict prevention ──────────────────────────────────────────────────
@@ -7761,7 +7900,7 @@ export default function TradingRobot() {
       <div style={{ display: tab === "markets" ? "block" : "none" }}>
         <div style={isMobile ? {} : { padding: "0 16px" }}>
           {swingEnabled && (
-            <SwingPanel signals={swingSignals} scanning={swingScanning} onExecute={executeKillShot} openTrades={openTrades} isMobile={isMobile} />
+            <SwingPanel signals={swingSignals} scanning={swingScanning} onExecute={executeKillShot} openTrades={openTrades} isMobile={isMobile} isFriPM={isFridayPMBlock()} isNewsBlock={isSwingNewsBlock()} pendingSetups={pendingSwingSetups} />
           )}
           {swingEnabled && swingTrades.length > 0 && (
             <SwingJournalPanel swingTrades={swingTrades} openTrades={openTrades} livePrices={livePrices} displayNav={displayNav} isMobile={isMobile} />
