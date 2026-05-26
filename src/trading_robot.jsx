@@ -1457,9 +1457,9 @@ function IntelCard({ label, value, sub, color = "#8b949e", bgColor, borderColor,
 
 function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isMobile, session = "AVOID", strategy = "Mean Revert", openTrades = [], signalMap = {}, onIntelUpdate }) {
   const [briefLoading, setBriefLoading] = useState(false);
-  const [metrics, setMetrics] = useState(null);
+  const [metrics, setMetrics] = useState(() => { try { return JSON.parse(localStorage.getItem("xavier_intel")) || null; } catch { return null; } });
   const [question, setQuestion] = useState("");
-  const [chatHistory, setChatHistory] = useState([]);
+  const [chatHistory, setChatHistory] = useState(() => { try { return JSON.parse(localStorage.getItem("xavier_chat")) || []; } catch { return []; } });
   const [chatLoading, setChatLoading] = useState(false);
   const [riskAdvice, setRiskAdvice] = useState(null);
   const [riskLoading, setRiskLoading] = useState(false);
@@ -1483,6 +1483,14 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory, chatLoading]);
+
+  useEffect(() => {
+    localStorage.setItem("xavier_chat", JSON.stringify(chatHistory.slice(-50)));
+  }, [chatHistory]);
+
+  useEffect(() => {
+    if (metrics) localStorage.setItem("xavier_intel", JSON.stringify(metrics));
+  }, [metrics]);
 
   const buildSystemPrompt = () =>
     `You are Xavier, a seasoned forex prop trader based in Calgary. Session: ${session}. Strategy: ${strategy}. Portfolio heat: ${heat}R. Open trades: ${openCount}. Active signals: ${signalPairs}. Current headline: "${currentHeadline}". Talk like a human — direct, confident, occasionally dry. Contractions always. No bullet points, no corporate phrasing. Max 80 words.`;
@@ -1565,10 +1573,12 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
 
   // Auto-send session greeting and trigger analysis on mount
   useEffect(() => {
-    const greeting = SESSION_GREETINGS[session] || SESSION_GREETINGS.AVOID;
-    const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    setChatHistory([{ role: "ai", text: greeting, ts }]);
-    runAnalysisRef.current();
+    if (chatHistory.length === 0) {
+      const greeting = SESSION_GREETINGS[session] || SESSION_GREETINGS.AVOID;
+      const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      setChatHistory([{ role: "ai", text: greeting, ts }]);
+    }
+    if (!metrics) runAnalysisRef.current();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
