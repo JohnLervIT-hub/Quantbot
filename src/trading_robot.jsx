@@ -7678,7 +7678,7 @@ export default function TradingRobot() {
                 disabled={autoModeLoading}
                 style={{ padding: "5px 10px", borderRadius: 6, cursor: autoModeLoading ? "default" : "pointer", fontSize: 11, fontWeight: 700, border: `1px solid ${autoMode ? "#238636" : "#30363d"}`, background: autoMode ? "rgba(35,134,54,0.12)" : "#161b22", color: autoMode ? "#3fb950" : "#6e7681", opacity: autoModeLoading ? 0.6 : 1, whiteSpace: "nowrap", fontFamily: "inherit", transition: "all 0.2s" }}
               >
-                {autoModeLoading ? "…" : autoMode ? "⚡ Auto AI" : "Auto AI"}
+                {autoModeLoading ? "…" : autoMode ? "⚡ M5 ON" : "M5 OFF"}
               </button>
               <button
                 onClick={() => { const next = !swingEnabled; setSwingEnabled(next); swingEnabledRef.current = next; localStorage.setItem("swing_mode_enabled", String(next)); }}
@@ -7789,7 +7789,7 @@ export default function TradingRobot() {
                     border: `1px solid ${autoMode ? "#238636" : "#30363d"}`,
                     opacity: autoModeLoading ? 0.6 : 1 }}
                 >
-                  {autoModeLoading ? "…" : autoMode ? "⚡ Auto ON" : "Auto OFF"}
+                  {autoModeLoading ? "…" : autoMode ? "⚡ M5 ON" : "M5 OFF"}
                 </button>
                 {autoMode && (
                   <span style={{ fontSize: 10, color: "#3fb950", fontFamily: FONT_MONO, letterSpacing: "0.2px" }}>
@@ -7870,7 +7870,7 @@ export default function TradingRobot() {
         const next = getNextSessionInfo();
         return (
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 16px", background: "#0d1117", borderBottom: "1px solid #161b22", fontSize: 10, flexWrap: "wrap", minHeight: 26 }}>
-            <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "rgba(63,185,80,0.08)", border: "1px solid #238636", color: "#3fb950", fontWeight: 700, flexShrink: 0 }}>AUTO</span>
+            <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "rgba(63,185,80,0.08)", border: "1px solid #238636", color: "#3fb950", fontWeight: 700, flexShrink: 0 }}>M5</span>
             <span style={{ color: "#21262d" }}>·</span>
             <span style={{ color: "#8b949e" }}>{session} session — <span style={{ color: "#e6edf3", fontWeight: 600 }}>{xavierStrategy}</span> is primary</span>
             {next && (
