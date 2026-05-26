@@ -420,9 +420,18 @@ function generateSignal(history, strategy, pair) {
     if (direction === "SHORT" && rsi > 55) { score += 15; reason.push("RSI overbought"); }
   }
 
-  // Display threshold: 50. Execution gated at 65 via runGatekeepers.
-  if (!direction || score < 50) return null;
-  return { direction, score: Math.min(score, 100), reason, rsi: parseFloat(rsi.toFixed(1)) };
+  // Display threshold — dynamic per pair via reinforcement learning (default 65)
+  let threshold = 65;
+  try {
+    const rt = JSON.parse(localStorage.getItem("reinforcement_thresholds") || "{}");
+    const pairKey = pair.replace("/", "_");
+    const pairBase = rt.pairThresholds?.[pairKey] ?? 65;
+    const stratPenalty = rt.strategyPenalties?.[strategy] ?? 0;
+    const sesBonus = rt.sessionBonuses?.[getCurrentSession()] ?? 0;
+    threshold = Math.max(55, Math.min(80, pairBase + stratPenalty + sesBonus));
+  } catch {}
+  if (!direction || score < threshold) return null;
+  return { direction, score: Math.min(score, 100), reason, rsi: parseFloat(rsi.toFixed(1)), threshold };
 }
 
 // ─── REGIME / GATEKEEPER ENGINE ──────────────────────────────────────────────
@@ -962,7 +971,7 @@ function TradeStructurePanel({ signal, history, pair }) {
 }
 
 // ─── INSTITUTIONAL METRICS STRIP ─────────────────────────────────────────────
-function MetricsStrip({ openTrades, signalCount, globalRegime }) {
+function MetricsStrip({ openTrades, signalCount, globalRegime, reinforcement }) {
   const heat    = openTrades.length * 1.5;
   const maxHeat = 6;
   const heatPct = Math.min(heat / maxHeat * 100, 100);
@@ -1004,6 +1013,21 @@ function MetricsStrip({ openTrades, signalCount, globalRegime }) {
         <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>Regime</div>
         <div style={{ fontSize: 11, fontWeight: 700, color: globalRegime ? regimeColor : "#484f58" }}>{globalRegime || "—"}</div>
       </div>
+      {/* Learning indicator — only shown when reinforcement has adapted thresholds */}
+      {reinforcement?.pairThresholds && Object.keys(reinforcement.pairThresholds).length > 0 && (() => {
+        const adapted = Object.entries(reinforcement.pairThresholds).find(([, v]) => v !== 65);
+        if (!adapted) return null;
+        const penalty = Object.values(reinforcement.strategyPenalties || {}).find(v => v > 0);
+        const label = penalty
+          ? `LEARNING · ${adapted[0].replace("_", "/")} ${adapted[1]}% threshold`
+          : `LEARNING · ${adapted[0].replace("_", "/")} ${adapted[1]}%`;
+        return (
+          <div style={{ flex: "0 0 auto", background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.25)", borderRadius: 8, padding: "8px 12px", textAlign: "center" }}>
+            <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>Learning</div>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#8b5cf6", letterSpacing: "0.03em", whiteSpace: "nowrap" }}>{label}</div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -5926,6 +5950,77 @@ const BASE_PRICES = {
   "USD/CAD": 1.36540, "XAU/USD": 2312.40, "BTC/USD": 68240.0, "SPX500_USD": 5248.30,
 };
 
+// ─── TRADE REINFORCEMENT HOOK ─────────────────────────────────────────────────
+function useTradeReinforcement(closedTrades) {
+  const [reinforcement, setReinforcement] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("reinforcement_thresholds") || "{}"); } catch { return {}; }
+  });
+
+  useEffect(() => {
+    if (!closedTrades || closedTrades.length === 0) return;
+    const recent = closedTrades.slice(-50);
+
+    // Per-pair win rates over last 10 trades per pair
+    const pairBuckets = {};
+    recent.forEach(t => {
+      const p = t.instrument || t.pair || "UNKNOWN";
+      if (!pairBuckets[p]) pairBuckets[p] = [];
+      pairBuckets[p].push(t);
+    });
+
+    const pairThresholds = {};
+    Object.entries(pairBuckets).forEach(([pair, trades]) => {
+      const last10 = trades.slice(-10);
+      if (last10.length < 3) return; // need at least 3 trades to judge
+      const wins = last10.filter(t => (parseFloat(t.pnl || t.realizedPL || 0)) > 0).length;
+      const wr = wins / last10.length;
+      if (wr < 0.35) pairThresholds[pair] = 75; // struggling — raise bar
+      else if (wr > 0.60) pairThresholds[pair] = 60; // strong edge — trade more
+      else pairThresholds[pair] = 65; // default
+    });
+
+    // Per-strategy consecutive loss penalty
+    const strategyPenalties = {};
+    const byStrategy = {};
+    recent.forEach(t => {
+      const s = t.strategy || "Unknown";
+      if (!byStrategy[s]) byStrategy[s] = [];
+      byStrategy[s].push(t);
+    });
+    Object.entries(byStrategy).forEach(([strat, trades]) => {
+      const last5 = trades.slice(-5);
+      let consecutive = 0;
+      for (let i = last5.length - 1; i >= 0; i--) {
+        if ((parseFloat(last5[i].pnl || last5[i].realizedPL || 0)) < 0) consecutive++;
+        else break;
+      }
+      if (consecutive >= 3) strategyPenalties[strat] = 10;
+      else strategyPenalties[strat] = 0;
+    });
+
+    // Per-session bonus/penalty
+    const sessionBonuses = {};
+    const bySession = {};
+    recent.forEach(t => {
+      const s = t.session || "UNKNOWN";
+      if (!bySession[s]) bySession[s] = [];
+      bySession[s].push(t);
+    });
+    Object.entries(bySession).forEach(([sess, trades]) => {
+      if (trades.length < 3) return;
+      const wins = trades.filter(t => (parseFloat(t.pnl || t.realizedPL || 0)) > 0).length;
+      const wr = wins / trades.length;
+      sessionBonuses[sess] = wr > 0.60 ? -5 : wr < 0.35 ? 5 : 0; // negative = lower threshold
+    });
+
+    const next = { pairThresholds, strategyPenalties, sessionBonuses, updatedAt: Date.now() };
+    setReinforcement(next);
+    localStorage.setItem("reinforcement_thresholds", JSON.stringify(next));
+  }, [closedTrades.length]); // eslint-disable-line
+
+  return reinforcement;
+}
+
 export default function TradingRobot() {
   const [strategy, setStrategy] = useState(() => localStorage.getItem("active_strategy") || "Mean Revert");
   const [trades, setTrades] = useState([]);
@@ -5973,6 +6068,7 @@ export default function TradingRobot() {
   ));
   const oandaNavRef = useRef(null);
   const xavierIntelRef = useRef(null);
+  const reinforcement = useTradeReinforcement(closedTrades);
 
   const signalCount = Object.values(signalMap).filter(Boolean).length;
 
@@ -6719,7 +6815,7 @@ export default function TradingRobot() {
             </div>
           ) : (
             <>
-            <MetricsStrip openTrades={openTrades} signalCount={signalCount} globalRegime={globalRegime} />
+            <MetricsStrip openTrades={openTrades} signalCount={signalCount} globalRegime={globalRegime} reinforcement={reinforcement} />
             <div style={{ background: "#161b22", border: "1px solid #21262d", borderRadius: 12, overflow: "hidden", margin: "0 16px 16px" }}>
               <div style={{ display: "grid", gridTemplateColumns: TABLE_COLS, gap: TABLE_GAP, padding: TABLE_PAD, background: "#0d1117", borderBottom: "1px solid #21262d", width: "100%", boxSizing: "border-box" }}>
                 <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>Pair</span>
