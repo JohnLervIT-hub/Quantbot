@@ -32,7 +32,7 @@ if (!process.env.AUTO_MODE_ENABLED && process.env.VITE_AUTO_MODE) {
 const VALID_INSTRUMENTS = new Set([
   'EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD',
   'USD_CAD', 'EUR_GBP', 'NZD_USD', 'XAU_USD',
-  'SPX500_USD', 'BCO_USD',
+  'SPX500_USD', 'XAG_USD', 'BCO_USD', 'WTICO_USD',
 ]);
 
 app.get('/prices', async (req, res) => {

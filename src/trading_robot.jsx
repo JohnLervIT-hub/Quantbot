@@ -106,7 +106,7 @@ const KNOWLEDGE_BASE = {
 };
 
 const NEWS_SOURCES = ["Bloomberg", "DailyFX", "Benzinga Pro", "Reuters", "CNBC", "MarketBeat"];
-const PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD", "SPX500_USD"];
+const PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD", "SPX500_USD", "XAG/USD", "BCO/USD", "WTICO/USD"];
 const STRATEGIES = ["Trend Follow", "Mean Revert", "Breakout", "Momentum", "Range Scalp"];
 
 const STRATEGY_SESSION_MATRIX = {
@@ -467,23 +467,26 @@ const PIP_SIZE = {
 const TYPICAL_SPREAD_PIPS = {
   EUR_USD: 1.2, GBP_USD: 1.8, USD_JPY: 1.2, AUD_USD: 1.5,
   USD_CAD: 1.8, EUR_GBP: 1.5, NZD_USD: 2.0, XAU_USD: 35.0,
-  SPX500_USD: 0.4,
+  SPX500_USD: 0.4, XAG_USD: 3.0, BCO_USD: 4.0, WTICO_USD: 4.0,
 };
 const TYPICAL_SLIPPAGE_PIPS = {
   EUR_USD: 0.3, GBP_USD: 0.4, USD_JPY: 0.3, AUD_USD: 0.4,
   USD_CAD: 0.4, EUR_GBP: 0.4, NZD_USD: 0.5, XAU_USD: 8.0,
-  SPX500_USD: 0.2,
+  SPX500_USD: 0.2, XAG_USD: 1.5, BCO_USD: 2.0, WTICO_USD: 2.0,
 };
 const PAIR_SPREAD_LIMITS = {
-  EUR_USD: { PRIME: 1.5, LONDON: 2.0, NY: 2.5, TOKYO: 3.5, SYDNEY: 3.5, AVOID: 4.0 },
-  GBP_USD: { PRIME: 2.0, LONDON: 2.5, NY: 3.0, TOKYO: 5.0, SYDNEY: 5.0, AVOID: 6.0 },
-  USD_JPY: { PRIME: 1.5, LONDON: 2.0, NY: 2.0, TOKYO: 2.0, SYDNEY: 2.5, AVOID: 3.5 },
-  AUD_USD: { PRIME: 1.8, LONDON: 2.2, NY: 2.5, TOKYO: 2.5, SYDNEY: 2.0, AVOID: 4.5 },
-  USD_CAD: { PRIME: 2.0, LONDON: 2.5, NY: 2.5, TOKYO: 4.0, SYDNEY: 4.5, AVOID: 5.0 },
-  EUR_GBP: { PRIME: 1.8, LONDON: 2.0, NY: 2.5, TOKYO: 4.0, SYDNEY: 4.0, AVOID: 5.0 },
-  NZD_USD: { PRIME: 2.5, LONDON: 3.0, NY: 3.5, TOKYO: 3.0, SYDNEY: 2.5, AVOID: 5.0 },
-  XAU_USD: { PRIME: 40.0, LONDON: 45.0, NY: 45.0, TOKYO: 60.0, SYDNEY: 65.0, AVOID: 80.0 },
-  SPX500_USD: { PRIME: 0.5, LONDON: 0.6, NY: 0.5, TOKYO: 1.0, SYDNEY: 1.2, AVOID: 1.5 },
+  EUR_USD:    { PRIME: 1.5,  LONDON: 2.0,  NY: 2.5,  TOKYO: 3.5, SYDNEY: 3.5, AVOID: 4.0  },
+  GBP_USD:    { PRIME: 2.0,  LONDON: 2.5,  NY: 3.0,  TOKYO: 5.0, SYDNEY: 5.0, AVOID: 6.0  },
+  USD_JPY:    { PRIME: 1.5,  LONDON: 2.0,  NY: 2.0,  TOKYO: 2.0, SYDNEY: 2.5, AVOID: 3.5  },
+  AUD_USD:    { PRIME: 1.8,  LONDON: 2.2,  NY: 2.5,  TOKYO: 2.5, SYDNEY: 2.0, AVOID: 4.5  },
+  USD_CAD:    { PRIME: 2.0,  LONDON: 2.5,  NY: 2.5,  TOKYO: 4.0, SYDNEY: 4.5, AVOID: 5.0  },
+  EUR_GBP:    { PRIME: 1.8,  LONDON: 2.0,  NY: 2.5,  TOKYO: 4.0, SYDNEY: 4.0, AVOID: 5.0  },
+  NZD_USD:    { PRIME: 2.5,  LONDON: 3.0,  NY: 3.5,  TOKYO: 3.0, SYDNEY: 2.5, AVOID: 5.0  },
+  XAU_USD:    { PRIME: 40.0, LONDON: 45.0, NY: 45.0, TOKYO: 60.0, SYDNEY: 65.0, AVOID: 80.0 },
+  SPX500_USD: { PRIME: 0.5,  LONDON: 0.6,  NY: 0.5,  TOKYO: 1.0, SYDNEY: 1.2, AVOID: 1.5  },
+  XAG_USD:    { PRIME: 3.0,  LONDON: 3.5,  NY: 4.0,  TOKYO: 6.0, SYDNEY: 5.0, AVOID: 8.0  },
+  BCO_USD:    { PRIME: 4.0,  LONDON: 4.5,  NY: 5.0,  TOKYO: 8.0, SYDNEY: 7.0, AVOID: 10.0 },
+  WTICO_USD:  { PRIME: 4.0,  LONDON: 5.0,  NY: 4.5,  TOKYO: 8.0, SYDNEY: 7.0, AVOID: 10.0 },
 };
 const USD_PAIRS_SET = new Set(["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD"]);
 
@@ -6144,6 +6147,7 @@ function StrategyIntelCard({ strategyReason, nextSwitch, isManualOverride, manua
 const BASE_PRICES = {
   "EUR/USD": 1.08420, "GBP/USD": 1.26710, "USD/JPY": 149.850, "AUD/USD": 0.65230,
   "USD/CAD": 1.36540, "XAU/USD": 2312.40, "SPX500_USD": 5248.30,
+  "XAG/USD": 32.50,   "BCO/USD": 82.00,   "WTICO/USD": 78.00,
 };
 
 // ─── TRADE REINFORCEMENT HOOK ─────────────────────────────────────────────────
