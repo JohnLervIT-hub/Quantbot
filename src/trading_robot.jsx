@@ -2816,6 +2816,7 @@ function statusBadge(status) {
 // ─── RISK TAB HELPERS ─────────────────────────────────────────────────────────
 function RiskGauge({ heat = 0 }) {
   const safeHeat = isFinite(heat) && !isNaN(heat) ? Math.max(0, Math.min(8, heat)) : 0;
+  const clamped  = Math.max(0, Math.min(8, safeHeat ?? 0)); // alias — keeps any stale JSX references alive
   const cx = 140, cy = 124, r = 92;
   const arcLen = Math.PI * r;
   const g50 = arcLen * 0.5;   // green zone length  (0–4R)
@@ -5778,6 +5779,7 @@ function useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, 
   }, []);
 
   const compute = useCallback(() => {
+    console.log('[REGIME]', globalRegime);
     const sess  = getCurrentSession();
     const heat  = openTradesRef2.current.length * 1.5;
     const cur   = strategyRef2.current;
