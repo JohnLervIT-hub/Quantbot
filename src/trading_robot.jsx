@@ -4932,12 +4932,13 @@ function BacktestTab({ closedTrades = [], trades = [], isMobile }) {
 function HistoricalBacktest({ isMobile }) {
   const BT_STRATEGIES = ["Mean Revert", "Trend Follow", "Breakout", "Momentum", "Range Scalp"];
   const STRAT_COLOR   = { "Mean Revert": "#1D9E75", "Trend Follow": "#58a6ff", "Breakout": "#F97316", "Momentum": "#8B5CF6", "Range Scalp": "#d29922" };
-  const BT_PAIRS      = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD"];
+  const BT_PAIRS      = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD", "NZD/USD", "SPX500_USD"];
   const BT_TIMEFRAMES = ["M5", "M15", "H1"];
   const BT_DURATIONS  = ["7 days", "30 days", "60 days", "90 days"];
-  const BT_SESSIONS   = ["All", "Tokyo", "London", "Prime", "NY"];
-  const SESSION_UTC   = { All: null, Tokyo: { start: 0, end: 9 }, London: { start: 7, end: 16 }, Prime: { start: 13, end: 17 }, NY: { start: 17, end: 20 } };
+  const BT_SESSIONS   = ["All", "Tokyo", "London", "Prime", "NY", "Sydney"];
+  const SESSION_UTC   = { All: null, Tokyo: { start: 0, end: 9 }, London: { start: 7, end: 16 }, Prime: { start: 13, end: 17 }, NY: { start: 17, end: 20 }, Sydney: { start: 22, end: 4 } };
 
+  const [btStrategy,   setBtStrategy]   = useState("All");
   const [btPair,       setBtPair]       = useState("EUR/USD");
   const [btTf,         setBtTf]         = useState("M15");
   const [btDur,        setBtDur]        = useState("30 days");
@@ -4952,7 +4953,7 @@ function HistoricalBacktest({ isMobile }) {
   const cancelRef = useRef(false);
 
   const decFor = (p) => p.includes("JPY") ? 3 : p.includes("XAU") || p.includes("SPX") ? 2 : 5;
-  const isInSess = (h, s) => { const r = SESSION_UTC[s]; return !r || (h >= r.start && h < r.end); };
+  const isInSess = (h, s) => { const r = SESSION_UTC[s]; if (!r) return true; if (r.start > r.end) return h >= r.start || h < r.end; return h >= r.start && h < r.end; };
   const fmtDate = (iso) => {
     const d = new Date(iso);
     return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -5062,12 +5063,13 @@ function HistoricalBacktest({ isMobile }) {
     const closes = candles.map(c => parseFloat(c.mid?.c ?? 0)).filter(v => v > 0 && !isNaN(v));
     if (closes.length < 22) { setBtError("Insufficient price data in candles."); setRunning(false); return; }
 
+    const strats = btStrategy === "All" ? BT_STRATEGIES : [btStrategy];
     const allResults = {};
-    for (let si = 0; si < BT_STRATEGIES.length; si++) {
+    for (let si = 0; si < strats.length; si++) {
       if (cancelRef.current) break;
-      const strat = BT_STRATEGIES[si];
-      setRunLabel(`Testing ${strat} (${si + 1}/${BT_STRATEGIES.length})…`);
-      allResults[strat] = await runOneStrategy(strat, closes, candles, btPair, btSess, 15 + (si / BT_STRATEGIES.length) * 85);
+      const strat = strats[si];
+      setRunLabel(`Testing ${strat} (${si + 1}/${strats.length})…`);
+      allResults[strat] = await runOneStrategy(strat, closes, candles, btPair, btSess, 15 + (si / strats.length) * 85);
     }
 
     if (!cancelRef.current) {
@@ -5115,10 +5117,11 @@ function HistoricalBacktest({ isMobile }) {
       {/* Controls */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12, alignItems: "flex-end" }}>
         {[
-          { label: "Pair",      value: btPair, set: setBtPair, opts: BT_PAIRS      },
-          { label: "Timeframe", value: btTf,   set: setBtTf,   opts: BT_TIMEFRAMES },
-          { label: "Duration",  value: btDur,  set: setBtDur,  opts: BT_DURATIONS  },
-          { label: "Session",   value: btSess, set: setBtSess, opts: BT_SESSIONS   },
+          { label: "Strategy",  value: btStrategy, set: setBtStrategy, opts: ["All", ...BT_STRATEGIES] },
+          { label: "Pair",      value: btPair,     set: setBtPair,     opts: BT_PAIRS      },
+          { label: "Timeframe", value: btTf,       set: setBtTf,       opts: BT_TIMEFRAMES },
+          { label: "Duration",  value: btDur,      set: setBtDur,      opts: BT_DURATIONS  },
+          { label: "Session",   value: btSess,     set: setBtSess,     opts: BT_SESSIONS   },
         ].map(({ label, value, set, opts }) => (
           <div key={label} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
             <span style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</span>
@@ -5163,9 +5166,10 @@ function HistoricalBacktest({ isMobile }) {
             <div style={{ height: "100%", width: `${progress}%`, background: "#3fb950", borderRadius: 2, transition: "width 0.15s" }} />
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-            {BT_STRATEGIES.map((s, si) => {
-              const stratBase = 15 + (si / BT_STRATEGIES.length) * 85;
-              const done = progress >= stratBase + (85 / BT_STRATEGIES.length);
+            {(btStrategy === "All" ? BT_STRATEGIES : [btStrategy]).map((s, si) => {
+              const strats = btStrategy === "All" ? BT_STRATEGIES : [btStrategy];
+              const stratBase = 15 + (si / strats.length) * 85;
+              const done = progress >= stratBase + (85 / strats.length);
               const active = progress >= stratBase && !done;
               return (
                 <div key={s} style={{ display: "flex", alignItems: "center", gap: 4 }}>
