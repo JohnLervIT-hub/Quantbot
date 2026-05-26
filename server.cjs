@@ -770,9 +770,9 @@ async function runAutonomousCheck() {
 }
 
 // ─── START ────────────────────────────────────────────────────────────────────
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`OANDA bridge live at http://localhost:${PORT}`);
+  console.log(`OANDA bridge live on port ${PORT}`);
   console.log(`  AI: Claude ${process.env.VITE_ANTHROPIC_KEY ? '✓' : '✗'} | OpenAI ${process.env.VITE_OPENAI_API_KEY ? '✓' : '✗'} | DeepSeek ${process.env.VITE_DEEPSEEK_API_KEY ? '✓' : '✗'} | Gemini ${process.env.VITE_GEMINI_API_KEY ? '✓' : '✗'}`);
   console.log(`  Auto mode: ${process.env.AUTO_MODE_ENABLED === 'true' ? 'ENABLED ⚡' : 'disabled (set AUTO_MODE_ENABLED=true to activate)'}`);
 });
