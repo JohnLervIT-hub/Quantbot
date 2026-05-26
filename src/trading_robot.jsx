@@ -2526,11 +2526,11 @@ function NewsTicker({ onHeadlineChange }) {
       <div style={{ background: "linear-gradient(135deg, #da3633 0%, #b62324 100%)", color: "#fff", fontSize: 10, fontWeight: 800, padding: "0 12px", height: "100%", display: "flex", alignItems: "center", letterSpacing: "1.5px", flexShrink: 0, boxShadow: "2px 0 12px rgba(218,54,51,0.25)" }}>
         LIVE
       </div>
-      <div style={{ overflow: "hidden", flex: 1, height: "100%", display: "flex", alignItems: "center", maskImage: "linear-gradient(90deg, transparent 0%, #000 2%, #000 98%, transparent 100%)" }}>
-        <span style={{ display: "inline-flex", alignItems: "center", whiteSpace: "nowrap", animation: "marquee 160s linear infinite", paddingLeft: "100%", fontSize: 12 }}>
+      <div style={{ overflow: "hidden", flex: 1, height: "100%", display: "flex", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", whiteSpace: "nowrap", animation: "marquee 160s linear infinite", willChange: "transform", fontSize: 12 }}>
           <TickerTrack items={tickerItems} />
           <TickerTrack items={tickerItems} />
-        </span>
+        </div>
       </div>
     </div>
   );
