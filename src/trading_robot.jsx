@@ -2815,22 +2815,21 @@ function statusBadge(status) {
 
 // ─── RISK TAB HELPERS ─────────────────────────────────────────────────────────
 function RiskGauge({ heat = 0 }) {
-  const safeHeat = typeof heat === "number" && !isNaN(heat) ? heat : 0;
+  const safeHeat = isFinite(heat) && !isNaN(heat) ? Math.max(0, Math.min(8, heat)) : 0;
   const cx = 140, cy = 124, r = 92;
   const arcLen = Math.PI * r;
   const g50 = arcLen * 0.5;   // green zone length  (0–4R)
   const g25 = arcLen * 0.25;  // amber zone length  (4–6R)
   const GAP = 3;               // px gap between zone segments
 
-  const clamped   = Math.min(Math.max(safeHeat, 0), 8);
-  const fillLen   = (clamped / 8) * arcLen;
+  const fillLen   = (safeHeat / 8) * arcLen;
   const heatColor = safeHeat >= 6 ? "#f85149" : safeHeat >= 4 ? "#d29922" : "#3fb950";
 
   // Direct needle endpoint — reliable cross-browser (no CSS rotation on SVG)
-  const needleRad = (180 - (clamped / 8) * 180) * Math.PI / 180;
+  const needleRad = (180 - (safeHeat / 8) * 180) * Math.PI / 180;
   const nx = cx + 76 * Math.cos(needleRad);
   const ny = cy - 76 * Math.sin(needleRad);
-  const needleValid = Number.isFinite(nx) && Number.isFinite(ny);
+  const needleValid = Number.isFinite(nx) && Number.isFinite(ny) && !isNaN(nx) && !isNaN(ny);
 
   // Tick marks at 0, 2, 4, 6, 8R
   const ticks = [0, 2, 4, 6, 8].map(v => {
@@ -6448,12 +6447,18 @@ export default function TradingRobot() {
       for (const [pair, data] of Object.entries(refSnapshot)) {
         if (!data) continue;
         const { signal, price, history } = data;
-        if ((signal.score ?? 0) < settings.minConfidence) continue;
+        if ((signal.score ?? 0) < settings.minConfidence) {
+          console.log('[AUTO] blocked:', pair, 'reason: score', signal.score, '< minConfidence', settings.minConfidence);
+          continue;
+        }
         if (autoExecTimestamps.filter(t => Date.now() - t < 3_600_000).length >= settings.maxTradesPerHour) break;
+
+        console.log('[AUTO] executing for', pair, 'score:', signal.score, 'threshold:', settings.minConfidence);
 
         // Gatekeepers
         const gk = runGatekeepers(history, signal, openTradesRef.current, pair, strategyRef.current);
         if (!gk.passed) {
+          console.log('[AUTO] blocked:', pair, 'reason:', gk.rejections[0]?.reason ?? 'gatekeeper');
           onRejectionRef.current?.({
             pair, direction: signal.direction, score: signal.score,
             ...gk.rejections[0],
@@ -6482,7 +6487,10 @@ export default function TradingRobot() {
             }),
           });
           const verdict = await cr.json();
-          if (!verdict.executeAllowed || (verdict.votes?.confirm ?? 0) < settings.consensusRequired) continue;
+          if (!verdict.executeAllowed || (verdict.votes?.confirm ?? 0) < settings.consensusRequired) {
+            console.log('[AUTO] blocked:', pair, 'reason: consensus rejected — votes:', verdict.votes?.confirm ?? 0, '/', settings.consensusRequired);
+            continue;
+          }
 
           autoExecTimestamps.push(Date.now());
           const topReason = verdict.models?.find(m => m.verdict === "CONFIRM")?.reason ?? "Auto consensus";
