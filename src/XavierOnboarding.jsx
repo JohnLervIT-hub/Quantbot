@@ -105,43 +105,43 @@ const STEPS = [
     idx:   0,
     label: "Welcome",
     pose:  "welcome",
-    text:  "Hey. I'm Xavier — your AI trading intelligence.\n\nI've been built to watch markets 24/7, find high-probability setups, and execute trades autonomously while you sleep.\n\nBefore we go live, let me show you how I work.",
-    cta:   "Got it →",
+    text:  "Hey — good to have you here. I'm Xavier.\n\nI watch the markets so you don't have to. I find the setups, run them through my analysis, and execute when everything lines up.\n\nLet me walk you through how this works.",
+    cta:   "Let's go →",
   },
   {
     idx:   1,
     label: "The Brain",
     pose:  "explain",
-    text:  "Every trade I take passes through 4 AI models — Claude, GPT-4o, DeepSeek, and Gemini.\n\n3 out of 4 must agree before I pull the trigger.\n\nNo gut feelings. No emotion. Just edge.",
-    cta:   "Got it →",
+    text:  "Here's how I make decisions.\n\nEvery signal gets reviewed by four AI models — Claude, GPT-4o, DeepSeek, and Gemini. Three of them need to agree before I do anything. One outlier gets ignored.\n\nIt's a sanity check built into every trade.",
+    cta:   "Makes sense →",
   },
   {
     idx:   2,
     label: "Risk First",
     pose:  "stop",
-    text:  "The most important number in trading isn't your win rate — it's how much you lose when you're wrong.\n\nI risk exactly 1.5% per trade. Never more.\nAt 6R total heat, I stop completely.\nYour capital protection is hardwired into me.",
-    cta:   "I understand →",
+    text:  "Before we talk about profits, let's talk about risk.\n\nI keep every trade at 1.5% of your account. That's it — no exceptions. And if total heat across open trades hits 6R, I stop trading entirely until things settle.\n\nProtecting the account comes first. Always.",
+    cta:   "Got it →",
   },
   {
     idx:   3,
     label: "Sessions",
     pose:  "gesture",
-    text:  "Forex never sleeps, but I don't trade all the time.\n\nTokyo opens at 10pm Calgary — I use Mean Revert.\nLondon opens at 2am — I switch to Trend Follow.\nPrime overlap 7am-11am — this is my best window.\nDead zone 2pm-4pm — I sit on my hands.\n\nDiscipline over activity.",
-    cta:   "Makes sense →",
+    text:  "I don't trade around the clock — I trade when conditions are right.\n\nTokyo and London have their own rhythms. The Prime window — when London and New York overlap — is where I get my best results. Outside of that, I stay patient.\n\nGood timing is half the edge.",
+    cta:   "Got it →",
   },
   {
     idx:   4,
     label: "Auto Mode",
     pose:  "tap",
-    text:  "When Auto is ON, I run completely independently.\n\nSignal fires → Gatekeeper checks → 4 models vote → Trade executes → Stop loss set → I manage it.\n\nYou don't need to touch anything.\nJust keep the app open.",
+    text:  "When you switch Auto on, I take it from there.\n\nI spot the signal, run it through the gatekeepers, get the AI vote, and execute if it passes. Stop loss goes in immediately. I manage the trade from open to close.\n\nYou just need to keep the app running.",
     cta:   "Turn it on →",
   },
   {
     idx:   5,
     label: "Dashboard",
     pose:  "aside",
-    text:  "This is your command center.\n\nMarkets — where signals appear\nRisk — your protection dashboard\nAnalytics — your performance record\nAsk Xavier — talk to me anytime\n\nOne rule: never turn off the circuit breaker.",
-    cta:   "Show me around →",
+    text:  "Here's what you've got.\n\nMarkets shows you live signals as they form. Risk keeps you on top of your exposure. Analytics is your full performance record. And if you want to talk through anything, Ask Xavier is always there.\n\nOne thing — leave the circuit breaker alone.",
+    cta:   "Got it →",
   },
   {
     idx:   6,
@@ -552,7 +552,7 @@ export default function XavierOnboarding({ onComplete, enableAutoMode }) {
   // Full text for step (step 6 embeds countdown)
   const stepText = useCallback((idx, cd) => {
     if (idx === 6) {
-      return `You're ready.\n\nLondon opens in ${cd} — that's our first real window. I'll be watching.\n\nOne last thing: I'm not perfect. No system is. But I'm disciplined, I protect your capital first, and I learn from every trade.\n\nLet's build something.`;
+      return `You're set up.\n\nLondon opens in ${cd} — that's our first real window. I'll be watching from the start.\n\nI won't get every trade right. No system does. But I stay disciplined, I protect the downside, and I get better over time.\n\nLet's get to work.`;
     }
     return STEPS[idx].text;
   }, []);
