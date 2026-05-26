@@ -2233,11 +2233,11 @@ function TickerTrack({ items }) {
 function NewsTicker({ onHeadlineChange }) {
   const [, setIdx] = useState(0);
   useEffect(() => {
-    onHeadlineChange(LIVE_HEADLINES[0]);
+    setTimeout(() => onHeadlineChange(LIVE_HEADLINES[0]), 0);
     const id = setInterval(() => {
       setIdx(i => {
         const next = (i + 1) % LIVE_HEADLINES.length;
-        onHeadlineChange(LIVE_HEADLINES[next]);
+        setTimeout(() => onHeadlineChange(LIVE_HEADLINES[next]), 0);
         return next;
       });
     }, 5000);
@@ -2641,7 +2641,8 @@ function statusBadge(status) {
 }
 
 // ─── RISK TAB HELPERS ─────────────────────────────────────────────────────────
-function RiskGauge({ heat }) {
+function RiskGauge({ heat = 0 }) {
+  if (typeof heat !== "number" || isNaN(heat)) return null;
   const cx = 140, cy = 124, r = 92;
   const arcLen = Math.PI * r;
   const g50 = arcLen * 0.5;   // green zone length  (0–4R)
@@ -3954,7 +3955,8 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode }) {
   const [now, setNow] = useState(() => new Date());
   const [xavierNote, setXavierNote] = useState(null);
   const [loadingNote, setLoadingNote] = useState(false);
-  const [scheduleMode, setScheduleMode] = useState(() => localStorage.getItem("qb_schedMode") || "auto");
+  const [scheduleMode, setScheduleMode] = useState(() => localStorage.getItem("scheduleMode") || "auto");
+  useEffect(() => localStorage.setItem("scheduleMode", scheduleMode), [scheduleMode]);
   const [sessionPopup, setSessionPopup] = useState(null);
   const autoEnableRef = useRef(enableAutoMode);
   const prevAutoRef   = useRef(null);
