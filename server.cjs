@@ -123,6 +123,34 @@ app.post('/order', async (req, res) => {
   res.json(data);
 });
 
+// ─── SWING ORDER — 500 units, explicit SL/TP1 prices ─────────────────────────
+app.post('/swing/order', async (req, res) => {
+  const { instrument, units, slPrice, tp1Price } = req.body;
+  if (!instrument || !units) return res.status(400).json({ error: 'instrument and units required' });
+  const direction = Number(units) >= 0 ? 'LONG' : 'SHORT';
+  console.log(`POST /swing/order — ${instrument} ${direction} ${Math.abs(Number(units))} units (SWING)`);
+  const order = {
+    type: 'MARKET', instrument, units: String(units),
+    timeInForce: 'FOK', positionFill: 'DEFAULT',
+  };
+  if (slPrice) {
+    order.stopLossOnFill = { price: parseFloat(slPrice).toFixed(5), timeInForce: 'GTC' };
+    console.log('[SWING] SL:', order.stopLossOnFill.price);
+  }
+  if (tp1Price) {
+    order.takeProfitOnFill = { price: parseFloat(tp1Price).toFixed(5), timeInForce: 'GTC' };
+    console.log('[SWING] TP1:', order.takeProfitOnFill.price);
+  }
+  try {
+    const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify({ order }) });
+    const data = await r.json();
+    console.log('[SWING OANDA]', r.status, JSON.stringify(data).slice(0, 200));
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/close/:tradeId', async (req, res) => {
   const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${req.params.tradeId}/close`, { method: 'PUT', headers: H });
   res.json(await r.json());

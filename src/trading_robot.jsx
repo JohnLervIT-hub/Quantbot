@@ -2548,6 +2548,264 @@ function ToastContainer({ toasts, onDismiss }) {
   );
 }
 
+// ─── KILL SHOT — SWING ENGINE ─────────────────────────────────────────────────
+const KILL_SHOT_PAIRS = ["XAU/USD", "GBP/USD", "EUR/USD", "USD/JPY", "NAS100/USD", "BCO/USD"];
+
+function _ema(prices, period) {
+  if (prices.length < period) return null;
+  const k = 2 / (period + 1);
+  let e = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < prices.length; i++) e = prices[i] * k + e * (1 - k);
+  return e;
+}
+function _rsi(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  let g = 0, l = 0;
+  for (let i = 1; i <= period; i++) { const d = closes[i] - closes[i - 1]; if (d > 0) g += d; else l -= d; }
+  let ag = g / period, al = l / period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    ag = (ag * (period - 1) + Math.max(d, 0)) / period;
+    al = (al * (period - 1) + Math.max(-d, 0)) / period;
+  }
+  return al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+}
+function _atr(candles, period = 14) {
+  if (candles.length < 2) return null;
+  const trs = candles.slice(1).map((c, i) => {
+    const h = parseFloat(c.mid?.h ?? c.h), lo = parseFloat(c.mid?.l ?? c.l), pc = parseFloat(candles[i].mid?.c ?? candles[i].c);
+    return Math.max(h - lo, Math.abs(h - pc), Math.abs(lo - pc));
+  });
+  if (trs.length < period) return trs.reduce((a, b) => a + b, 0) / trs.length;
+  let a = trs.slice(0, period).reduce((x, y) => x + y, 0) / period;
+  for (let i = period; i < trs.length; i++) a = (a * (period - 1) + trs[i]) / period;
+  return a;
+}
+
+function generateSwingSignal(h4Candles, weeklyCandles) {
+  if (!h4Candles || h4Candles.length < 55) return null;
+  const closes = h4Candles.map(c => parseFloat(c.mid?.c ?? c.c));
+  const last    = closes[closes.length - 1];
+  const ema21   = _ema(closes, 21);
+  const ema50   = _ema(closes, 50);
+  const atr     = _atr(h4Candles, 14);
+  const rsi     = _rsi(closes.slice(-30), 14);
+  if (!ema21 || !ema50 || !atr || last <= 0) return null;
+
+  let score = 0;
+  const bd = {};
+
+  // 1. ATR EXPANSION (10 pts) — trade needs volatility to carry
+  const atrPct = atr / last;
+  const atrPts = atrPct > 0.0003 ? 10 : atrPct > 0.0001 ? 5 : 0;
+  score += atrPts; bd.atr = atrPts;
+
+  // 2. TREND STRUCTURE (30 pts)
+  const isBull = ema21 > ema50;
+  const last3c  = closes.slice(-3);
+  let trendPts = 0, direction = null;
+  if (isBull || !isBull) {
+    direction = isBull ? "LONG" : "SHORT";
+    trendPts += 20;
+    const confirming = isBull ? last3c[2] > last3c[0] : last3c[2] < last3c[0];
+    if (confirming) trendPts += 10;
+  }
+  score += trendPts; bd.trend = trendPts;
+
+  // 3. EMA21 PULLBACK (25 pts)
+  const pct21 = Math.abs(last - ema21) / ema21;
+  const nearEMA = isBull ? last <= ema21 * 1.006 : last >= ema21 * 0.994;
+  let pbPts = 0;
+  if (nearEMA) { pbPts = pct21 <= 0.003 ? 25 : pct21 <= 0.005 ? 15 : 0; }
+  score += pbPts; bd.pullback = pbPts;
+
+  // 4. MOMENTUM CONFIRMATION (20 pts)
+  let momPts = 0;
+  if (rsi !== null && rsi >= 40 && rsi <= 60) momPts += 10;
+  const momReturn = isBull ? last3c[1] > last3c[0] && last3c[2] > last3c[1] : last3c[1] < last3c[0] && last3c[2] < last3c[1];
+  if (momReturn) momPts += 10;
+  score += momPts; bd.momentum = momPts;
+
+  // 5. WEEKLY BIAS (15 pts)
+  let weekPts = 0;
+  if (weeklyCandles?.length >= 3) {
+    const wc = weeklyCandles.map(c => parseFloat(c.mid?.c ?? c.c));
+    const weekBull = wc[wc.length - 1] > wc[wc.length - 3];
+    if ((isBull && weekBull) || (!isBull && !weekBull)) weekPts = 15;
+  }
+  score += weekPts; bd.weekly = weekPts;
+
+  const slBuf  = atr * 0.5;
+  const sl     = isBull ? ema50 - slBuf : ema50 + slBuf;
+  const slDist = Math.abs(last - sl);
+  const tp1    = isBull ? last + slDist * 1.5 : last - slDist * 1.5;
+  const tp2    = isBull ? last + slDist * 3   : last - slDist * 3;
+  const tp3    = isBull ? last + slDist * 5   : last - slDist * 5;
+
+  return {
+    score: Math.round(score), direction,
+    entry: last, sl, tp1, tp2, tp3,
+    ema21, ema50, atr, rsi,
+    breakdown: bd,
+    label: score >= 85 ? "PERFECT" : score >= 75 ? "SETUP" : "WATCHING",
+  };
+}
+
+function swingFmt(pair, price) {
+  if (pair.includes("JPY") || pair.includes("NAS100") || pair.includes("JP225") || pair.includes("SPX") || pair.includes("UK100") || pair.includes("AU200")) return price.toFixed(2);
+  if (pair.includes("XAU") || pair.includes("BCO") || pair.includes("WTICO") || pair.includes("XAG")) return price.toFixed(3);
+  return price.toFixed(5);
+}
+
+function XavierKillShotNote({ score, pair, direction }) {
+  let note = "";
+  if (score >= 85) {
+    note = `Perfect Kill Shot — ${pair}. Everything aligned: weekly trend, H4 structure, EMA stack, RSI reset. This is a 5R trade if the trend continues. Full swing size. Let it run.`;
+  } else if (score >= 75) {
+    note = `Good Kill Shot setup — ${pair}. EMA21 pullback holding, RSI reset. ${direction === "LONG" ? "Uptrend intact." : "Downtrend intact."} This is the setup I wait for. Entering now.`;
+  }
+  if (!note) return null;
+  return (
+    <div style={{ marginTop: 8, padding: "7px 10px", background: "#F9731611", border: "1px solid #F9731633", borderRadius: 6 }}>
+      <div style={{ fontSize: 9, color: "#F97316", fontWeight: 700, letterSpacing: "0.05em", marginBottom: 2 }}>XAVIER</div>
+      <div style={{ fontSize: 10, color: "#8b949e", lineHeight: 1.55, fontStyle: "italic" }}>"{note}"</div>
+    </div>
+  );
+}
+
+function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile }) {
+  const activePairs = KILL_SHOT_PAIRS.filter(p => signals[p]?.score >= 75);
+  const watchPairs  = KILL_SHOT_PAIRS.filter(p => !signals[p] || signals[p].score < 75);
+  return (
+    <div style={{ margin: isMobile ? "0 0 16px" : "0 16px 16px", background: "#161b22", border: "1px solid #F9731640", borderRadius: 12, overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{ padding: "10px 14px", borderBottom: "1px solid #21262d", display: "flex", justifyContent: "space-between", alignItems: "center", background: "#0d1117" }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#F97316" }}>⚔️ Kill Shot — Swing Scanner</div>
+          <div style={{ fontSize: 10, color: "#484f58", marginTop: 1 }}>H4 · 3–5R targets · 2-5 day holds</div>
+        </div>
+        <div style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO }}>
+          {scanning ? "Scanning…" : `${KILL_SHOT_PAIRS.length} pairs`}
+        </div>
+      </div>
+
+      {/* Active setups */}
+      {activePairs.map(pair => {
+        const sig = signals[pair];
+        const isAlreadyOpen = openTrades?.some(t => t.instrument?.replace("_", "/") === pair);
+        const labelColor = sig.label === "PERFECT" ? "#3fb950" : "#F97316";
+        return (
+          <div key={pair} style={{ padding: "12px 14px", borderBottom: "1px solid #21262d" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#e6edf3", fontFamily: FONT_MONO }}>{pair}</span>
+                <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: sig.direction === "LONG" ? "#3fb95022" : "#f8514922", color: sig.direction === "LONG" ? "#3fb950" : "#f85149", border: `1px solid ${sig.direction === "LONG" ? "#3fb95055" : "#f8514955"}`, fontWeight: 700 }}>{sig.direction}</span>
+                <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: labelColor + "22", color: labelColor, border: `1px solid ${labelColor}44`, fontWeight: 700 }}>{sig.label}</span>
+              </div>
+              <span style={{ fontSize: 13, fontWeight: 800, color: labelColor, fontFamily: FONT_MONO }}>{sig.score}%</span>
+            </div>
+            <div style={{ fontSize: 10, color: "#8b949e", marginBottom: 6, lineHeight: 1.5 }}>
+              EMA21 pullback · {sig.breakdown?.weekly > 0 ? "Weekly trend aligned" : "Weekly bias weak"} · RSI {sig.rsi?.toFixed(0) ?? "—"}
+            </div>
+            <div style={{ display: "flex", gap: 12, fontSize: 10, color: "#484f58", fontFamily: FONT_MONO, marginBottom: 8 }}>
+              <span>Entry <span style={{ color: "#e6edf3" }}>{swingFmt(pair, sig.entry)}</span></span>
+              <span>SL <span style={{ color: "#f85149" }}>{swingFmt(pair, sig.sl)}</span></span>
+              <span>TP1 <span style={{ color: "#3fb950" }}>{swingFmt(pair, sig.tp1)}</span></span>
+              <span>TP2 <span style={{ color: "#3fb950" }}>{swingFmt(pair, sig.tp2)}</span></span>
+            </div>
+            <XavierKillShotNote score={sig.score} pair={pair} direction={sig.direction} />
+            <button
+              onClick={() => onExecute(pair, sig)}
+              disabled={isAlreadyOpen}
+              style={{ marginTop: 8, width: "100%", padding: "7px 0", borderRadius: 6, border: `1px solid ${isAlreadyOpen ? "#30363d" : "#F97316"}`, background: isAlreadyOpen ? "#161b22" : "#F9731618", color: isAlreadyOpen ? "#484f58" : "#F97316", fontSize: 11, fontWeight: 700, cursor: isAlreadyOpen ? "default" : "pointer", fontFamily: "inherit", letterSpacing: "0.04em", transition: "all 0.15s" }}
+            >
+              {isAlreadyOpen ? "Already Open" : "⚔️ Execute Kill Shot"}
+            </button>
+          </div>
+        );
+      })}
+
+      {/* Watching pairs */}
+      {watchPairs.length > 0 && (
+        <div style={{ padding: "8px 14px" }}>
+          {watchPairs.map((pair, i) => {
+            const sig = signals[pair];
+            return (
+              <div key={pair} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: i < watchPairs.length - 1 ? "0.5px solid #21262d40" : "none" }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: "#8b949e", fontFamily: FONT_MONO }}>{pair}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {sig ? (
+                    <>
+                      <span style={{ fontSize: 10, color: "#484f58" }}>
+                        {sig.breakdown?.pullback === 0 ? "Needs EMA21 pullback" : sig.breakdown?.momentum < 10 ? "Needs RSI reset" : "Building setup"}
+                      </span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "#484f58", fontFamily: FONT_MONO }}>{sig.score}%</span>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 10, color: "#484f58" }}>{scanning ? "Scanning…" : "No data"}</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SwingJournalPanel({ swingTrades, openTrades, livePrices, displayNav, isMobile }) {
+  const activeTrades  = swingTrades.filter(t => !t.closed);
+  const closedTrades  = swingTrades.filter(t => t.closed);
+  if (swingTrades.length === 0) return null;
+
+  const oneR = (displayNav || 100) * 0.015;
+  const fmtDays = (ms) => {
+    const d = (Date.now() - ms) / 86400000;
+    return d < 1 ? `${Math.round(d * 24)}h` : `${d.toFixed(1)}d`;
+  };
+
+  return (
+    <div style={{ margin: isMobile ? "0 0 16px" : "0 16px 16px", background: "#161b22", border: "1px solid #F9731630", borderRadius: 12, overflow: "hidden" }}>
+      <div style={{ padding: "10px 14px", borderBottom: "1px solid #21262d", background: "#0d1117", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#F97316" }}>⚔️ Swing Journal</div>
+        <div style={{ fontSize: 10, color: "#484f58" }}>{activeTrades.length} open · {closedTrades.length} closed</div>
+      </div>
+      {activeTrades.map(t => {
+        const liveOanda = openTrades?.find(o => o.id === t.oandaId);
+        const livePrice = liveOanda ? parseFloat(liveOanda.price) : (livePrices?.[t.pair] || t.entry);
+        const pnlPips   = t.direction === "LONG" ? livePrice - t.entry : t.entry - livePrice;
+        const pnlR      = oneR > 0 ? (pnlPips / Math.abs(t.entry - t.sl)) * 1 : 0;
+        const rColor    = pnlR >= 2 ? "#3fb950" : pnlR >= 1 ? "#d29922" : pnlR >= 0 ? "#8b949e" : "#f85149";
+        return (
+          <div key={t.id} style={{ padding: "10px 14px", borderBottom: "0.5px solid #21262d" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#e6edf3", fontFamily: FONT_MONO }}>{t.pair}</span>
+                <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: t.direction === "LONG" ? "#3fb95022" : "#f8514922", color: t.direction === "LONG" ? "#3fb950" : "#f85149", fontWeight: 700 }}>{t.direction}</span>
+                <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "#F9731622", color: "#F97316", fontWeight: 700 }}>SWING</span>
+              </div>
+              <span style={{ fontSize: 12, fontWeight: 800, color: rColor, fontFamily: FONT_MONO }}>{pnlR >= 0 ? "+" : ""}{pnlR.toFixed(1)}R</span>
+            </div>
+            <div style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO, marginBottom: 2 }}>
+              {fmtDays(t.openedAt)} · Score {t.score}% · SL {swingFmt(t.pair, t.sl)} · TP1 {swingFmt(t.pair, t.tp1)}
+            </div>
+            <div style={{ fontSize: 10, color: "#8b949e", fontStyle: "italic" }}>{t.thesis}</div>
+          </div>
+        );
+      })}
+      {closedTrades.slice(-5).reverse().map(t => (
+        <div key={t.id} style={{ padding: "8px 14px", borderBottom: "0.5px solid #21262d40", opacity: 0.6 }}>
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 10, color: "#8b949e", fontFamily: FONT_MONO }}>{t.pair} {t.direction}</span>
+            <span style={{ fontSize: 10, color: "#484f58" }}>{t.closeReason || "Closed"}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── NEWS TICKER ──────────────────────────────────────────────────────────────
 const TICKER_ITEMS = [
   { source: "Bloomberg", headline: "BOJ intervenes as USD/JPY tests 158.00" },
@@ -6947,6 +7205,12 @@ export default function TradingRobot() {
   soundEnabledRef.current  = soundEnabled;
   const lastSignalSoundRef = useRef({});
   const notifyRef          = useRef(null);
+  const [swingEnabled, setSwingEnabled] = useState(() => localStorage.getItem("swing_mode_enabled") === "true");
+  const [swingSignals, setSwingSignals] = useState({});
+  const [swingTrades,  setSwingTrades]  = useState(() => { try { return JSON.parse(localStorage.getItem("swing_trades") || "[]"); } catch { return []; } });
+  const [swingScanning, setSwingScanning] = useState(false);
+  const swingEnabledRef = useRef(swingEnabled);
+  swingEnabledRef.current = swingEnabled;
 
   const onRejection = useCallback((entry) => {
     setRejectionLog(prev => {
@@ -6978,6 +7242,89 @@ export default function TradingRobot() {
     addToast(type, data);
   }, [addToast]);
   notifyRef.current = notify;
+
+  // ── Swing Mode: scan Kill Shot pairs every 4 hours ──
+  useEffect(() => {
+    if (!swingEnabled) { setSwingSignals({}); return; }
+    async function scanSwing() {
+      setSwingScanning(true);
+      const results = {};
+      for (const pair of KILL_SHOT_PAIRS) {
+        try {
+          const sym = pair.replace("/", "_");
+          const [h4Res, wRes] = await Promise.all([
+            fetch(`${BRIDGE}/candles/${sym}?count=100&granularity=H4`).then(r => r.ok ? r.json() : null).catch(() => null),
+            fetch(`${BRIDGE}/candles/${sym}?count=10&granularity=W`).then(r => r.ok ? r.json() : null).catch(() => null),
+          ]);
+          const sig = generateSwingSignal(h4Res?.candles || [], wRes?.candles || []);
+          if (sig) results[pair] = sig;
+        } catch {}
+      }
+      setSwingSignals(results);
+      setSwingScanning(false);
+    }
+    scanSwing();
+    const id = setInterval(scanSwing, 4 * 60 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [swingEnabled]); // eslint-disable-line
+
+  // ── Swing Mode: auto-close after 5 days ──
+  useEffect(() => {
+    if (!swingEnabled) return;
+    const id = setInterval(async () => {
+      const MAX_MS = 5 * 24 * 60 * 60 * 1000;
+      for (const st of swingTrades) {
+        if (st.closed) continue;
+        if (Date.now() - st.openedAt >= MAX_MS) {
+          try {
+            await fetch(`${BRIDGE}/close/${st.oandaId}`, { method: "POST" });
+            setSwingTrades(prev => {
+              const next = prev.map(t => t.id === st.id ? { ...t, closed: true, closeReason: "5-day limit auto-close" } : t);
+              localStorage.setItem("swing_trades", JSON.stringify(next));
+              return next;
+            });
+          } catch {}
+        }
+      }
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [swingEnabled, swingTrades]); // eslint-disable-line
+
+  const executeKillShot = useCallback(async (pair, sig) => {
+    if (!window.confirm(`⚔️ Execute Kill Shot: ${pair} ${sig.direction} @ ${swingFmt(pair, sig.entry)}?\nScore: ${sig.score}% · SL: ${swingFmt(pair, sig.sl)} · TP1: ${swingFmt(pair, sig.tp1)}`)) return;
+    const sym   = pair.replace("/", "_");
+    const units = sig.direction === "LONG" ? 500 : -500;
+    try {
+      const r = await fetch(`${BRIDGE}/swing/order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instrument: sym, units, slPrice: sig.sl, tp1Price: sig.tp1 }),
+      });
+      const data = await r.json();
+      const fp = data?.orderFillTransaction?.price;
+      if (fp) {
+        const entry = parseFloat(fp);
+        const newTrade = {
+          id: `swing_${Date.now()}`,
+          oandaId: data.orderFillTransaction.tradeOpened?.tradeID,
+          pair, direction: sig.direction, entry,
+          sl: sig.sl, tp1: sig.tp1, tp2: sig.tp2, tp3: sig.tp3,
+          score: sig.score, ema21: sig.ema21, ema50: sig.ema50, rsi: sig.rsi,
+          openedAt: Date.now(),
+          thesis: `Score ${sig.score}% | EMA21 pullback | RSI ${sig.rsi?.toFixed(0) ?? "—"} | ${sig.score >= 85 ? "Perfect Kill Shot" : "Kill Shot setup"}`,
+          closed: false,
+        };
+        setSwingTrades(prev => {
+          const next = [...prev, newTrade];
+          localStorage.setItem("swing_trades", JSON.stringify(next));
+          return next;
+        });
+        notifyRef.current?.("trade_open", { pair, direction: sig.direction, fillPrice: fp, score: sig.score, atr: sig.atr });
+      } else {
+        alert("Order rejected: " + (data?.errorMessage || JSON.stringify(data).slice(0, 100)));
+      }
+    } catch (e) { alert("Execute failed: " + e.message); }
+  }, []); // eslint-disable-line
 
   const regimeValues = Object.values(regimeMap);
   const globalRegime = regimeValues.length === 0 ? null
@@ -7104,6 +7451,12 @@ export default function TradingRobot() {
               >
                 {autoModeLoading ? "…" : autoMode ? "⚡ Auto AI" : "Auto AI"}
               </button>
+              <button
+                onClick={() => { const next = !swingEnabled; setSwingEnabled(next); swingEnabledRef.current = next; localStorage.setItem("swing_mode_enabled", String(next)); }}
+                style={{ padding: "5px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, border: `1px solid ${swingEnabled ? "#F97316" : "#30363d"}`, background: swingEnabled ? "rgba(249,115,22,0.12)" : "#161b22", color: swingEnabled ? "#F97316" : "#6e7681", whiteSpace: "nowrap", fontFamily: "inherit", transition: "all 0.2s" }}
+              >
+                {swingEnabled ? "⚔️ SWING" : "⚔️"}
+              </button>
             </div>
           </div>
 
@@ -7186,6 +7539,16 @@ export default function TradingRobot() {
                   border: `1px solid ${soundEnabled ? "rgba(88,166,255,0.3)" : "#30363d"}` }}
               >
                 {soundEnabled ? "🔊" : "🔇"}
+              </button>
+              <button
+                onClick={() => { const next = !swingEnabled; setSwingEnabled(next); swingEnabledRef.current = next; localStorage.setItem("swing_mode_enabled", String(next)); }}
+                style={{ padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600, transition: "all 0.2s", alignSelf: "flex-start",
+                  background: swingEnabled ? "rgba(249,115,22,0.12)" : "#161b22",
+                  color: swingEnabled ? "#F97316" : "#8b949e",
+                  border: `1px solid ${swingEnabled ? "#F97316" : "#30363d"}` }}
+                title="Kill Shot — Swing Trading Mode"
+              >
+                {swingEnabled ? "⚔️ SWING ON" : "⚔️ Swing"}
               </button>
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
                 <button
@@ -7338,6 +7701,12 @@ export default function TradingRobot() {
             </>
           )}
           <div>
+            {swingEnabled && (
+              <SwingPanel signals={swingSignals} scanning={swingScanning} onExecute={executeKillShot} openTrades={openTrades} isMobile={isMobile} />
+            )}
+            {swingEnabled && swingTrades.length > 0 && (
+              <SwingJournalPanel swingTrades={swingTrades} openTrades={openTrades} livePrices={livePrices} displayNav={displayNav} isMobile={isMobile} />
+            )}
             <OpenPositionsPanel openTrades={openTrades} livePrices={livePrices} onClose={closeTrade} isMobile={isMobile} mgmtRef={tradeMgmtRef} nav={displayNav} />
             <ClosedTradesPanel trades={closedTrades} isMobile={isMobile} />
             <PaperTradesPanel trades={paperTrades} isMobile={isMobile} />
