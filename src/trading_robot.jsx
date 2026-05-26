@@ -5764,7 +5764,7 @@ function useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, 
 
         // ── Regime-aware override — fires before fallback ──
         if (stableRegime === "RANGING") {
-          const rangeMap = { PRIME: "Mean Revert", LONDON: "Mean Revert", NY: "Range Scalp" };
+          const rangeMap = { PRIME: "Mean Revert", LONDON: "Mean Revert" };
           const override = rangeMap[sess];
           if (override && override !== recommended) {
             recommended = override;
