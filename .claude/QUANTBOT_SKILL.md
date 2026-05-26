@@ -28,7 +28,7 @@ These functions/sections are battle-tested and must never be modified:
 ```
 XAVIER_RULES = {
   TOKYO:  { strategy: "Mean Revert",  pairs: ["USD/JPY","AUD/USD"],                      minScore: 70 },
-  SYDNEY: { strategy: "Mean Revert",  pairs: ["AUD/USD","NZD/USD"],                      minScore: 70 },
+  SYDNEY: { strategy: "Breakout",     pairs: ["AUD/USD","NZD/USD"],                      minScore: 70 },
   LONDON: { strategy: "Trend Follow", pairs: ["EUR/USD","GBP/USD","XAU/USD"],             minScore: 70 },
   PRIME:  { strategy: "Trend Follow", pairs: ["EUR/USD","GBP/USD","USD/JPY","XAU/USD"],   minScore: 70 },
   NY:     { strategy: "Momentum",     pairs: ["EUR/USD","USD/CAD","USD/JPY"],             minScore: 70 },

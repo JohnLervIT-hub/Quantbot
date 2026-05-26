@@ -179,13 +179,14 @@ function getCurrentSession() {
 }
 
 function getNextSessionInfo() {
+  // UTC open hours for each tradeable session (AVOID has no strategy — skip it)
+  // SYDNEY 22-04, TOKYO 04-08, LONDON 08-13, PRIME 13-17, NY 17-20, AVOID 20-22
   const BOUNDARIES = [
-    { h: 0,  session: "TOKYO",  strategy: "Mean Revert"  },
-    { h: 4,  session: "SYDNEY", strategy: "Mean Revert"  },
+    { h: 4,  session: "TOKYO",  strategy: "Mean Revert"  },
     { h: 8,  session: "LONDON", strategy: "Trend Follow" },
     { h: 13, session: "PRIME",  strategy: "Trend Follow" },
     { h: 17, session: "NY",     strategy: "Momentum"     },
-    { h: 20, session: "TOKYO",  strategy: "Mean Revert"  },
+    { h: 22, session: "SYDNEY", strategy: "Breakout"     },
   ];
   const now = new Date();
   const nowMins = now.getUTCHours() * 60 + now.getUTCMinutes();
@@ -6066,7 +6067,7 @@ function useAutonomousBacktest() {
 function useXavierStrategy(session) {
   const XAVIER_RULES = {
     TOKYO:  "Mean Revert",
-    SYDNEY: "Mean Revert",
+    SYDNEY: "Breakout",
     LONDON: "Trend Follow",
     PRIME:  "Trend Follow",
     NY:     "Momentum",
