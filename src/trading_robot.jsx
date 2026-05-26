@@ -5958,7 +5958,11 @@ function useTradeReinforcement(closedTrades) {
   });
 
   useEffect(() => {
-    if (!closedTrades || closedTrades.length === 0) return;
+    if (!closedTrades || closedTrades.length < 30) {
+      localStorage.removeItem("reinforcement_thresholds");
+      setReinforcement({});
+      return;
+    }
     const recent = closedTrades.slice(-50);
 
     // Per-pair win rates over last 10 trades per pair
