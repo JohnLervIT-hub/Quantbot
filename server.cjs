@@ -19,10 +19,10 @@ const ACCOUNT = process.env.OANDA_ACCOUNT_ID;
 const H       = { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
 
 // Accept both Railway-style (no prefix) and local dev VITE_ prefix
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY  || ANTHROPIC_KEY;
-const OPENAI_KEY    = process.env.OPENAI_API_KEY     || OPENAI_KEY;
-const DEEPSEEK_KEY  = process.env.DEEPSEEK_API_KEY   || DEEPSEEK_KEY;
-const GEMINI_KEY    = process.env.GEMINI_API_KEY     || GEMINI_KEY;
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY  || process.env.VITE_ANTHROPIC_KEY;
+const OPENAI_KEY    = process.env.OPENAI_API_KEY     || process.env.VITE_OPENAI_API_KEY;
+const DEEPSEEK_KEY  = process.env.DEEPSEEK_API_KEY   || process.env.VITE_DEEPSEEK_API_KEY;
+const GEMINI_KEY    = process.env.GEMINI_API_KEY     || process.env.VITE_GEMINI_API_KEY;
 // Normalise auto-mode so the runtime toggle (which writes AUTO_MODE_ENABLED) always wins
 if (!process.env.AUTO_MODE_ENABLED && process.env.VITE_AUTO_MODE) {
   process.env.AUTO_MODE_ENABLED = process.env.VITE_AUTO_MODE;
