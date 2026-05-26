@@ -2888,7 +2888,7 @@ function RiskGauge({ heat = 0 }) {
       {/* Center: large value */}
       <text x={cx - 4} y={cy - 36} textAnchor="middle" dominantBaseline="middle"
         fontSize="46" fontWeight="900" fill={heatColor} fontFamily={FONT_MONO}
-        style={{ transition: "fill 0.4s ease" }}>{clamped.toFixed(1)}</text>
+        style={{ transition: "fill 0.4s ease" }}>{safeHeat.toFixed(1)}</text>
       {/* Superscript "R" */}
       <text x={cx + 34} y={cy - 54} textAnchor="middle" dominantBaseline="middle"
         fontSize="16" fontWeight="700" fill={heatColor} fontFamily={FONT_MONO}
