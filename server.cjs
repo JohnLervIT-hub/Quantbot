@@ -18,6 +18,16 @@ const TOKEN   = process.env.OANDA_TOKEN;
 const ACCOUNT = process.env.OANDA_ACCOUNT_ID;
 const H       = { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
 
+// Accept both Railway-style (no prefix) and local dev VITE_ prefix
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY  || ANTHROPIC_KEY;
+const OPENAI_KEY    = process.env.OPENAI_API_KEY     || OPENAI_KEY;
+const DEEPSEEK_KEY  = process.env.DEEPSEEK_API_KEY   || DEEPSEEK_KEY;
+const GEMINI_KEY    = process.env.GEMINI_API_KEY     || GEMINI_KEY;
+// Normalise auto-mode so the runtime toggle (which writes AUTO_MODE_ENABLED) always wins
+if (!process.env.AUTO_MODE_ENABLED && process.env.VITE_AUTO_MODE) {
+  process.env.AUTO_MODE_ENABLED = process.env.VITE_AUTO_MODE;
+}
+
 // ─── OANDA PROXY ENDPOINTS ────────────────────────────────────────────────────
 const VALID_INSTRUMENTS = new Set([
   'EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD',
@@ -161,22 +171,22 @@ app.get('/health', (_req, res) => {
     ok: true,
     autoMode: process.env.AUTO_MODE_ENABLED === 'true',
     models: {
-      claude:   Boolean(process.env.VITE_ANTHROPIC_KEY),
-      openai:   Boolean(process.env.VITE_OPENAI_API_KEY),
-      deepseek: Boolean(process.env.VITE_DEEPSEEK_API_KEY),
-      gemini:   Boolean(process.env.VITE_GEMINI_API_KEY),
+      claude:   Boolean(ANTHROPIC_KEY),
+      openai:   Boolean(OPENAI_KEY),
+      deepseek: Boolean(DEEPSEEK_KEY),
+      gemini:   Boolean(GEMINI_KEY),
     },
   });
 });
 
 app.post('/ai', async (req, res) => {
   const { prompt, systemPrompt, maxTokens } = req.body;
-  if (!process.env.VITE_ANTHROPIC_KEY)
+  if (!ANTHROPIC_KEY)
     return res.status(503).json({ error: { message: 'Missing VITE_ANTHROPIC_KEY in .env' } });
   try {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.VITE_ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: maxTokens || 400,
@@ -333,10 +343,10 @@ function parseVerdict(text) {
 function apiErr(d, fallback) { return d?.error?.message || d?.error?.type || fallback; }
 
 async function askClaude(prompt, sys) {
-  if (!process.env.VITE_ANTHROPIC_KEY) throw new Error('Missing VITE_ANTHROPIC_KEY');
+  if (!ANTHROPIC_KEY) throw new Error('Missing VITE_ANTHROPIC_KEY');
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.VITE_ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+    headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 120, system: sys || SYS_CLAUDE, messages: [{ role: 'user', content: prompt }] }),
   });
   const d = await r.json();
@@ -347,10 +357,10 @@ async function askClaude(prompt, sys) {
 }
 
 async function askGPT(prompt, sys) {
-  if (!process.env.VITE_OPENAI_API_KEY) throw new Error('Missing VITE_OPENAI_API_KEY');
+  if (!OPENAI_KEY) throw new Error('Missing VITE_OPENAI_API_KEY');
   const r = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.VITE_OPENAI_API_KEY}` },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_KEY}` },
     body: JSON.stringify({ model: 'gpt-4o', max_tokens: 120, messages: [{ role: 'system', content: sys || SYS_GPT }, { role: 'user', content: prompt }] }),
   });
   const d = await r.json();
@@ -361,10 +371,10 @@ async function askGPT(prompt, sys) {
 }
 
 async function askDeepSeek(prompt, sys) {
-  if (!process.env.VITE_DEEPSEEK_API_KEY) throw new Error('Missing VITE_DEEPSEEK_API_KEY');
+  if (!DEEPSEEK_KEY) throw new Error('Missing VITE_DEEPSEEK_API_KEY');
   const r = await fetch('https://api.deepseek.com/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.VITE_DEEPSEEK_API_KEY}` },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_KEY}` },
     body: JSON.stringify({ model: 'deepseek-chat', max_tokens: 120, messages: [{ role: 'system', content: sys || SYS_DEEP }, { role: 'user', content: prompt }] }),
   });
   const d = await r.json();
@@ -375,9 +385,9 @@ async function askDeepSeek(prompt, sys) {
 }
 
 async function askGemini(prompt, sys) {
-  if (!process.env.VITE_GEMINI_API_KEY) throw new Error('Missing VITE_GEMINI_API_KEY');
+  if (!GEMINI_KEY) throw new Error('Missing VITE_GEMINI_API_KEY');
   const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.VITE_GEMINI_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -479,13 +489,13 @@ const CAT_NAMES = {
 };
 
 async function getGeminiCommentary(category, headlines) {
-  if (!process.env.VITE_GEMINI_API_KEY) return null;
+  if (!GEMINI_KEY) return null;
   const list = headlines.slice(0, 10).map(h => `- ${h.title}`).join('\n');
   const catName = CAT_NAMES[category] || category;
   const prompt = `You are a concise forex market analyst. Based on these recent ${catName} headlines, write exactly 2 sentences: (1) the dominant market theme right now, (2) the key directional bias traders should watch. Max 50 words total. Be specific — name pairs, assets, or data.\n\nHeadlines:\n${list}`;
   try {
     const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.VITE_GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -773,7 +783,7 @@ async function runAutonomousCheck() {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`OANDA bridge live on port ${PORT}`);
-  console.log(`  AI: Claude ${process.env.VITE_ANTHROPIC_KEY ? '✓' : '✗'} | OpenAI ${process.env.VITE_OPENAI_API_KEY ? '✓' : '✗'} | DeepSeek ${process.env.VITE_DEEPSEEK_API_KEY ? '✓' : '✗'} | Gemini ${process.env.VITE_GEMINI_API_KEY ? '✓' : '✗'}`);
+  console.log(`  AI: Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | OpenAI ${OPENAI_KEY ? '✓' : '✗'} | DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | Gemini ${GEMINI_KEY ? '✓' : '✗'}`);
   console.log(`  Auto mode: ${process.env.AUTO_MODE_ENABLED === 'true' ? 'ENABLED ⚡' : 'disabled (set AUTO_MODE_ENABLED=true to activate)'}`);
 });
 
