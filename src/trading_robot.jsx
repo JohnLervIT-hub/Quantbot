@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { motion, AnimatePresence, animate } from "framer-motion";
+import XavierOnboarding from "./XavierOnboarding";
 import { createChart, CandlestickSeries, LineSeries } from "lightweight-charts";
 import {
   Chart,
@@ -3749,7 +3750,7 @@ function NewsTab({ isMobile }) {
 }
 
 // ─── OPEN POSITIONS PANEL ─────────────────────────────────────────────────────
-function AutoModeSettingsModal({ settings, onSave, onCancel }) {
+function AutoModeSettingsModal({ settings, onSave, onCancel, onResetOnboarding }) {
   const [s, setS] = useState(settings);
   const set = (k, v) => setS(prev => ({ ...prev, [k]: v }));
 
@@ -3884,6 +3885,15 @@ function AutoModeSettingsModal({ settings, onSave, onCancel }) {
             ⚡ Enable Auto Trading
           </button>
         </div>
+
+        {/* Reset onboarding — hidden dev option */}
+        {onResetOnboarding && (
+          <div style={{ borderTop: "1px solid #21262d", paddingTop: 10, textAlign: "center" }}>
+            <button onClick={onResetOnboarding} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#484f58", fontFamily: "inherit", padding: "2px 8px" }}>
+              Reset onboarding tour
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -5824,6 +5834,12 @@ export default function TradingRobot() {
     profitTarget: 3,
     stopLoss: 1,
   });
+  const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem("xavier_onboarded"));
+  const completeOnboarding = useCallback(() => {
+    localStorage.setItem("xavier_onboarded", "true");
+    setShowOnboarding(false);
+  }, []);
+
   const [tab, setTab] = useState("markets");
   const [currentHeadline, setCurrentHeadline] = useState(LIVE_HEADLINES[0]);
   const [livePrices, setLivePrices] = useState(BASE_PRICES);
@@ -6374,6 +6390,9 @@ export default function TradingRobot() {
   return (
     <div style={{ fontFamily: "'Inter', sans-serif", padding: `0 0 ${isMobile ? "90px" : "16px"}`, minHeight: "100vh", background: "#0d1117", position: "relative" }}>
       <style>{`.qb-hscroll::-webkit-scrollbar{display:none}.qb-hscroll{-ms-overflow-style:none;scrollbar-width:none}@keyframes marquee{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}`}</style>
+      {showOnboarding && (
+        <XavierOnboarding onComplete={completeOnboarding} enableAutoMode={enableAutoMode} />
+      )}
       <StrategyNotification notification={strategyNotif} onDismiss={clearStrategyNotif} />
       {/* ── Header ── */}
       {isMobile ? (
@@ -6661,6 +6680,7 @@ export default function TradingRobot() {
           settings={autoSettings}
           onSave={(s) => { setAutoSettings(s); setShowAutoSettings(false); enableAutoMode(true); }}
           onCancel={() => setShowAutoSettings(false)}
+          onResetOnboarding={() => { localStorage.removeItem("xavier_onboarded"); setShowOnboarding(true); setShowAutoSettings(false); }}
         />
       )}
 
