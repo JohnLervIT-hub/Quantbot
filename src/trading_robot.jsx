@@ -110,7 +110,7 @@ const PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD",
 const STRATEGIES = ["Trend Follow", "Mean Revert", "Breakout", "Momentum", "Range Scalp"];
 
 const STRATEGY_SESSION_MATRIX = {
-  SYDNEY: { primary: "Range Scalp",  fallback: "Mean Revert"  },
+  SYDNEY: { primary: "Mean Revert",  fallback: "Trend Follow"  },
   TOKYO:  { primary: "Mean Revert",  fallback: "Range Scalp"  },
   LONDON: { primary: "Trend Follow", fallback: "Breakout"     },
   PRIME:  { primary: "Trend Follow", fallback: "Breakout"    },
@@ -503,26 +503,58 @@ function runGatekeepers(history, signal, openTrades, pair, strategy = "") {
   const atr20 = tr.reduce((a, b) => a + b, 0) / tr.length || atr5;
   const atr5Pips = atr5 / pip;
 
-  // 1. Score ≥ 65
-  if (signal.score < 65) {
+  // 0. AVOID session — hard block, no exceptions
+  const sessionNow = getCurrentSession();
+  if (sessionNow === "AVOID") {
+    rejections.push({
+      condition: "Dead zone block",
+      actual: "AVOID session",
+      threshold: "Active session required",
+      reason: "Markets are in the dead zone. No trades — period. Wait for Tokyo open.",
+    });
+    return { passed: false, rejections };
+  }
+
+  // 1. Score ≥ 70
+  if (signal.score < 70) {
     rejections.push({
       condition: "Score threshold",
       actual: `${signal.score}%`,
-      threshold: "65%",
-      reason: `Only ${signal.score}% confidence — I need 65% before I'll touch this.`,
+      threshold: "70%",
+      reason: `Only ${signal.score}% confidence — I need 70% before I'll touch this.`,
+    });
+  }
+
+  // 2a. Position limit — max 2 open trades
+  if ((openTrades || []).length >= 2) {
+    rejections.push({
+      condition: "Position limit",
+      actual: `${openTrades.length} open`,
+      threshold: "Max 2 trades",
+      reason: "Already have 2 open positions — waiting for one to close.",
+    });
+  }
+
+  // 2b. Heat limit — max 4R portfolio heat
+  const currentHeat = (openTrades || []).length * 1.5;
+  if (currentHeat >= 4) {
+    rejections.push({
+      condition: "Heat limit",
+      actual: `${currentHeat.toFixed(1)}R`,
+      threshold: "4R max",
+      reason: `Portfolio heat at ${currentHeat.toFixed(1)}R — I don't add exposure above 4R.`,
     });
   }
 
   // 2. Spread check — compare typical spread vs per-session limit
-  const session     = getCurrentSession();
   const spreadPips  = TYPICAL_SPREAD_PIPS[pairKey] ?? (atr5Pips * 0.12);
-  const spreadLimit = PAIR_SPREAD_LIMITS[pairKey]?.[session] ?? (spreadPips * 2);
+  const spreadLimit = PAIR_SPREAD_LIMITS[pairKey]?.[sessionNow] ?? (spreadPips * 2);
   if (spreadPips > spreadLimit) {
     rejections.push({
       condition: "Spread check",
       actual: `${spreadPips.toFixed(1)}p`,
       threshold: `${spreadLimit.toFixed(1)}p`,
-      reason: `Spread's at ${spreadPips.toFixed(1)}p in ${session} — limit is ${spreadLimit.toFixed(1)}p. I won't trade into that friction.`,
+      reason: `Spread's at ${spreadPips.toFixed(1)}p in ${sessionNow} — limit is ${spreadLimit.toFixed(1)}p. I won't trade into that friction.`,
     });
   }
 
@@ -601,16 +633,15 @@ function runGatekeepers(history, signal, openTrades, pair, strategy = "") {
   }
 
   // 8. Session trade cap
-  const sessionLimit = SESSION_TRADE_LIMITS[session] ?? 4;
+  const sessionLimit = SESSION_TRADE_LIMITS[sessionNow] ?? 4;
   const sessionTrades = (openTrades || []).filter(t => {
     const openTime = new Date(t.openTime).getTime();
     const nowUtc   = Date.now();
-    const hour     = new Date(nowUtc).getUTCHours();
     const SESSION_WINDOWS = {
       PRIME:  [13, 17], LONDON: [8, 13], NY: [17, 20],
       TOKYO:  [4, 8],   SYDNEY: [22, 28], AVOID: [20, 22],
     };
-    const [start, end] = SESSION_WINDOWS[session] || [0, 24];
+    const [start, end] = SESSION_WINDOWS[sessionNow] || [0, 24];
     const tradeHour = new Date(openTime).getUTCHours();
     const tradeHourAdj = tradeHour < (start > 20 ? 4 : 0) ? tradeHour + 24 : tradeHour;
     return tradeHourAdj >= start && tradeHourAdj < end;
@@ -620,7 +651,7 @@ function runGatekeepers(history, signal, openTrades, pair, strategy = "") {
       condition: "Session cap",
       actual: `${sessionTrades} trades`,
       threshold: `${sessionLimit} max`,
-      reason: `${sessionLimit} trades in ${session} is my limit. Done trading this session.`,
+      reason: `${sessionLimit} trades in ${sessionNow} is my limit. Done trading this session.`,
     });
   }
 
@@ -2138,7 +2169,7 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
                   </div>
                   <div style={{ fontSize: 10, color: "#484f58", marginBottom: 5, fontFamily: FONT_MONO }}>{signal.strategy || "Mean Revert"}</div>
                   <div style={{ height: 3, background: "#21262d", borderRadius: 2, overflow: "hidden", marginBottom: 8 }}>
-                    <div style={{ height: "100%", width: `${signal.score}%`, background: signal.score >= 75 ? "#3fb950" : signal.score >= 65 ? "#d29922" : "#f85149", borderRadius: 2 }} />
+                    <div style={{ height: "100%", width: `${signal.score}%`, background: signal.score >= 75 ? "#3fb950" : signal.score >= 70 ? "#d29922" : "#f85149", borderRadius: 2 }} />
                   </div>
                   {signal.reason?.slice(0, 3).map((r, i) => (
                     <div key={i} style={{ fontSize: 10, color: "#8b949e", marginBottom: 2 }}>· {r}</div>
@@ -2167,7 +2198,7 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
                 <div style={{ background: "#0d1117", padding: "12px 14px" }}>
                   <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Execution</div>
                   {[
-                    { label: "Score ≥ 65%", ok: signal.score >= 65 },
+                    { label: "Score ≥ 70%", ok: signal.score >= 70 },
                     { label: "R:R ≥ 2.0",   ok: true },
                     { label: "Session OK",   ok: chartSessionOk },
                     { label: "Spread OK",    ok: chartSpreadOk },
@@ -2878,15 +2909,15 @@ function RiskTab({ trades, openTrades = [], balance, session = "AVOID" }) {
   const heat          = Math.min(positionCount * 1.5, 8);
   const drawdown      = parseFloat((Math.max(0, 100 - balance)).toFixed(2));
   const pnl           = parseFloat((balance - 100).toFixed(4));
-  const heatColor     = heat >= 6 ? "#f85149" : heat >= 4 ? "#d29922" : "#3fb950";
+  const heatColor     = heat >= 4 ? "#f85149" : heat >= 2 ? "#d29922" : "#3fb950";
 
   // ── Derived state ──────────────────────────────────────────────────────────
-  const overallStatus  = heat >= 6 || drawdown >= 3 ? "DANGER" : heat >= 4 || drawdown >= 1.5 ? "CAUTION" : "SAFE";
-  const cbTriggered    = heat >= 6 || drawdown >= 3;
+  const overallStatus  = heat >= 4 || drawdown >= 3 ? "DANGER" : heat >= 2 || drawdown >= 1.5 ? "CAUTION" : "SAFE";
+  const cbTriggered    = heat >= 4 || drawdown >= 3;
   const lossStreak     = (() => { const rev = [...trades].reverse(); const idx = rev.findIndex(t => (t.pnl || 0) > 0); return idx === -1 ? rev.length : idx; })();
-  const cbReason       = heat >= 6 ? `Heat reached ${heat.toFixed(1)}R` : drawdown >= 3 ? `Daily drawdown ${drawdown.toFixed(2)}% exceeded 3%` : lossStreak >= 3 ? `${lossStreak} consecutive losses` : null;
-  const budgetPct      = Math.min(heat / 6 * 100, 100);
-  const budgetColor    = heat >= 6 ? "#f85149" : heat >= 4 ? "#d29922" : "#3fb950";
+  const cbReason       = heat >= 4 ? `Heat reached ${heat.toFixed(1)}R` : drawdown >= 3 ? `Daily drawdown ${drawdown.toFixed(2)}% exceeded 3%` : lossStreak >= 3 ? `${lossStreak} consecutive losses` : null;
+  const budgetPct      = Math.min(heat / 4 * 100, 100);
+  const budgetColor    = heat >= 4 ? "#f85149" : heat >= 2 ? "#d29922" : "#3fb950";
   const pnlSign        = pnl >= 0 ? "+" : "";
   const pnlColor       = pnl >= 0 ? "#3fb950" : "#f85149";
 
@@ -2924,9 +2955,9 @@ function RiskTab({ trades, openTrades = [], balance, session = "AVOID" }) {
       tip: "Stop losses are sized automatically using ATR (Average True Range) — a measure of how much a pair normally moves. Volatile pairs get wider stops, calm pairs tighter. Your dollar risk stays constant." },
     { rule: "R:R minimum",   current: "≥ 2.0:1",       status: "Safe",
       tip: "Every trade must offer at least 2× the reward vs. the risk. If risking 1.5%, the target must be 3%. This means Xavier can lose more than half his trades and still make money long-term." },
-    { rule: "Max open heat", current: `${heat.toFixed(1)}R / 6R`,
-      status: heat < 4 ? "Safe" : heat < 6 ? "Monitor" : "Standby",
-      tip: "Heat = combined risk of all open positions. At 1.5R per trade, 4 open trades = 6R heat. Xavier blocks new trades at 6R — protecting against all positions hitting their stop loss simultaneously." },
+    { rule: "Max open heat", current: `${heat.toFixed(1)}R / 4R`,
+      status: heat < 2 ? "Safe" : heat < 4 ? "Monitor" : "Standby",
+      tip: "Heat = combined risk of all open positions. At 1.5R per trade, max 2 open trades = 3R heat. Xavier blocks new trades at 4R — hard limit." },
     { rule: "Circuit breaker", current: `${drawdown.toFixed(2)}% / 3%`,
       status: drawdown < 1 ? "Safe" : drawdown < 2 ? "Monitor" : "Standby",
       tip: "If the account falls 3% in a single day, Xavier halts all new trades. This prevents a bad day from compounding into a catastrophic loss. Existing positions can still be managed normally." },
@@ -3006,7 +3037,7 @@ function RiskTab({ trades, openTrades = [], balance, session = "AVOID" }) {
                   boxShadow: heat >= 4 ? `0 0 7px ${heatColor}88` : "none", transition: "all 0.4s ease" }} />
                 <span style={{ fontSize: 9, fontWeight: 700, color: heatColor, letterSpacing: "0.08em",
                   transition: "color 0.4s ease" }}>
-                  {heat >= 6 ? "CIRCUIT BREAKER" : heat >= 4 ? "CAUTION" : "ALL CLEAR"}
+                  {heat >= 4 ? "CIRCUIT BREAKER" : heat >= 2 ? "CAUTION" : "ALL CLEAR"}
                 </span>
               </div>
             </div>
@@ -5724,9 +5755,9 @@ function useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, 
 
     // ── Risk gate ──
     let recommended, reason, notifType;
-    if (heat >= 5) {
+    if (heat >= 4) {
       recommended = "Mean Revert";
-      reason      = `Heat at ${heat.toFixed(1)}R — Mean Revert minimizes new exposure`;
+      reason      = `Heat at ${heat.toFixed(1)}R — at limit, Mean Revert minimizes new exposure`;
       notifType   = "risk";
     } else {
       // ── Signal activity tracking (proxy: new open trade = signal fired) ──

@@ -12,7 +12,7 @@
 ### PROTECTED CODE — NEVER TOUCH
 These functions/sections are battle-tested and must never be modified:
 - `generateSignal()` — signal scoring engine
-- `runGatekeepers()` — trade gate logic
+- `runGatekeepers()` — trade gate logic (rulebook thresholds may be updated per user explicit override only)
 - `handleAnalyze()` — signal → execution flow
 - `useStableSignal()` — signal stability hook
 - `isOptimalTradingWindow()` — session logic
@@ -22,11 +22,37 @@ These functions/sections are battle-tested and must never be modified:
 - Mean Revert scoring block (dev thresholds: 0.001, 0.002, 0.004)
 - All useEffect blocks containing trade execution or OANDA API calls
 
-## CHANGE
+## XAVIER'S STRICT RULEBOOK (active — do not soften or override)
+
+### Rule 1 — Session/Strategy Map
+```
+XAVIER_RULES = {
+  TOKYO:  { strategy: "Mean Revert",  pairs: ["USD/JPY","AUD/USD"],                      minScore: 70 },
+  SYDNEY: { strategy: "Mean Revert",  pairs: ["AUD/USD","NZD/USD"],                      minScore: 70 },
+  LONDON: { strategy: "Trend Follow", pairs: ["EUR/USD","GBP/USD","XAU/USD"],             minScore: 70 },
+  PRIME:  { strategy: "Trend Follow", pairs: ["EUR/USD","GBP/USD","USD/JPY","XAU/USD"],   minScore: 70 },
+  NY:     { strategy: "Momentum",     pairs: ["EUR/USD","USD/CAD","USD/JPY"],             minScore: 70 },
+  AVOID:  { strategy: null,           pairs: [],                                          minScore: 999 },
+}
+```
+
+### Rule 2 — Signal Threshold: 70%
+- runGatekeepers() blocks any signal with score < 70
+
+### Rule 3 — Max 2 Open Trades
+- runGatekeepers() rejects if openTrades.length >= 2
+
+### Rule 4 — Heat Limit: 4R
+- runGatekeepers() rejects if heat (openTrades.length × 1.5) >= 4R
+
+### Rule 6 — No Dead Zone Trading
+- AVOID session = hard block at top of runGatekeepers(). No exceptions, no fallback.
+
+## RISK CONSTANTS
 - 1.5% risk per trade
 - Units: 1000 LONG, -1000 SHORT
-- Circuit breaker at 6R heat
-- Signal threshold: 65%
+- Circuit breaker at 4R heat (was 6R)
+- Signal threshold: 70% (was 65%)
 - Consensus: 3/4 models required
 
 ### SAFE TO MODIFY

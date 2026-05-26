@@ -18,7 +18,7 @@ Always use underscores: EUR_USD not EUR/USD
 ## Risk rules
 - 1.5% risk per trade
 - Units: 1000 LONG, -1000 SHORT
-- Circuit breaker at 6R heat
+- Circuit breaker at 4R heat
 
 ## How to run
 Terminal 1: npm run server
