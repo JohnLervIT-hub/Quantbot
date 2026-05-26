@@ -455,6 +455,17 @@ const PAIR_SPREAD_LIMITS = {
 };
 const USD_PAIRS_SET = new Set(["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD"]);
 
+const CORRELATION_MATRIX = {
+  EUR_USD: { positive: ["GBP_USD", "AUD_USD", "NZD_USD"], negative: ["USD_JPY", "USD_CAD"] },
+  GBP_USD: { positive: ["EUR_USD", "AUD_USD", "NZD_USD"], negative: ["USD_JPY", "USD_CAD"] },
+  USD_JPY: { positive: ["USD_CAD"],                        negative: ["EUR_USD", "GBP_USD", "AUD_USD", "NZD_USD"] },
+  AUD_USD: { positive: ["NZD_USD", "EUR_USD"],             negative: ["USD_JPY", "USD_CAD"] },
+  USD_CAD: { positive: ["USD_JPY"],                        negative: ["AUD_USD", "EUR_USD", "NZD_USD"] },
+  XAU_USD: { positive: [],                                 negative: ["USD_JPY"] },
+  NZD_USD: { positive: ["AUD_USD", "EUR_USD"],             negative: ["USD_CAD", "USD_JPY"] },
+  EUR_GBP: { positive: ["EUR_USD"],                        negative: [] },
+};
+
 function calcRegime(history) {
   if (history.length < 50) return { regime: "RANGING", ema9: 0, ema21: 0, ema50: 0, atr5: 0, atr20: 0 };
   const ema9  = history.slice(-9).reduce((a, b) => a + b, 0) / 9;
@@ -603,6 +614,44 @@ function runGatekeepers(history, signal, openTrades, pair, strategy = "") {
       threshold: `${sessionLimit} max`,
       reason: `${sessionLimit} trades in ${session} is my limit. Done trading this session.`,
     });
+  }
+
+  // 9. Correlation matrix enforcement
+  const corrMatrix = CORRELATION_MATRIX[pairKey];
+  if (corrMatrix) {
+    const proposedIsLong = signal.direction === "LONG";
+    let positiveCount = 0;
+    let corrBlockReason = null;
+
+    for (const openTrade of (openTrades || [])) {
+      const openInstr = openTrade.instrument; // already underscore format e.g. EUR_USD
+      const openUnits = parseInt(openTrade.currentUnits || 0);
+      if (openUnits === 0) continue;
+      const openIsLong = openUnits > 0;
+
+      if (corrMatrix.positive.includes(openInstr)) {
+        if (openIsLong === proposedIsLong) positiveCount++;
+      } else if (corrMatrix.negative.includes(openInstr)) {
+        // Negative correlation: if directions are opposite (price-wise), it doubles the same underlying bet
+        if (openIsLong !== proposedIsLong) {
+          const dir = openIsLong ? "long" : "short";
+          const fmt = openInstr.replace("_", "/");
+          corrBlockReason = `Correlated exposure — already ${dir} ${fmt} creates same risk as ${signal.direction.toLowerCase()} ${pair}. Doubling the bet.`;
+          break;
+        }
+      }
+    }
+
+    if (corrBlockReason) {
+      rejections.push({ condition: "Correlation matrix", actual: "Doubled exposure", threshold: "No overlap", reason: corrBlockReason });
+    } else if (positiveCount >= 2) {
+      rejections.push({
+        condition: "Correlation matrix",
+        actual: `${positiveCount} correlated positions`,
+        threshold: "Max 2",
+        reason: `Already ${positiveCount} correlated positions open the same direction — won't add a third.`,
+      });
+    }
   }
 
   return { passed: rejections.length === 0, rejections };
