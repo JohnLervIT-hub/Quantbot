@@ -4433,31 +4433,44 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
   const mdtS = mdt.getUTCSeconds();
   const mdtDecimal = mdtH + mdtM / 60 + mdtS / 3600;
 
-  // Session blocks in MDT hours for the 24-hour timeline
+  // Session blocks for 24-hour timeline (Calgary = UTC-6).
+  // Tokyo crosses midnight so it's split into two segments for the bar.
   const MDT_SESSIONS = [
-    { name: "London", color: "#8B5CF6", start: 1,  end: 10 },
-    { name: "Prime",  color: "#3fb950", start: 7,  end: 11 },
-    { name: "NY",     color: "#1D9E75", start: 7,  end: 16 },
-    { name: "Tokyo",  color: "#F97316", start: 14, end: 22 },
-    { name: "Sydney", color: "#0EA5E9", start: 16, end: 24 },
+    { name: "Sydney",  color: "#0EA5E9", start: 16, end: 22 },
+    { name: "Tokyo",   color: "#F97316", start: 22, end: 24 },  // 10pm–midnight
+    { name: "Tokyo",   color: "#F97316", start: 0,  end: 2  },  // midnight–2am
+    { name: "London",  color: "#8B5CF6", start: 2,  end: 7  },
+    { name: "Prime",   color: "#3fb950", start: 7,  end: 11 },
+    { name: "NY",      color: "#1D9E75", start: 11, end: 14 },
+    { name: "Avoid",   color: "#484f58", start: 14, end: 16 },
+  ];
+  // Unique session list for legend and active-session detection (no duplicate Tokyo)
+  const LEGEND_SESSIONS = [
+    { name: "Sydney",  color: "#0EA5E9" },
+    { name: "Tokyo",   color: "#F97316" },
+    { name: "London",  color: "#8B5CF6" },
+    { name: "Prime",   color: "#3fb950" },
+    { name: "NY",      color: "#1D9E75" },
+    { name: "Avoid",   color: "#484f58" },
   ];
 
   const getCurSession = (h) => {
-    if (h >= 7  && h < 11) return { name: "Prime Window", color: "#3fb950" };
-    if (h >= 1  && h < 7)  return { name: "London Open",  color: "#8B5CF6" };
-    if (h >= 11 && h < 16) return { name: "New York",     color: "#1D9E75" };
-    if (h >= 16 && h < 22) return { name: "Tokyo/Sydney", color: "#F97316" };
-    return { name: "Off-Hours", color: "#484f58" };
+    if (h >= 16 && h < 22) return { name: "Sydney",  color: "#0EA5E9" };
+    if (h >= 22 || h < 2)  return { name: "Tokyo",   color: "#F97316" };
+    if (h >= 2  && h < 7)  return { name: "London",  color: "#8B5CF6" };
+    if (h >= 7  && h < 11) return { name: "Prime",   color: "#3fb950" };
+    if (h >= 11 && h < 14) return { name: "NY",       color: "#1D9E75" };
+    return { name: "Avoid", color: "#484f58" };  // 2pm–4pm Calgary
   };
   const curSession = getCurSession(mdtH);
 
-  // Upcoming sessions — next 3 opens
+  // Upcoming tradeable session opens (Avoid excluded — not a trade window)
   const SESSION_OPENS = [
-    { name: "London", startH: 1,  color: "#8B5CF6" },
-    { name: "Prime",  startH: 7,  color: "#3fb950" },
-    { name: "NY",     startH: 11, color: "#1D9E75" },
-    { name: "Tokyo",  startH: 14, color: "#F97316" },
-    { name: "Sydney", startH: 16, color: "#0EA5E9" },
+    { name: "Sydney",  startH: 16, color: "#0EA5E9" },
+    { name: "Tokyo",   startH: 22, color: "#F97316" },
+    { name: "London",  startH: 2,  color: "#8B5CF6" },
+    { name: "Prime",   startH: 7,  color: "#3fb950" },
+    { name: "NY",      startH: 11, color: "#1D9E75" },
   ];
 
   const nextSessions = (() => {
@@ -4482,19 +4495,21 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
   };
 
   const XAVIER_SCHEDULE = [
-    { window: "2am – 7am",  label: "London Open",   color: "#8B5CF6", startH: 1,  endH: 7,  pairs: ["EUR/USD", "GBP/USD", "XAU/USD"], note: "London's just opened — I wait 15-20 minutes before touching anything and let it find direction first. Breakout and trend follow setups on EUR/USD, GBP/USD, gold. ECB or BOE headlines can spike these fast, so stops stay tight. Spreads are wide in the first few minutes, don't get filled ugly." },
-    { window: "7am – 11am", label: "Prime Window",   color: "#3fb950", startH: 7,  endH: 11, pairs: ["All pairs"], note: "This is the window I've been waiting for. London and New York are running at the same time, volume's there, signals are clean. Full allocation, all four models running. If I'm going to make money this week, it happens here — I don't miss this window." },
-    { window: "11am – 2pm", label: "New York",       color: "#1D9E75", startH: 11, endH: 14, pairs: ["EUR/USD", "USD/CAD", "USD/JPY"], note: "US macro at 8:30 ET can move EUR/USD 50 pips before you blink — I'm flat 30 minutes before any data release. After the number drops, momentum continuation on EUR/USD and USD/CAD is where I focus. Ride what London started." },
-    { window: "2pm – 10pm", label: "Tokyo/Sydney",   color: "#F97316", startH: 14, endH: 22, pairs: ["AUD/USD", "NZD/USD", "USD/JPY"], note: "Slow and range-bound. I drop to half size and stick to Mean Revert only. AUD and JPY can spike on RBA or BOJ headlines, so keep an eye on the news feed. EUR/USD spreads go wide during Tokyo — I don't bother." },
-    { window: "10pm – 2am", label: "Dead Hours",     color: "#484f58", startH: 22, endH: 25, pairs: [], note: "Nothing worth trading here. I use this time to go through the journal, check what worked today, and plan tomorrow's setups. The market will still be there in the morning." },
+    { window: "4pm – 10pm",  label: "Sydney",  color: "#0EA5E9", startH: 16, endH: 22, pairs: ["AUD/USD", "XAU/USD"],            note: "Sydney's open. Low-volatility breakout session — wait for a clean break of the Asian range. AUD/USD and gold carry the best directional edge here. No NZD/USD, no EUR/USD — spreads are ugly and volume thin on those. Strategy: Breakout. Expectancy +0.97R." },
+    { window: "10pm – 2am",  label: "Tokyo",   color: "#F97316", startH: 22, endH: 2,  pairs: ["USD/JPY", "AUD/USD"],            note: "Tokyo's running. Range-bound, low volume — Mean Revert only, half size. JPY pairs have the most structure here. BOJ can surprise you without warning, so stops stay tighter than normal. AUD/USD also carries when RBA isn't in play." },
+    { window: "2am – 7am",   label: "London",  color: "#8B5CF6", startH: 2,  endH: 7,  pairs: ["EUR/USD", "GBP/USD", "XAU/USD"], note: "London's just opened. Wait 15–20 minutes before touching anything — let it find direction first. Trend follow and breakout setups on EUR/USD, GBP/USD, gold. ECB or BOE headlines can spike these fast, so stops stay tight. Spreads are wide right at the open." },
+    { window: "7am – 11am",  label: "Prime",   color: "#3fb950", startH: 7,  endH: 11, pairs: ["All pairs"],                     note: "This is the window I've been waiting for. London and New York overlap — volume's there, signals are clean, spreads tight. Full allocation, all models running. If I'm going to make money this week, it happens here. Don't miss this window." },
+    { window: "11am – 2pm",  label: "NY",      color: "#1D9E75", startH: 11, endH: 14, pairs: ["EUR/USD", "USD/CAD", "USD/JPY"],  note: "US macro at 8:30 ET can move EUR/USD 50 pips before you blink — I'm flat 30 minutes before any data release. After the number drops, momentum continuation on EUR/USD and USD/CAD is where I focus. Ride what London started." },
+    { window: "2pm – 4pm",   label: "Avoid",   color: "#484f58", startH: 14, endH: 16, pairs: [],                                note: "Dead zone — nothing worth trading. Volume dries up, spreads widen, signals are noise. I use this time to review the journal and prep for the Sydney open at 4pm." },
   ];
 
   const SESSION_POPUP_DATA = {
-    London: { pairs: ["EUR/USD","GBP/USD","EUR/GBP","XAU/USD"], strategy: "Trend Follow", size: "Full", note: "BOE and ECB headlines drive this session hard. I wait for the first 15 minutes to play out before sizing in. Breakout and trend follow setups on a clean direction candle. Spreads widen right at the open — don't get filled wide." },
-    Prime:  { pairs: ["EUR/USD","GBP/USD","USD/CAD","XAU/USD"], strategy: "All Strategies", size: "Full", note: "Both London and New York running at the same time — spreads are tight, volume is there. All four models running, full allocation. This window is the reason I'm watching at all." },
-    NY:     { pairs: ["EUR/USD","USD/CAD","USD/JPY","GBP/USD"], strategy: "Momentum", size: "Full", note: "US data at 8:30 ET can move EUR/USD 40-50 pips instantly — I'm out 30 minutes before any release. After the number drops, momentum continuation setups are where I focus. I ride what London started." },
-    Tokyo:  { pairs: ["USD/JPY","AUD/USD","NZD/USD"], strategy: "Mean Revert", size: "Half", note: "Range-bound, low volume. Mean Revert only, half size. BOJ can surprise you on USD/JPY and AUD/JPY, so watch the headlines. I keep stops tighter than normal here." },
-    Sydney: { pairs: ["AUD/USD","NZD/USD","USD/JPY"], strategy: "Range Scalp", size: "Half", note: "About as quiet as it gets. Range Scalp setups on AUD/USD and NZD/USD. Watch for RBA or RBNZ announcements — they don't telegraph these well." },
+    London: { pairs: ["EUR/USD","GBP/USD","XAU/USD"], strategy: "Trend Follow", size: "Full", note: "BOE and ECB headlines drive this session hard. I wait for the first 15 minutes to play out before sizing in. Trend follow setups on a clean direction candle. Spreads widen right at the open — don't get filled wide." },
+    Prime:  { pairs: ["EUR/USD","GBP/USD","USD/CAD","XAU/USD","USD/JPY"], strategy: "All Strategies", size: "Full", note: "Both London and New York running at the same time — spreads are tight, volume is there. All four models running, full allocation. This window is the reason I'm watching at all." },
+    NY:     { pairs: ["EUR/USD","USD/CAD","USD/JPY"], strategy: "Momentum", size: "Full", note: "US data at 8:30 ET can move EUR/USD 40-50 pips instantly — I'm out 30 minutes before any release. After the number drops, momentum continuation setups are where I focus. I ride what London started." },
+    Tokyo:  { pairs: ["USD/JPY","AUD/USD"], strategy: "Mean Revert", size: "Half", note: "Range-bound, low volume. Mean Revert only, half size. BOJ can surprise you on USD/JPY, so watch the headlines. I keep stops tighter than normal here." },
+    Sydney: { pairs: ["AUD/USD","XAU/USD"], strategy: "Breakout", size: "Half", note: "Sydney's open. Low-volatility breakout session — wait for a clean break of the Asian range. AUD/USD and gold carry the best directional edge here. No NZD/USD — spreads are ugly and volume thin." },
+    Avoid:  { pairs: [], strategy: "None", size: "None", note: "Dead zone — nothing worth trading. Volume dries up, spreads widen, signals are noise. Use this time to review the journal and prep for the Sydney open at 4pm." },
   };
 
   const PAIR_MATRIX = {
@@ -4529,7 +4544,11 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
     const evM = ((ap === "PM" && hh !== 12 ? hh + 12 : ap === "AM" && hh === 12 ? 0 : hh) * 60) + mm;
     return Math.abs(nowMins - evM) <= 30;
   });
-  const activeSessions = MDT_SESSIONS.filter(s => mdtH >= s.start && mdtH < s.end);
+  const activeSessions = LEGEND_SESSIONS.filter(s => {
+    if (s.name === "Tokyo") return mdtH >= 22 || mdtH < 2;
+    const block = MDT_SESSIONS.find(b => b.name === s.name);
+    return block ? mdtH >= block.start && mdtH < block.end : false;
+  });
   const autoStatus = scheduleMode === "auto"
     ? (isHighSoon ? "PAUSED" : activeSessions.length > 0 ? "ACTIVE" : "WAITING")
     : "MANUAL";
@@ -4620,7 +4639,7 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
         </div>
         {/* Legend */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-          {MDT_SESSIONS.map(s => (
+          {LEGEND_SESSIONS.map(s => (
             <div key={s.name} onClick={() => setSessionPopup(sessionPopup === s.name ? null : s.name)} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", opacity: sessionPopup && sessionPopup !== s.name ? 0.4 : 1, transition: "opacity 0.15s" }}>
               <div style={{ width: 8, height: 8, borderRadius: 2, background: s.color }} />
               <span style={{ fontSize: 10, color: "#8b949e" }}>{s.name}</span>
@@ -4685,7 +4704,7 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
         <div style={{ fontSize: 12, fontWeight: 600, color: "#e6edf3", marginBottom: 2 }}>Xavier's Session Playbook</div>
         <div style={{ fontSize: 10, color: "#484f58", marginBottom: 14 }}>Time-blocked trade recommendations</div>
         {XAVIER_SCHEDULE.map((s, i) => {
-          const isNow = mdtH >= s.startH && mdtH < Math.min(s.endH, 24);
+          const isNow = s.label === "Tokyo" ? (mdtH >= 22 || mdtH < 2) : (mdtH >= s.startH && mdtH < s.endH);
           return (
             <div key={i} style={{ display: "flex", gap: 12, padding: "12px 0", borderBottom: i < XAVIER_SCHEDULE.length - 1 ? "0.5px solid #21262d" : "none" }}>
               <div style={{ width: 3, background: s.color, borderRadius: 2, flexShrink: 0, alignSelf: "stretch", opacity: isNow ? 1 : 0.4 }} />
