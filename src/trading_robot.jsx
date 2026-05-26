@@ -7760,6 +7760,12 @@ export default function TradingRobot() {
 
       <div style={{ display: tab === "markets" ? "block" : "none" }}>
         <div style={isMobile ? {} : { padding: "0 16px" }}>
+          {swingEnabled && (
+            <SwingPanel signals={swingSignals} scanning={swingScanning} onExecute={executeKillShot} openTrades={openTrades} isMobile={isMobile} />
+          )}
+          {swingEnabled && swingTrades.length > 0 && (
+            <SwingJournalPanel swingTrades={swingTrades} openTrades={openTrades} livePrices={livePrices} displayNav={displayNav} isMobile={isMobile} />
+          )}
           {isMobile ? (
             <div style={{ marginBottom: 12 }}>
               {PAIRS.map(pair => (
@@ -7791,12 +7797,6 @@ export default function TradingRobot() {
             </>
           )}
           <div>
-            {swingEnabled && (
-              <SwingPanel signals={swingSignals} scanning={swingScanning} onExecute={executeKillShot} openTrades={openTrades} isMobile={isMobile} />
-            )}
-            {swingEnabled && swingTrades.length > 0 && (
-              <SwingJournalPanel swingTrades={swingTrades} openTrades={openTrades} livePrices={livePrices} displayNav={displayNav} isMobile={isMobile} />
-            )}
             <OpenPositionsPanel openTrades={openTrades} livePrices={livePrices} onClose={closeTrade} isMobile={isMobile} mgmtRef={tradeMgmtRef} nav={displayNav} />
             <ClosedTradesPanel trades={closedTrades} isMobile={isMobile} />
             <PaperTradesPanel trades={paperTrades} isMobile={isMobile} />
