@@ -11,8 +11,19 @@ const ACCOUNT = process.env.OANDA_ACCOUNT_ID;
 const H       = { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
 
 // ─── OANDA PROXY ENDPOINTS ────────────────────────────────────────────────────
+const VALID_INSTRUMENTS = new Set([
+  'EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD',
+  'USD_CAD', 'EUR_GBP', 'NZD_USD', 'XAU_USD',
+  'BTC_USD', 'SPX500_USD', 'BCO_USD',
+]);
+
 app.get('/prices', async (req, res) => {
   const instruments = req.query.instruments || 'EUR_USD,GBP_USD,USD_JPY';
+  const requested = instruments.split(',').map(s => s.trim());
+  const invalid = requested.filter(i => !VALID_INSTRUMENTS.has(i));
+  if (invalid.length) {
+    return res.status(400).json({ error: `Invalid instrument(s): ${invalid.join(', ')}. Valid: ${[...VALID_INSTRUMENTS].join(', ')}` });
+  }
   try {
     const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/pricing?instruments=${instruments}`, { headers: H });
     const data = await r.json();

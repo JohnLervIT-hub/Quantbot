@@ -106,7 +106,7 @@ const KNOWLEDGE_BASE = {
 };
 
 const NEWS_SOURCES = ["Bloomberg", "DailyFX", "Benzinga Pro", "Reuters", "CNBC", "MarketBeat"];
-const PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD", "BTC/USD", "SPX500"];
+const PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD", "BTC/USD", "SPX500_USD"];
 const STRATEGIES = ["Trend Follow", "Mean Revert", "Breakout", "Momentum", "Range Scalp"];
 
 const STRATEGY_SESSION_MATRIX = {
@@ -429,17 +429,17 @@ function generateSignal(history, strategy, pair) {
 const PIP_SIZE = {
   "EUR/USD": 0.0001, "GBP/USD": 0.0001, "USD/JPY": 0.01,
   "AUD/USD": 0.0001, "USD/CAD": 0.0001,
-  "XAU/USD": 0.01, "BTC/USD": 1, "SPX500": 0.1,
+  "XAU/USD": 0.01, "BTC/USD": 1, "SPX500_USD": 0.1,
 };
 const TYPICAL_SPREAD_PIPS = {
   EUR_USD: 1.2, GBP_USD: 1.8, USD_JPY: 1.2, AUD_USD: 1.5,
   USD_CAD: 1.8, EUR_GBP: 1.5, NZD_USD: 2.0, XAU_USD: 35.0,
-  BTC_USD: 50.0, SPX500: 0.4,
+  BTC_USD: 50.0, SPX500_USD: 0.4,
 };
 const TYPICAL_SLIPPAGE_PIPS = {
   EUR_USD: 0.3, GBP_USD: 0.4, USD_JPY: 0.3, AUD_USD: 0.4,
   USD_CAD: 0.4, EUR_GBP: 0.4, NZD_USD: 0.5, XAU_USD: 8.0,
-  BTC_USD: 15.0, SPX500: 0.2,
+  BTC_USD: 15.0, SPX500_USD: 0.2,
 };
 const PAIR_SPREAD_LIMITS = {
   EUR_USD: { PRIME: 1.5, LONDON: 2.0, NY: 2.5, TOKYO: 3.5, SYDNEY: 3.5, AVOID: 4.0 },
@@ -451,7 +451,7 @@ const PAIR_SPREAD_LIMITS = {
   NZD_USD: { PRIME: 2.5, LONDON: 3.0, NY: 3.5, TOKYO: 3.0, SYDNEY: 2.5, AVOID: 5.0 },
   XAU_USD: { PRIME: 40.0, LONDON: 45.0, NY: 45.0, TOKYO: 60.0, SYDNEY: 65.0, AVOID: 80.0 },
   BTC_USD: { PRIME: 60.0, LONDON: 70.0, NY: 70.0, TOKYO: 80.0, SYDNEY: 90.0, AVOID: 120.0 },
-  SPX500:  { PRIME: 0.5, LONDON: 0.6, NY: 0.5, TOKYO: 1.0, SYDNEY: 1.2, AVOID: 1.5 },
+  SPX500_USD: { PRIME: 0.5, LONDON: 0.6, NY: 0.5, TOKYO: 1.0, SYDNEY: 1.2, AVOID: 1.5 },
 };
 const USD_PAIRS_SET = new Set(["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD"]);
 
@@ -656,7 +656,6 @@ function BezierSpark({ history, height = 40, fullWidth = false }) {
 
 // ─── OANDA CANDLE CHART (Chart.js area with gradient fill) ───────────────────
 function toOandaSymbol(pair) {
-  if (pair === "SPX500") return "SPX500_USD";
   return pair.replace("/", "_");
 }
 
@@ -5817,7 +5816,7 @@ function StrategyIntelCard({ strategyReason, nextSwitch, isManualOverride, manua
 
 const BASE_PRICES = {
   "EUR/USD": 1.08420, "GBP/USD": 1.26710, "USD/JPY": 149.850, "AUD/USD": 0.65230,
-  "USD/CAD": 1.36540, "XAU/USD": 2312.40, "BTC/USD": 68240.0, "SPX500": 5248.30,
+  "USD/CAD": 1.36540, "XAU/USD": 2312.40, "BTC/USD": 68240.0, "SPX500_USD": 5248.30,
 };
 
 export default function TradingRobot() {
