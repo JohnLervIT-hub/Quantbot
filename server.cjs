@@ -33,6 +33,7 @@ const VALID_INSTRUMENTS = new Set([
   'EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD',
   'USD_CAD', 'EUR_GBP', 'NZD_USD', 'XAU_USD',
   'SPX500_USD', 'XAG_USD', 'BCO_USD', 'WTICO_USD',
+  'NAS100_USD', 'JP225_USD', 'UK100_GBP', 'AU200_AUD',
 ]);
 
 app.get('/prices', async (req, res) => {
