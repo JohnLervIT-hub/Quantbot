@@ -2497,21 +2497,29 @@ function NewsTicker({ onHeadlineChange }) {
       onChangeRef.current(itemsRef.current[idxRef.current].headline);
     }, 8000);
 
-    // Fetch real RSS headlines; refresh every 5 minutes
+    // Fetch all market categories in parallel; interleave results
     const fetchNews = async () => {
       try {
-        const r = await fetch(`${BRIDGE}/news?category=forex`);
-        if (!r.ok) return;
-        const data = await r.json();
-        if (!Array.isArray(data.items) || data.items.length === 0) return;
-        const mapped = data.items.map(item => ({
-          source:   item.source || "Reuters",
-          headline: item.title,
-        }));
-        itemsRef.current = mapped;
+        const cats = ["forex", "indices", "commodities", "macro"];
+        const results = await Promise.allSettled(
+          cats.map(cat => fetch(`${BRIDGE}/news?category=${cat}`).then(r => r.ok ? r.json() : null))
+        );
+        // Round-robin interleave: take up to 8 items per category
+        const buckets = results.map((r, i) =>
+          r.status === "fulfilled" && Array.isArray(r.value?.items)
+            ? r.value.items.slice(0, 8).map(item => ({ source: item.source || cats[i], headline: item.title }))
+            : []
+        );
+        const interleaved = [];
+        const maxLen = Math.max(...buckets.map(b => b.length));
+        for (let i = 0; i < maxLen; i++) {
+          for (const bucket of buckets) { if (bucket[i]) interleaved.push(bucket[i]); }
+        }
+        if (interleaved.length === 0) return;
+        itemsRef.current = interleaved;
         idxRef.current   = 0;
-        setTickerItems(mapped);
-        onChangeRef.current(mapped[0].headline);
+        setTickerItems(interleaved);
+        onChangeRef.current(interleaved[0].headline);
       } catch { /* keep fallback items on network error */ }
     };
 
