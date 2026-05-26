@@ -2427,6 +2427,127 @@ function TradeManagementLog({ alerts, onDismiss, isMobile }) {
   );
 }
 
+// ─── SOUND ENGINE ─────────────────────────────────────────────────────────────
+function playSound(type, enabled) {
+  if (!enabled) return;
+  try {
+    const ctx  = new (window.AudioContext || window.webkitAudioContext)();
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const t = ctx.currentTime;
+    switch (type) {
+      case 'trade_open':
+        osc.frequency.setValueAtTime(440, t);
+        osc.frequency.setValueAtTime(880, t + 0.1);
+        gain.gain.setValueAtTime(0.3, t);
+        gain.gain.exponentialRampToValueAtTime(0.01, t + 0.4);
+        osc.start(t); osc.stop(t + 0.4);
+        break;
+      case 'take_profit':
+        osc.frequency.setValueAtTime(523, t);
+        osc.frequency.setValueAtTime(659, t + 0.1);
+        osc.frequency.setValueAtTime(784, t + 0.2);
+        gain.gain.setValueAtTime(0.3, t);
+        gain.gain.exponentialRampToValueAtTime(0.01, t + 0.5);
+        osc.start(t); osc.stop(t + 0.5);
+        break;
+      case 'stop_loss':
+        osc.frequency.setValueAtTime(440, t);
+        osc.frequency.setValueAtTime(220, t + 0.2);
+        gain.gain.setValueAtTime(0.3, t);
+        gain.gain.exponentialRampToValueAtTime(0.01, t + 0.5);
+        osc.start(t); osc.stop(t + 0.5);
+        break;
+      case 'signal':
+        osc.frequency.setValueAtTime(660, t);
+        gain.gain.setValueAtTime(0.15, t);
+        gain.gain.exponentialRampToValueAtTime(0.01, t + 0.2);
+        osc.start(t); osc.stop(t + 0.2);
+        break;
+      case 'xavier':
+        osc.frequency.setValueAtTime(528, t);
+        gain.gain.setValueAtTime(0.1, t);
+        gain.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
+        osc.start(t); osc.stop(t + 0.3);
+        break;
+      default: break;
+    }
+  } catch { /* AudioContext unavailable in this context */ }
+}
+
+function buildToast(type, data) {
+  const dec = (p) => p?.includes("JPY") ? 3 : (p?.includes("XAU") || p?.includes("SPX") || p?.includes("NAS") || p?.includes("JP2") || p?.includes("UK1") || p?.includes("AU2") || p?.includes("BCO") || p?.includes("WTI")) ? 2 : 5;
+  switch (type) {
+    case 'trade_open': {
+      const fp  = parseFloat(data.fillPrice || 0);
+      const atr = parseFloat(data.atr || 0);
+      const d   = dec(data.pair);
+      const sl  = data.direction === "LONG" ? fp - atr * 1.5 : fp + atr * 1.5;
+      const tp  = data.direction === "LONG" ? fp + atr * 3   : fp - atr * 3;
+      return {
+        borderColor: "#3fb950",
+        title: `${data.direction} ${data.pair} @ ${fp.toFixed(d)}`,
+        body:  `Score: ${data.score}% · 1000 units\nSL: ${sl.toFixed(d)} · TP: ${tp.toFixed(d)}`,
+      };
+    }
+    case 'take_profit': {
+      const d = dec(data.pair);
+      return {
+        borderColor: "#d29922",
+        title: `${data.pair} CLOSED +${data.rMultiple != null ? Math.abs(data.rMultiple).toFixed(1) : "?"}R`,
+        body:  `Entry: ${parseFloat(data.entryPrice || 0).toFixed(d)} → ${parseFloat(data.closePrice || 0).toFixed(d)}\nProfit: +$${parseFloat(data.realizedPL || 0).toFixed(2)}`,
+      };
+    }
+    case 'stop_loss': {
+      const d = dec(data.pair);
+      return {
+        borderColor: "#f85149",
+        title: `${data.pair} CLOSED ${data.rMultiple != null ? data.rMultiple.toFixed(1) : "?"}R`,
+        body:  `Entry: ${parseFloat(data.entryPrice || 0).toFixed(d)} → ${parseFloat(data.closePrice || 0).toFixed(d)}\nLoss: $${parseFloat(data.realizedPL || 0).toFixed(2)}`,
+      };
+    }
+    case 'signal':
+      return {
+        borderColor: "#58a6ff",
+        title: `${data.pair} signal ${data.score}%`,
+        body:  `${data.strategy || ""} ${data.direction || ""} · ${data.session || ""} session`,
+      };
+    case 'xavier':
+      return { borderColor: "#8b5cf6", title: "Xavier", body: data.message || "" };
+    default:
+      return { borderColor: "#484f58", title: "Notification", body: "" };
+  }
+}
+
+function ToastContainer({ toasts, onDismiss }) {
+  return (
+    <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 9999, display: "flex", flexDirection: "column-reverse", gap: 8, maxWidth: 340, pointerEvents: "none" }}>
+      <AnimatePresence>
+        {toasts.map(toast => (
+          <motion.div key={toast.id}
+            initial={{ x: 64, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 64, opacity: 0 }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            style={{ pointerEvents: "auto" }}
+          >
+            <div onClick={() => onDismiss(toast.id)} style={{
+              background: "#161b22", borderRadius: 8, padding: "10px 14px",
+              border: `1px solid ${toast.borderColor}30`, borderLeft: `3px solid ${toast.borderColor}`,
+              cursor: "pointer", boxShadow: "0 6px 24px rgba(0,0,0,0.5)", userSelect: "none",
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#e6edf3", lineHeight: 1.4 }}>{toast.title}</div>
+              {toast.body && (
+                <div style={{ fontSize: 10, color: "#8b949e", marginTop: 4, lineHeight: 1.6, whiteSpace: "pre-line" }}>{toast.body}</div>
+              )}
+            </div>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // ─── NEWS TICKER ──────────────────────────────────────────────────────────────
 const TICKER_ITEMS = [
   { source: "Bloomberg", headline: "BOJ intervenes as USD/JPY tests 158.00" },
@@ -6516,6 +6637,9 @@ export default function TradingRobot() {
 
         if (newEntries.length > 0) {
           setClosedTrades(prev => [...newEntries, ...prev].slice(0, 200));
+          for (const entry of newEntries) {
+            notifyRef.current?.(entry.realizedPL > 0 ? 'take_profit' : 'stop_loss', entry);
+          }
         }
       } catch {}
     };
@@ -6798,6 +6922,12 @@ export default function TradingRobot() {
   });
   const [mgmtAlerts, setMgmtAlerts] = useState([]);
   const [regimeMap, setRegimeMap] = useState({});
+  const [toasts, setToasts] = useState([]);
+  const [soundEnabled, setSoundEnabled] = useState(() => localStorage.getItem("sound_enabled") !== "false");
+  const soundEnabledRef    = useRef(soundEnabled);
+  soundEnabledRef.current  = soundEnabled;
+  const lastSignalSoundRef = useRef({});
+  const notifyRef          = useRef(null);
 
   const onRejection = useCallback((entry) => {
     setRejectionLog(prev => {
@@ -6811,6 +6941,24 @@ export default function TradingRobot() {
   const onRegimeUpdate = useCallback((pair, regime) => {
     setRegimeMap(prev => prev[pair] === regime ? prev : { ...prev, [pair]: regime });
   }, []);
+
+  const addToast = useCallback((type, data) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+    const toast = { id, ...buildToast(type, data) };
+    setToasts(prev => [...prev.slice(-4), toast]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 5000);
+  }, []);
+
+  const notify = useCallback((type, data) => {
+    playSound(type, soundEnabledRef.current);
+    if (navigator.vibrate) {
+      if (type === 'trade_open')  navigator.vibrate([200]);
+      if (type === 'take_profit') navigator.vibrate([100, 50, 100]);
+      if (type === 'stop_loss')   navigator.vibrate([500]);
+    }
+    addToast(type, data);
+  }, [addToast]);
+  notifyRef.current = notify;
 
   const regimeValues = Object.values(regimeMap);
   const globalRegime = regimeValues.length === 0 ? null
@@ -6832,6 +6980,14 @@ export default function TradingRobot() {
   const onSignalUpdate = useCallback((pair, data) => {
     if (data?.signal) {
       signalDataRef.current[pair] = { ...data, timestamp: Date.now() };
+      // Sound + toast for signals ≥ 70%, throttled 5 min per pair
+      if (data.signal.score >= 70) {
+        const lastSnd = lastSignalSoundRef.current[pair] || 0;
+        if (Date.now() - lastSnd > 300_000) {
+          lastSignalSoundRef.current[pair] = Date.now();
+          notifyRef.current?.('signal', { pair, score: data.signal.score, direction: data.signal.direction, strategy: strategyRef.current, session: getCurrentSession() });
+        }
+      }
     } else {
       const existing = signalDataRef.current[pair];
       if (existing && Date.now() - existing.timestamp > 35_000) {
@@ -6867,6 +7023,8 @@ export default function TradingRobot() {
       console.error("[onTrade] bridge unreachable:", err.message);
       return;
     }
+
+    notifyRef.current?.('trade_open', { pair, direction: signal.direction, fillPrice, score: signal.score, atr: aiVerdict?.atr ?? 0 });
 
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -6994,6 +7152,22 @@ export default function TradingRobot() {
                   Open: {openTrades.length}
                 </span>
               )}
+              <button
+                onClick={() => {
+                  const next = !soundEnabled;
+                  setSoundEnabled(next);
+                  soundEnabledRef.current = next;
+                  localStorage.setItem("sound_enabled", String(next));
+                  if (next) playSound('xavier', true);
+                }}
+                title={soundEnabled ? "Sound ON — click to mute" : "Sound OFF — click to enable"}
+                style={{ padding: "8px 11px", borderRadius: 8, cursor: "pointer", fontSize: 14, lineHeight: 1, transition: "all 0.2s", alignSelf: "flex-start",
+                  background: soundEnabled ? "rgba(88,166,255,0.08)" : "#161b22",
+                  color: soundEnabled ? "#58a6ff" : "#484f58",
+                  border: `1px solid ${soundEnabled ? "rgba(88,166,255,0.3)" : "#30363d"}` }}
+              >
+                {soundEnabled ? "🔊" : "🔇"}
+              </button>
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
                 <button
                   onClick={toggleAutoMode}
@@ -7196,6 +7370,9 @@ export default function TradingRobot() {
           onResetOnboarding={() => { localStorage.removeItem("xavier_onboarded"); setShowOnboarding(true); setShowAutoSettings(false); }}
         />
       )}
+
+      {/* ── Toast notifications ── */}
+      <ToastContainer toasts={toasts} onDismiss={id => setToasts(prev => prev.filter(t => t.id !== id))} />
 
       {/* ── Mobile bottom nav ── */}
       {isMobile && (
