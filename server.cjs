@@ -14,7 +14,7 @@ const H       = { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'applicati
 const VALID_INSTRUMENTS = new Set([
   'EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD',
   'USD_CAD', 'EUR_GBP', 'NZD_USD', 'XAU_USD',
-  'BTC_USD', 'SPX500_USD', 'BCO_USD',
+  'SPX500_USD', 'BCO_USD',
 ]);
 
 app.get('/prices', async (req, res) => {
@@ -190,7 +190,7 @@ const lastConsensus = new Map(); // instrument → ms timestamp (5-min cooldown)
 const autoTrades    = [];        // newest-first, capped at 100
 const paperTrades   = [];        // newest-first, capped at 100
 
-const AUTO_PAIRS = 'EUR_USD,GBP_USD,USD_JPY,AUD_USD,USD_CAD,XAU_USD,BTC_USD,SPX500_USD';
+const AUTO_PAIRS = 'EUR_USD,GBP_USD,USD_JPY,AUD_USD,USD_CAD,XAU_USD,SPX500_USD';
 
 // ─── SHARED LLM HELPERS ──────────────────────────────────────────────────────
 const SYS_CLAUDE = 'You are an elite forex risk guardian. Protect capital above all else. Be decisive. Respond ONLY in the format shown.';

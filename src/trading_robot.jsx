@@ -19,7 +19,7 @@ const FONT_MONO = "'JetBrains Mono', monospace";
 const BRIDGE = import.meta.env.VITE_OANDA_BRIDGE || (import.meta.env.DEV ? "/bridge" : "http://localhost:3001");
 
 function priceDecimals(pair) {
-  return pair.includes("BTC") ? 2 : pair.includes("JPY") ? 3 : 5;
+  return pair.includes("JPY") ? 3 : pair.includes("XAU") || pair.includes("SPX") ? 2 : 5;
 }
 
 function oandaToSlash(instrument) {
@@ -106,7 +106,7 @@ const KNOWLEDGE_BASE = {
 };
 
 const NEWS_SOURCES = ["Bloomberg", "DailyFX", "Benzinga Pro", "Reuters", "CNBC", "MarketBeat"];
-const PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD", "BTC/USD", "SPX500_USD"];
+const PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD", "SPX500_USD"];
 const STRATEGIES = ["Trend Follow", "Mean Revert", "Breakout", "Momentum", "Range Scalp"];
 
 const STRATEGY_SESSION_MATRIX = {
@@ -127,7 +127,6 @@ const LIVE_HEADLINES = [
   "EUR/USD breaks key resistance at 1.0890 on ECB hawkish tone",
   "Gold surges on geopolitical risk premium — safe haven demand rises",
   "NFP report beats expectations: +285K jobs added in April",
-  "BTC consolidates above $68K support zone ahead of halving",
   "USD weakness continues as DXY tests 102.30 — dollar bears in control",
   "BOJ intervenes as USD/JPY tests 158.00 — yen defense operation",
   "Oil holds gains amid OPEC+ supply cut extension announcement",
@@ -438,17 +437,17 @@ function generateSignal(history, strategy, pair) {
 const PIP_SIZE = {
   "EUR/USD": 0.0001, "GBP/USD": 0.0001, "USD/JPY": 0.01,
   "AUD/USD": 0.0001, "USD/CAD": 0.0001,
-  "XAU/USD": 0.01, "BTC/USD": 1, "SPX500_USD": 0.1,
+  "XAU/USD": 0.01, "SPX500_USD": 0.1,
 };
 const TYPICAL_SPREAD_PIPS = {
   EUR_USD: 1.2, GBP_USD: 1.8, USD_JPY: 1.2, AUD_USD: 1.5,
   USD_CAD: 1.8, EUR_GBP: 1.5, NZD_USD: 2.0, XAU_USD: 35.0,
-  BTC_USD: 50.0, SPX500_USD: 0.4,
+  SPX500_USD: 0.4,
 };
 const TYPICAL_SLIPPAGE_PIPS = {
   EUR_USD: 0.3, GBP_USD: 0.4, USD_JPY: 0.3, AUD_USD: 0.4,
   USD_CAD: 0.4, EUR_GBP: 0.4, NZD_USD: 0.5, XAU_USD: 8.0,
-  BTC_USD: 15.0, SPX500_USD: 0.2,
+  SPX500_USD: 0.2,
 };
 const PAIR_SPREAD_LIMITS = {
   EUR_USD: { PRIME: 1.5, LONDON: 2.0, NY: 2.5, TOKYO: 3.5, SYDNEY: 3.5, AVOID: 4.0 },
@@ -459,7 +458,6 @@ const PAIR_SPREAD_LIMITS = {
   EUR_GBP: { PRIME: 1.8, LONDON: 2.0, NY: 2.5, TOKYO: 4.0, SYDNEY: 4.0, AVOID: 5.0 },
   NZD_USD: { PRIME: 2.5, LONDON: 3.0, NY: 3.5, TOKYO: 3.0, SYDNEY: 2.5, AVOID: 5.0 },
   XAU_USD: { PRIME: 40.0, LONDON: 45.0, NY: 45.0, TOKYO: 60.0, SYDNEY: 65.0, AVOID: 80.0 },
-  BTC_USD: { PRIME: 60.0, LONDON: 70.0, NY: 70.0, TOKYO: 80.0, SYDNEY: 90.0, AVOID: 120.0 },
   SPX500_USD: { PRIME: 0.5, LONDON: 0.6, NY: 0.5, TOKYO: 1.0, SYDNEY: 1.2, AVOID: 1.5 },
 };
 const USD_PAIRS_SET = new Set(["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD"]);
@@ -2355,7 +2353,6 @@ const TICKER_ITEMS = [
   { source: "DailyFX", headline: "EUR/USD breaks key resistance at 1.0890" },
   { source: "Reuters", headline: "Gold surges on geopolitical risk premium" },
   { source: "CNBC", headline: "NFP beats expectations +285K jobs" },
-  { source: "Benzinga Pro", headline: "BTC consolidates above $68K support" },
   { source: "MarketBeat", headline: "USD weakness continues as DXY tests 102.30" },
 ];
 
@@ -3630,7 +3627,7 @@ function ClosedTradesPanel({ trades, isMobile }) {
         {trades.slice(0, 30).map((t) => {
           const isWin = t.realizedPL > 0;
           const closeDate = t.closeTime ? new Date(t.closeTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
-          const decimals = t.pair?.includes("JPY") ? 3 : t.pair?.includes("BTC") ? 2 : t.pair?.includes("XAU") || t.pair?.includes("SPX") ? 2 : 5;
+          const decimals = t.pair?.includes("JPY") ? 3 : t.pair?.includes("XAU") || t.pair?.includes("SPX") ? 2 : 5;
           return (
             <div
               key={t.oandaId}
@@ -4969,7 +4966,7 @@ function HistoricalBacktest({ isMobile }) {
   const [btError,   setBtError]   = useState(null);
   const cancelRef = useRef(false);
 
-  const decFor = (p) => p.includes("JPY") ? 3 : p.includes("XAU") || p.includes("BTC") ? 2 : 5;
+  const decFor = (p) => p.includes("JPY") ? 3 : p.includes("XAU") || p.includes("SPX") ? 2 : 5;
   const isInSess = (h, s) => { const r = SESSION_UTC[s]; return !r || (h >= r.start && h < r.end); };
 
   const runOneStrategy = async (strat, closes, candles, pair, sess, baseProgress) => {
@@ -5992,7 +5989,7 @@ function StrategyIntelCard({ strategyReason, nextSwitch, isManualOverride, manua
 
 const BASE_PRICES = {
   "EUR/USD": 1.08420, "GBP/USD": 1.26710, "USD/JPY": 149.850, "AUD/USD": 0.65230,
-  "USD/CAD": 1.36540, "XAU/USD": 2312.40, "BTC/USD": 68240.0, "SPX500_USD": 5248.30,
+  "USD/CAD": 1.36540, "XAU/USD": 2312.40, "SPX500_USD": 5248.30,
 };
 
 // ─── TRADE REINFORCEMENT HOOK ─────────────────────────────────────────────────
@@ -6190,7 +6187,7 @@ export default function TradingRobot() {
       const units = parseInt(t.currentUnits || 0);
       const dir = units > 0 ? "LONG" : "SHORT";
       const fillPrice = parseFloat(t.price || 0);
-      const dec = pair.includes("JPY") ? 3 : pair.includes("BTC") ? 2 : pair.includes("XAU") || pair.includes("SPX") ? 2 : 5;
+      const dec = pair.includes("JPY") ? 3 : pair.includes("XAU") || pair.includes("SPX") ? 2 : 5;
       const timeStr = t.openTime
         ? new Date(t.openTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
         : new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -6311,7 +6308,7 @@ export default function TradingRobot() {
         const openMs     = trade.openTime ? new Date(trade.openTime).getTime() : nowMs;
         const hoursSinceOpen = (nowMs - openMs) / 3_600_000;
         const pip        = PIP_SIZE[pair] || 0.0001;
-        const dec        = pair.includes("JPY") ? 3 : pair.includes("BTC") || pair.includes("XAU") || pair.includes("SPX") ? 2 : 5;
+        const dec        = pair.includes("JPY") ? 3 : pair.includes("XAU") || pair.includes("SPX") ? 2 : 5;
 
         if (!tradeMgmtRef.current[tradeId]) {
           tradeMgmtRef.current[tradeId] = { breakevenDone: false, partialDone: false, sessionAlerted: false };
@@ -6423,6 +6420,7 @@ export default function TradingRobot() {
       // 2. Execute qualifying signals
       const settings = autoSettingsRef.current;
       const now = Date.now();
+      console.log('[AUTO] checking signals:', Object.entries(signalDataRef.current).map(([p, s]) => `${p}:${s?.signal?.score ?? 'none'}`));
       if (autoExecTimestamps.filter(t => now - t < 3_600_000).length >= settings.maxTradesPerHour) return;
 
       for (const [pair, data] of Object.entries(signalDataRef.current)) {
@@ -6536,12 +6534,18 @@ export default function TradingRobot() {
     setTimeout(() => setSignalHeaderFlash(false), 1000);
   }, []);
 
-  const [rejectionLog, setRejectionLog] = useState([]);
+  const [rejectionLog, setRejectionLog] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("rejection_log") || "[]"); } catch { return []; }
+  });
   const [mgmtAlerts, setMgmtAlerts] = useState([]);
   const [regimeMap, setRegimeMap] = useState({});
 
   const onRejection = useCallback((entry) => {
-    setRejectionLog(prev => [entry, ...prev].slice(0, 10));
+    setRejectionLog(prev => {
+      const next = [entry, ...prev].slice(0, 50);
+      localStorage.setItem("rejection_log", JSON.stringify(next));
+      return next;
+    });
   }, []);
   onRejectionRef.current = onRejection;
 
@@ -6619,7 +6623,7 @@ export default function TradingRobot() {
     setTrades(prev => [...prev, {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       pair, dir: signal.direction,
-      price: fillPrice.toFixed(pair.includes("BTC") ? 2 : pair.includes("JPY") ? 3 : 5),
+      price: fillPrice.toFixed(pair.includes("JPY") ? 3 : pair.includes("XAU") || pair.includes("SPX") ? 2 : 5),
       strategy, time: timeStr, score: signal.score,
       aiReason: aiVerdict?.REASON || null,
       pnl: parseFloat((balanceChange * 100).toFixed(4)),
