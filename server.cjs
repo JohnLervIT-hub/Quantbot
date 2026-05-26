@@ -103,6 +103,15 @@ app.post('/order', async (req, res) => {
     console.log('[ORDER] stopLossOnFill SKIPPED — atr=' + atrVal + ' or price=' + entryPrice + ' is zero/missing');
   }
 
+  // Level 1 TP: 2R target (ATR × 1.5 stop × 2 = ATR × 3 reward)
+  const tpPrice = atrVal > 0 && entryPrice > 0
+    ? (direction === 'LONG' ? entryPrice + atrVal * 3 : entryPrice - atrVal * 3)
+    : null;
+  if (tpPrice) {
+    order.takeProfitOnFill = { price: tpPrice.toFixed(5), timeInForce: 'GTC' };
+    console.log('[ORDER] takeProfitOnFill (2R):', JSON.stringify(order.takeProfitOnFill));
+  }
+
   const body = JSON.stringify({ order });
   console.log('[ORDER] OANDA payload:', body);
   const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body });

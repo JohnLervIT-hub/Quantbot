@@ -4150,7 +4150,7 @@ function PaperTradesPanel({ trades, isMobile }) {
   );
 }
 
-function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile }) {
+function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile, mgmtRef, nav }) {
   return (
     <div style={isMobile ? { background: "#0d1117", borderRadius: 0, padding: "12px", margin: "0" } : { background: "#161b22", border: "1px solid #21262d", borderRadius: 10, padding: "12px 14px", margin: "0 16px" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: openTrades.length > 0 ? 8 : 4 }}>
@@ -4176,6 +4176,13 @@ function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile }) {
             const current = livePrices[pair];
             const dur = tradeDuration(trade.openTime);
             const pnlStr = `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
+            const oneR = (nav || 100) * 0.015;
+            const rMultiple = oneR > 0 ? pnl / oneR : 0;
+            const rStr = `${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(1)}R`;
+            const rColor = rMultiple >= 2 ? "#3fb950" : rMultiple >= 1 ? "#d29922" : rMultiple >= 0 ? "#8b949e" : "#f85149";
+            const mgmt = mgmtRef?.current?.[trade.id] || {};
+            const isBE    = mgmt.breakevenDone;
+            const isTrail = mgmt.trailingActive;
 
             if (isMobile) {
               return (
@@ -4184,7 +4191,11 @@ function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile }) {
                   style={{ padding: "12px", borderRadius: 10, background: "#161b22", borderTop: "1px solid #21262d", borderRight: "1px solid #21262d", borderBottom: "1px solid #21262d", borderLeft: `3px solid ${isLong ? "#3fb950" : "#f85149"}` }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <span style={{ fontWeight: 700, color: "#e6edf3", fontSize: 14 }}>{pair}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontWeight: 700, color: "#e6edf3", fontSize: 14 }}>{pair}</span>
+                      {isBE    && <span style={{ fontSize: 8, fontWeight: 700, color: "#1D9E75", background: "rgba(29,158,117,0.15)", border: "0.5px solid rgba(29,158,117,0.4)", borderRadius: 3, padding: "1px 4px" }}>BE</span>}
+                      {isTrail && <span style={{ fontSize: 8, fontWeight: 700, color: "#58a6ff", background: "rgba(88,166,255,0.15)", border: "0.5px solid rgba(88,166,255,0.4)", borderRadius: 3, padding: "1px 4px" }}>TRAIL</span>}
+                    </div>
                     <span style={{ fontSize: 11, fontWeight: 600, color: isLong ? "#3fb950" : "#f85149" }}>{isLong ? "LONG" : "SHORT"}</span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, fontFamily: FONT_MONO, fontSize: 11 }}>
@@ -4192,7 +4203,10 @@ function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile }) {
                     <span style={{ color: "#c9d1d9" }}>{current ? current.toFixed(dec) : "—"}</span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontFamily: FONT_MONO, fontWeight: 600, fontSize: 14, fontVariantNumeric: "tabular-nums", minWidth: 88, color: pnl >= 0 ? "#3fb950" : "#f85149" }}>{pnlStr}</span>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <span style={{ fontFamily: FONT_MONO, fontWeight: 600, fontSize: 14, fontVariantNumeric: "tabular-nums", color: pnl >= 0 ? "#3fb950" : "#f85149" }}>{pnlStr}</span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: rColor }}>{rStr}</span>
+                    </div>
                     <span style={{ fontSize: 10, color: "#484f58" }}>{dur}</span>
                     <button
                       onClick={() => onClose(trade.id, pair)}
@@ -4208,15 +4222,18 @@ function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile }) {
             return (
               <div
                 key={trade.id}
-                style={{ display: "grid", gridTemplateColumns: "80px 58px 110px 110px 90px 70px auto", alignItems: "center", gap: 8, padding: "10px 12px", borderRadius: 8, background: isLong ? "rgba(29,158,117,0.05)" : "rgba(226,75,74,0.05)", border: `0.5px solid ${isLong ? "rgba(29,158,117,0.2)" : "rgba(226,75,74,0.2)"}`, fontSize: 12 }}
+                style={{ display: "grid", gridTemplateColumns: "80px 58px 110px 110px auto 70px auto", alignItems: "center", gap: 8, padding: "10px 12px", borderRadius: 8, background: isLong ? "rgba(29,158,117,0.05)" : "rgba(226,75,74,0.05)", border: `0.5px solid ${isLong ? "rgba(29,158,117,0.2)" : "rgba(226,75,74,0.2)"}`, fontSize: 12 }}
               >
                 <span style={{ fontWeight: 600, color: "var(--color-text-primary)" }}>{pair}</span>
                 <span style={{ color: isLong ? "#1D9E75" : "#E24B4A", fontWeight: 600, fontSize: 11 }}>{isLong ? "LONG" : "SHORT"}</span>
                 <span style={{ fontFamily: FONT_MONO, color: "var(--color-text-tertiary)", fontSize: 11 }}>@ {entry.toFixed(dec)}</span>
                 <span style={{ fontFamily: FONT_MONO, color: "var(--color-text-primary)", fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{current ? current.toFixed(dec) : "—"}</span>
-                <span style={{ fontFamily: FONT_MONO, fontWeight: 600, color: pnl >= 0 ? "#1D9E75" : "#E24B4A", fontSize: 12, fontVariantNumeric: "tabular-nums", minWidth: 72 }}>
-                  {pnlStr}
-                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ fontFamily: FONT_MONO, fontWeight: 600, color: pnl >= 0 ? "#1D9E75" : "#E24B4A", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>{pnlStr}</span>
+                  <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: rColor }}>{rStr}</span>
+                  {isBE    && <span style={{ fontSize: 8, fontWeight: 700, color: "#1D9E75", background: "rgba(29,158,117,0.15)", border: "0.5px solid rgba(29,158,117,0.4)", borderRadius: 3, padding: "1px 4px", letterSpacing: "0.3px" }}>BE</span>}
+                  {isTrail && <span style={{ fontSize: 8, fontWeight: 700, color: "#58a6ff", background: "rgba(88,166,255,0.15)", border: "0.5px solid rgba(88,166,255,0.4)", borderRadius: 3, padding: "1px 4px", letterSpacing: "0.3px" }}>TRAIL</span>}
+                </div>
                 <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{dur}</span>
                 <button
                   onClick={() => onClose(trade.id, pair)}
@@ -6550,7 +6567,7 @@ export default function TradingRobot() {
         const dec        = pair.includes("JPY") ? 3 : pair.includes("XAU") || pair.includes("SPX") ? 2 : 5;
 
         if (!tradeMgmtRef.current[tradeId]) {
-          tradeMgmtRef.current[tradeId] = { breakevenDone: false, partialDone: false, sessionAlerted: false };
+          tradeMgmtRef.current[tradeId] = { breakevenDone: false, partialDone: false, sessionAlerted: false, trailingActive: false };
         }
         const mgmt = tradeMgmtRef.current[tradeId];
 
@@ -6586,16 +6603,18 @@ export default function TradingRobot() {
           } catch (e) { console.error(`[TME] Partial close failed ${pair}:`, e.message); }
         }
 
-        // 3. TRAILING STOP — when profit >= 1.5R, trail at 1 SL-distance below current price
-        if (currentR >= 1.5 && slDistance != null && slDistance > 0 && currentPrice > 0) {
-          const trailSL = isLong ? currentPrice - slDistance : currentPrice + slDistance;
-          const isImprovement = isLong ? trailSL > currentSLPrice : trailSL < currentSLPrice;
+        // 3. TRAILING STOP — when profit >= 2R, trail at ATR × 1.0 (slDistance = ATR × 1.5, so trail = slDistance × 2/3)
+        if (currentR >= 2 && slDistance != null && slDistance > 0 && currentPrice > 0) {
+          const trailDist = slDistance * (2 / 3); // ATR × 1.0
+          const trailSL   = isLong ? currentPrice - trailDist : currentPrice + trailDist;
+          const isImprovement = currentSLPrice === 0 || (isLong ? trailSL > currentSLPrice : trailSL < currentSLPrice);
           if (isImprovement) {
             try {
               await fetch(`${BRIDGE}/order/${tradeId}/sl`, {
                 method: "PATCH", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ price: trailSL.toFixed(dec) }),
               });
+              mgmt.trailingActive = true;
               console.log(`[TME] ${pair} trail → ${trailSL.toFixed(dec)} (${currentR.toFixed(1)}R locked)`);
             } catch (e) { console.error(`[TME] Trailing stop failed ${pair}:`, e.message); }
           }
@@ -6633,7 +6652,7 @@ export default function TradingRobot() {
       }
     };
 
-    const id = setInterval(manage, 60_000);
+    const id = setInterval(manage, 30_000);
     return () => clearInterval(id);
   }, []);
 
@@ -7126,7 +7145,7 @@ export default function TradingRobot() {
             </>
           )}
           <div>
-            <OpenPositionsPanel openTrades={openTrades} livePrices={livePrices} onClose={closeTrade} isMobile={isMobile} />
+            <OpenPositionsPanel openTrades={openTrades} livePrices={livePrices} onClose={closeTrade} isMobile={isMobile} mgmtRef={tradeMgmtRef} nav={displayNav} />
             <ClosedTradesPanel trades={closedTrades} isMobile={isMobile} />
             <PaperTradesPanel trades={paperTrades} isMobile={isMobile} />
             <TradeLog trades={trades} isMobile={isMobile} />
