@@ -3516,121 +3516,178 @@ function sentimentStyle(s) {
   return { color: "#8b949e", bg: "rgba(139,148,158,0.08)", border: "#30363d" };
 }
 
-function NewsCard({ item, isMobile }) {
-  const ss = sentimentStyle(item.sentiment);
-  const sentLabel = item.sentiment === "bullish" ? "▲" : item.sentiment === "bearish" ? "▼" : "—";
-  return (
-    <a href={item.link} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none", display: "block" }}>
-      <div style={{
-        background: "#161b22", border: `1px solid #21262d`, borderLeft: `3px solid ${ss.border}`,
-        borderRadius: 8, padding: isMobile ? "10px 12px" : "12px 16px",
-        transition: "background 0.15s", cursor: "pointer",
-      }}
-        onMouseEnter={e => e.currentTarget.style.background = "#1c2333"}
-        onMouseLeave={e => e.currentTarget.style.background = "#161b22"}
-      >
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#e6edf3", lineHeight: 1.45, marginBottom: 6 }}>
-              {item.title}
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              {item.source && (
-                <span style={{ fontSize: 11, color: "#8b949e", background: "#21262d", padding: "1px 7px", borderRadius: 10 }}>
-                  {item.source}
-                </span>
-              )}
-              <span style={{ fontSize: 11, color: "#484f58" }}>{timeAgo(item.pubDate)}</span>
-            </div>
-          </div>
-          <div style={{
-            flexShrink: 0, width: 28, height: 28, borderRadius: 6,
-            background: ss.bg, border: `1px solid ${ss.border}`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 13, fontWeight: 800, color: ss.color,
-          }}>
-            {sentLabel}
-          </div>
-        </div>
-      </div>
-    </a>
-  );
+const SOURCE_COLORS = { bloomberg: "#f85149", reuters: "#f0883e", dailyfx: "#58a6ff", "forex factory": "#d29922", fxstreet: "#3fb950" };
+const PAIRS_LIST = ["EUR","USD","GBP","JPY","AUD","CAD","CHF","NZD","GOLD","OIL","BTC","ETH"];
+
+function extractPairs(title) {
+  const up = (title || "").toUpperCase();
+  return PAIRS_LIST.filter(c => up.includes(c)).slice(0, 4);
 }
 
-function NewsTab({ isMobile }) {
-  const [cat, setCat] = useState("forex");
-  const [news, setNews] = useState([]);
-  const [commentary, setCommentary] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [fetchedAt, setFetchedAt] = useState(null);
-  const [error, setError] = useState(null);
+function getImplication(title, sentiment) {
+  const t = (title || "").toLowerCase();
+  if (/nfp|cpi|fomc|gdp|rate decision|central bank|\bfed\b|\becb\b|\bboj\b|\brba\b/.test(t))
+    return { label: "HIGH VOL", color: "#f0883e", bg: "rgba(240,136,62,0.1)",  border: "#f0883e44" };
+  if (/wait|caution|risk off|uncertain|halt|pause|warn/.test(t))
+    return { label: "WAIT",     color: "#f85149", bg: "rgba(248,81,73,0.08)",  border: "#f8514944" };
+  if (sentiment === "bullish" && /break|surge|rally|soar|climb|gain|rise|bull/.test(t))
+    return { label: "MOMENTUM", color: "#58a6ff", bg: "rgba(88,166,255,0.1)",  border: "#58a6ff44" };
+  return   { label: "MONITOR", color: "#8b949e", bg: "rgba(139,148,158,0.06)", border: "#30363d"   };
+}
 
-  const load = useCallback(async (category) => {
-    setLoading(true);
+const NewsCard = memo(function NewsCard({ item, isMobile }) {
+  const [expanded, setExpanded] = useState(false);
+  const ss       = sentimentStyle(item.sentiment);
+  const sentDot  = item.sentiment === "bullish" ? "#3fb950" : item.sentiment === "bearish" ? "#f85149" : "#484f58";
+  const srcColor = SOURCE_COLORS[(item.source || "").toLowerCase()] || "#8b949e";
+  const pairs    = extractPairs(item.title);
+  const impl     = getImplication(item.title, item.sentiment);
+
+  return (
+    <div style={{ background: "#161b22", border: "1px solid #21262d", borderLeft: `3px solid ${ss.border}`, borderRadius: 8, overflow: "hidden", transition: "background 0.15s" }}
+      onMouseEnter={e => e.currentTarget.style.background = "#1c2333"}
+      onMouseLeave={e => e.currentTarget.style.background = "#161b22"}>
+      <div style={{ padding: isMobile ? "10px 12px" : "12px 16px" }}>
+        {/* Source · time · sentiment dot */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7 }}>
+          {item.source && (
+            <span style={{ fontSize: 10, fontWeight: 700, color: srcColor, background: `${srcColor}18`, padding: "1px 7px", borderRadius: 4, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+              {item.source}
+            </span>
+          )}
+          <span style={{ fontSize: 10, color: "#484f58", marginLeft: "auto" }}>{timeAgo(item.pubDate)}</span>
+          <div style={{ width: 7, height: 7, borderRadius: "50%", background: sentDot, flexShrink: 0 }} />
+        </div>
+        {/* Headline */}
+        <a href={item.link} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}>
+          <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#e6edf3", lineHeight: 1.45, marginBottom: 9, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+            {item.title}
+          </div>
+        </a>
+        {/* Pairs · implication · expand */}
+        <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+          {pairs.map(p => (
+            <span key={p} style={{ fontSize: 9, fontFamily: FONT_MONO, color: "#8b949e", background: "#21262d", padding: "1px 6px", borderRadius: 3 }}>{p}</span>
+          ))}
+          <span style={{ fontSize: 9, fontWeight: 700, color: impl.color, background: impl.bg, border: `1px solid ${impl.border}`, padding: "1px 7px", borderRadius: 4, letterSpacing: "0.05em" }}>
+            {impl.label}
+          </span>
+          {item.description && (
+            <button onClick={() => setExpanded(e => !e)}
+              style={{ marginLeft: "auto", background: "none", border: "none", color: "#484f58", cursor: "pointer", fontSize: 11, padding: "0 2px", lineHeight: 1 }}>
+              {expanded ? "▲" : "▼"}
+            </button>
+          )}
+        </div>
+        {/* Expanded summary */}
+        {expanded && item.description && (
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: "0.5px solid #21262d", fontSize: 12, color: "#8b949e", lineHeight: 1.6 }}>
+            {item.description}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+function NewsTab({ isMobile }) {
+  // ── Hydrate from cache on first render — no loading flash ──────────────────
+  const [cat, setCat] = useState(() => {
+    try { const c = JSON.parse(localStorage.getItem("cached_news")); if (c && Date.now() - c.timestamp < 300000) return c.category; } catch {}
+    return "forex";
+  });
+  const [news, setNews] = useState(() => {
+    try { const c = JSON.parse(localStorage.getItem("cached_news")); if (c && Date.now() - c.timestamp < 300000) return c.data; } catch {}
+    return [];
+  });
+  const [commentary, setCommentary] = useState(() => {
+    try { const c = JSON.parse(localStorage.getItem("cached_ai_brief")); if (c && Date.now() - c.timestamp < 300000) return c.text; } catch {}
+    return null;
+  });
+  const [loading, setLoading]       = useState(false);
+  const [fetchedAt, setFetchedAt]   = useState(null);
+  const [error, setError]           = useState(null);
+  const [visibleCount, setVisible]  = useState(10);
+  const abortRef    = useRef(null);
+  const debounceRef = useRef(null);
+  const hasCached   = news.length > 0;
+
+  const load = useCallback(async (category, silent = false) => {
+    if (abortRef.current) abortRef.current.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    if (!silent) setLoading(true);
     setError(null);
-    setCommentary(null);
     try {
-      const r = await fetch(`${BRIDGE}/news?category=${category}`);
+      const r = await fetch(`${BRIDGE}/news?category=${category}`, { signal: ctrl.signal });
       const d = await r.json();
       if (d.error) throw new Error(d.error);
-      setNews(d.items || []);
+      const items = d.items || [];
+      setNews(items);
       setCommentary(d.commentary || null);
       setFetchedAt(d.fetchedAt);
+      try {
+        localStorage.setItem("cached_news", JSON.stringify({ data: items, timestamp: Date.now(), category }));
+        if (d.commentary) localStorage.setItem("cached_ai_brief", JSON.stringify({ text: d.commentary, category, timestamp: Date.now() }));
+      } catch {}
     } catch (e) {
+      if (e.name === "AbortError") return;
       setError(e.message);
-      setNews([]);
+      if (!silent) setNews([]);
     }
-    setLoading(false);
+    if (!silent) setLoading(false);
   }, []);
 
-  useEffect(() => { load(cat); }, [cat, load]);
-  useEffect(() => {
-    const id = setInterval(() => load(cat), 5 * 60_000);
-    return () => clearInterval(id);
-  }, [cat, load]);
+  const switchCat = useCallback((next) => {
+    setCat(next);
+    setVisible(10);
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => load(next), 300);
+  }, [load]);
 
-  const bullish = news.filter(n => n.sentiment === "bullish").length;
-  const bearish = news.filter(n => n.sentiment === "bearish").length;
+  // Initial fetch — silent if cache exists
+  useEffect(() => { load(cat, hasCached); }, []); // eslint-disable-line
+  // Background refresh every 5 min
+  useEffect(() => { const id = setInterval(() => load(cat, true), 5 * 60_000); return () => clearInterval(id); }, [cat, load]);
+
+  const bullish     = news.filter(n => n.sentiment === "bullish").length;
+  const bearish     = news.filter(n => n.sentiment === "bearish").length;
+  const visibleNews = news.slice(0, visibleCount);
+  const activeCat   = NEWS_CATS.find(c => c.key === cat);
 
   return (
     <div style={{ padding: isMobile ? "12px" : "0 16px 16px" }}>
-      {/* Header */}
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, paddingTop: isMobile ? 0 : 4 }}>
         <div>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "#e6edf3" }}>Live Market News</div>
-          {fetchedAt && !loading && (
-            <div style={{ fontSize: 11, color: "#484f58", marginTop: 2 }}>
-              Updated {timeAgo(fetchedAt)} · {bullish} bullish · {bearish} bearish
-            </div>
-          )}
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", letterSpacing: "0.06em", textTransform: "uppercase" }}>Live Market Intelligence</div>
+          <div style={{ fontSize: 10, color: "#484f58", marginTop: 2, fontFamily: FONT_MONO }}>
+            {fetchedAt ? `Updated ${timeAgo(fetchedAt)}` : hasCached ? "Showing cached data" : "—"}
+            {news.length > 0 && `  ·  ${bullish}↑ ${bearish}↓`}
+          </div>
         </div>
         <button onClick={() => load(cat)} disabled={loading}
-          style={{ background: "#161b22", border: "1px solid #21262d", borderRadius: 6, padding: "5px 12px", fontSize: 11, color: "#8b949e", cursor: loading ? "default" : "pointer", fontFamily: "inherit", opacity: loading ? 0.5 : 1 }}>
+          style={{ background: "#161b22", border: "1px solid #21262d", borderRadius: 6, padding: "5px 12px", fontSize: 11, color: loading ? "#484f58" : "#8b949e", cursor: loading ? "default" : "pointer", fontFamily: "inherit", opacity: loading ? 0.5 : 1 }}>
           {loading ? "Loading…" : "↻ Refresh"}
         </button>
       </div>
 
-      {/* Category pills */}
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+      {/* ── Category tabs — underline style ────────────────────────────────── */}
+      <div style={{ display: "flex", borderBottom: "1px solid #21262d", marginBottom: 14 }}>
         {NEWS_CATS.map(c => (
-          <button key={c.key} onClick={() => setCat(c.key)}
-            style={{
-              padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-              background: cat === c.key ? `${c.color}1a` : "#161b22",
-              color: cat === c.key ? c.color : "#8b949e",
-              border: `1px solid ${cat === c.key ? c.color : "#21262d"}`,
-              transition: "all 0.15s",
-            }}>
+          <button key={c.key} onClick={() => switchCat(c.key)}
+            style={{ padding: "6px 14px", background: "none", border: "none", borderBottom: cat === c.key ? "2px solid #58a6ff" : "2px solid transparent", fontSize: 12, fontWeight: cat === c.key ? 700 : 500, color: cat === c.key ? "#58a6ff" : "#8b949e", cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s", marginBottom: -1 }}>
             {c.label}
           </button>
         ))}
       </div>
 
-      {/* Sentiment bar */}
-      {!loading && news.length > 0 && (
+      {/* ── Sentiment bar ──────────────────────────────────────────────────── */}
+      {news.length > 0 && (
         <div style={{ marginBottom: 14, background: "#161b22", border: "1px solid #21262d", borderRadius: 8, padding: "10px 14px" }}>
-          <div style={{ fontSize: 11, color: "#8b949e", marginBottom: 6 }}>Sentiment · {news.length} headlines</div>
-          <div style={{ display: "flex", height: 6, borderRadius: 3, overflow: "hidden", gap: 2 }}>
+          <div style={{ fontSize: 11, color: "#8b949e", marginBottom: 6 }}>Market Sentiment · {news.length} headlines</div>
+          <div style={{ display: "flex", height: 5, borderRadius: 3, overflow: "hidden", gap: 2 }}>
             <div style={{ flex: bullish, background: "#238636", borderRadius: 3 }} />
             <div style={{ flex: news.length - bullish - bearish, background: "#30363d", borderRadius: 3 }} />
             <div style={{ flex: bearish, background: "#da3633", borderRadius: 3 }} />
@@ -3643,50 +3700,49 @@ function NewsTab({ isMobile }) {
         </div>
       )}
 
-      {/* Gemini AI Brief */}
-      {!loading && (commentary || loading) && (
-        <div style={{
-          marginBottom: 14, borderRadius: 10, overflow: "hidden",
-          border: "1px solid #1a3a5c", background: "linear-gradient(135deg, #0d1f35 0%, #0d1117 100%)",
-        }}>
+      {/* ── Xavier's Market Read ───────────────────────────────────────────── */}
+      {commentary && (
+        <div style={{ marginBottom: 14, borderRadius: 10, overflow: "hidden", border: "1px solid #1a3a5c", background: "linear-gradient(135deg, #0d1f35 0%, #0d1117 100%)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", borderBottom: "1px solid #1a3a5c", background: "rgba(56,139,253,0.06)" }}>
-            <span style={{ fontSize: 14 }}>✦</span>
-            <span style={{ fontSize: 11, fontWeight: 700, color: "#58a6ff", letterSpacing: "0.5px", textTransform: "uppercase" }}>Gemini AI Brief</span>
-            <span style={{ marginLeft: "auto", fontSize: 10, color: "#484f58" }}>{NEWS_CATS.find(c => c.key === cat)?.label}</span>
+            <div style={{ width: 20, height: 20, borderRadius: "50%", background: "linear-gradient(135deg, #1f2d3d, #0d1117)", border: "1px solid #58a6ff44", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#58a6ff", fontWeight: 700, fontFamily: FONT_MONO, flexShrink: 0 }}>X</div>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#58a6ff", letterSpacing: "0.5px", textTransform: "uppercase" }}>Xavier's Market Read</span>
+            <span style={{ marginLeft: "auto", fontSize: 10, color: "#484f58" }}>{activeCat?.label}</span>
           </div>
           <div style={{ padding: "12px 14px" }}>
-            {commentary ? (
-              <p style={{ margin: 0, fontSize: isMobile ? 13 : 14, color: "#c9d1d9", lineHeight: 1.6 }}>{commentary}</p>
-            ) : (
-              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                <span style={{ fontSize: 12, color: "#484f58" }}>Gemini is analyzing headlines…</span>
-              </div>
-            )}
+            <p style={{ margin: 0, fontSize: isMobile ? 13 : 14, color: "#c9d1d9", lineHeight: 1.6 }}>{commentary}</p>
           </div>
         </div>
       )}
 
-      {/* Cards */}
+      {/* ── Cards ──────────────────────────────────────────────────────────── */}
       {error ? (
         <div style={{ padding: "20px 0", textAlign: "center", color: "#f85149", fontSize: 13 }}>
           {error.includes("Failed to fetch") ? "Bridge offline — run: npm run server" : error}
         </div>
-      ) : loading ? (
+      ) : loading && !hasCached ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {[...Array(8)].map((_, i) => (
-            <div key={i} style={{ background: "#161b22", border: "1px solid #21262d", borderLeft: "3px solid #21262d", borderRadius: 8, padding: "14px 16px", height: 72 }}>
-              <div style={{ height: 14, background: "#21262d", borderRadius: 4, marginBottom: 10, width: `${70 + (i % 3) * 10}%` }} />
-              <div style={{ height: 10, background: "#161b22", border: "1px solid #21262d", borderRadius: 10, width: 80 }} />
+          {[...Array(6)].map((_, i) => (
+            <div key={i} style={{ background: "#161b22", border: "1px solid #21262d", borderLeft: "3px solid #21262d", borderRadius: 8, padding: "14px 16px", height: 68 }}>
+              <div style={{ height: 11, background: "#21262d", borderRadius: 4, marginBottom: 10, width: `${65 + (i % 3) * 10}%` }} />
+              <div style={{ height: 9, background: "#161b22", border: "1px solid #21262d", borderRadius: 10, width: 80 }} />
             </div>
           ))}
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {news.map((item, i) => <NewsCard key={i} item={item} isMobile={isMobile} />)}
-          {news.length === 0 && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 8 }}>
+            {visibleNews.map((item, i) => <NewsCard key={`${cat}-${i}`} item={item} isMobile={isMobile} />)}
+          </div>
+          {news.length === 0 && !loading && (
             <div style={{ padding: "32px 0", textAlign: "center", color: "#484f58", fontSize: 13 }}>No headlines found</div>
           )}
-        </div>
+          {news.length > visibleCount && (
+            <button onClick={() => setVisible(v => v + 10)}
+              style={{ width: "100%", marginTop: 12, padding: "9px 0", background: "#161b22", border: "1px solid #21262d", borderRadius: 8, color: "#8b949e", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+              Load {Math.min(10, news.length - visibleCount)} more headlines
+            </button>
+          )}
+        </>
       )}
     </div>
   );
