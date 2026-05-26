@@ -337,20 +337,24 @@ function generateSignal(history, strategy, pair) {
     else if (ema9 < ema21 && last < ema9) { score += 40; direction = "SHORT"; reason.push("EMA bearish cross"); }
     if (change > 0.003) { score += 25; direction = direction || "LONG"; reason.push("Strong uptrend"); }
     else if (change < -0.003) { score += 25; direction = direction || "SHORT"; reason.push("Strong downtrend"); }
-    if (direction) console.log(`[Signal] ${pair} | ${strategy} | ${direction} | score ${score}`);
   } else if (strategy === "Mean Revert") {
     const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
     const dev = Math.abs(last - mean) / mean;
-    if (dev > 0.001) {
+    const pairKey = pair.replace("/", "_");
+    const isGold = pairKey.includes("XAU");
+    const isJpy  = pairKey.includes("JPY");
+    const t1 = isGold ? 0.0008 : isJpy ? 0.0015 : 0.001;
+    const t2 = isGold ? 0.0015 : isJpy ? 0.003  : 0.002;
+    const t3 = isGold ? 0.003  : isJpy ? 0.005  : 0.004;
+    if (dev > t1) {
       const dir = last > mean ? "SHORT" : "LONG";
       score += 50;
-      if (dev > 0.002) score += 10;
-      if (dev > 0.004) score += 10;
+      if (dev > t2) score += 10;
+      if (dev > t3) score += 10;
       const returning = (dir === "LONG" && last > prev) || (dir === "SHORT" && last < prev);
       if (returning) score += 10;
       direction = dir;
       reason.push(`${(dev * 100).toFixed(2)}% deviation`);
-      console.log(`[Signal] ${pair} | ${strategy} | ${direction} | score ${score} | dev ${(dev * 100).toFixed(3)}%`);
     }
   
   } else if (strategy === "Breakout") {
@@ -369,7 +373,6 @@ function generateSignal(history, strategy, pair) {
       // +5 PRIME or LONDON: best liquidity for clean breakouts
       const sess = getCurrentSession();
       if (sess === "PRIME" || sess === "LONDON") { score += 5; reason.push(`${sess} session`); }
-      console.log(`[Signal] ${pair} | ${strategy} | ${direction} | score ${score}`);
     }
   } else if (strategy === "Momentum") {
     const momentum = (last - recent[recent.length - 10]) / recent[recent.length - 10];
@@ -385,7 +388,6 @@ function generateSignal(history, strategy, pair) {
       // +5 NY or PRIME: momentum sustains in high-volume sessions
       const sess = getCurrentSession();
       if (sess === "NY" || sess === "PRIME")                                     { score += 5;  reason.push(`${sess} session`); }
-      console.log(`[Signal] ${pair} | ${strategy} | ${direction} | score ${score} | mom ${(momentum * 100).toFixed(3)}%`);
     }
   } else {
     // Range Scalp: score when market is in a tight range (high-low < 0.3%) and price at boundary
@@ -403,7 +405,6 @@ function generateSignal(history, strategy, pair) {
         // +10 SYDNEY or TOKYO: low-volatility range sessions
         const sess = getCurrentSession();
         if (sess === "SYDNEY" || sess === "TOKYO") { score += 10; reason.push(`${sess} range session`); }
-        console.log(`[Signal] ${pair} | ${strategy} | ${direction} | score ${score}`);
       }
     }
   }
@@ -2815,101 +2816,30 @@ function statusBadge(status) {
 
 // ─── RISK TAB HELPERS ─────────────────────────────────────────────────────────
 function RiskGauge({ heat = 0 }) {
-  const safeHeat = isFinite(heat) && !isNaN(heat) ? Math.max(0, Math.min(8, heat)) : 0;
-  const clamped  = Math.max(0, Math.min(8, safeHeat ?? 0)); // alias — keeps any stale JSX references alive
-  const cx = 140, cy = 124, r = 92;
-  const arcLen = Math.PI * r;
-  const g50 = arcLen * 0.5;   // green zone length  (0–4R)
-  const g25 = arcLen * 0.25;  // amber zone length  (4–6R)
-  const GAP = 3;               // px gap between zone segments
-
-  const fillLen   = (safeHeat / 8) * arcLen;
-  const heatColor = safeHeat >= 6 ? "#f85149" : safeHeat >= 4 ? "#d29922" : "#3fb950";
-
-  // Direct needle endpoint — reliable cross-browser (no CSS rotation on SVG)
-  const needleRad = (180 - (safeHeat / 8) * 180) * Math.PI / 180;
-  const nx = cx + 76 * Math.cos(needleRad);
-  const ny = cy - 76 * Math.sin(needleRad);
-  const needleValid = Number.isFinite(nx) && Number.isFinite(ny) && !isNaN(nx) && !isNaN(ny);
-
-  // Tick marks at 0, 2, 4, 6, 8R
-  const ticks = [0, 2, 4, 6, 8].map(v => {
-    const a = (180 - (v / 8) * 180) * Math.PI / 180;
-    return {
-      v,
-      x1: cx + (r + 3)  * Math.cos(a), y1: cy - (r + 3)  * Math.sin(a),
-      x2: cx + (r + 13) * Math.cos(a), y2: cy - (r + 13) * Math.sin(a),
-      lx: cx + (r + 25) * Math.cos(a), ly: cy - (r + 25) * Math.sin(a),
-    };
-  });
-
-  const arc = `M ${cx - r} ${cy} A ${r} ${r} 0 0 0 ${cx + r} ${cy}`;
-
-  // Zone dasharray — "sandwich" method: each zone has a gap between itself and the others.
-  // Pattern: [dash=zoneLen] [gap=skipLen] [dash=zoneLen] [gap=huge] — with dashoffset=zoneLen.
-  // This makes the path start at the END of the first dash (= start of the skip gap).
-  const greenLen = g50 - GAP;
-  const amberLen = g25 - GAP * 2;
-  const redLen   = g25 - GAP;
-
-  const amberSkip = g50 + GAP;
-  const redSkip   = g50 + g25 + GAP * 3;
-
+  const safe  = typeof heat === "number" && isFinite(heat) ? Math.max(0, Math.min(8, heat)) : 0;
+  const pct   = (safe / 8) * 100;
+  const color = safe >= 6 ? "#f85149" : safe >= 4 ? "#d29922" : "#3fb950";
   return (
-    <svg viewBox="0 0 280 162" style={{ width: "100%", display: "block" }}>
-      {/* Track background */}
-      <path d={arc} fill="none" stroke="#1a1f28" strokeWidth="20" strokeLinecap="butt" />
-
-      {/* Zone: green 0–4R */}
-      <path d={arc} fill="none" stroke="#3fb950" strokeWidth="16" strokeLinecap="butt"
-        strokeDasharray={`${greenLen} 9999`} strokeDashoffset="0" opacity="0.4" />
-      {/* Zone: amber 4–6R — sandwich method */}
-      <path d={arc} fill="none" stroke="#d29922" strokeWidth="16" strokeLinecap="butt"
-        strokeDasharray={`${amberLen} ${amberSkip} ${amberLen} 9999`}
-        strokeDashoffset={amberLen} opacity="0.4" />
-      {/* Zone: red 6–8R — sandwich method */}
-      <path d={arc} fill="none" stroke="#f85149" strokeWidth="16" strokeLinecap="butt"
-        strokeDasharray={`${redLen} ${redSkip} ${redLen} 9999`}
-        strokeDashoffset={redLen} opacity="0.4" />
-
-      {/* Active fill — smooth CSS transition */}
-      <path d={arc} fill="none" stroke={heatColor} strokeWidth="9" strokeLinecap="round"
-        strokeDasharray={arcLen} strokeDashoffset={arcLen - fillLen}
-        style={{ transition: "stroke-dashoffset 0.9s cubic-bezier(0.4,0,0.2,1), stroke 0.4s ease" }} />
-
-      {/* Tick marks with R labels */}
-      {ticks.map(t => (
-        <g key={t.v}>
-          <line x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2} stroke="#2d333b" strokeWidth="1.5" />
-          <text x={t.lx} y={t.ly} textAnchor="middle" dominantBaseline="middle"
-            fontSize="9" fill="#484f58" fontFamily={FONT_MONO}>{t.v}R</text>
-        </g>
-      ))}
-
-      {/* Center: large value */}
-      <text x={cx - 4} y={cy - 36} textAnchor="middle" dominantBaseline="middle"
-        fontSize="46" fontWeight="900" fill={heatColor} fontFamily={FONT_MONO}
-        style={{ transition: "fill 0.4s ease" }}>{safeHeat.toFixed(1)}</text>
-      {/* Superscript "R" */}
-      <text x={cx + 34} y={cy - 54} textAnchor="middle" dominantBaseline="middle"
-        fontSize="16" fontWeight="700" fill={heatColor} fontFamily={FONT_MONO}
-        style={{ transition: "fill 0.4s ease" }}>R</text>
-      {/* Sub-label */}
-      <text x={cx} y={cy - 12} textAnchor="middle" dominantBaseline="middle"
-        fontSize="8" fill="#484f58" letterSpacing="2" fontFamily={FONT_MONO}>PORTFOLIO HEAT</text>
-
-      {/* Needle — guard ensures x2/y2 are always finite before render */}
-      {needleValid && (
-        <motion.line x1={cx} y1={cy} x2={nx} y2={ny} animate={{ x2: nx, y2: ny }}
-          transition={{ type: "spring", stiffness: 80, damping: 16 }}
-          stroke={heatColor} strokeWidth="2.5" strokeLinecap="round"
-          style={{ transition: "stroke 0.4s ease" }} />
-      )}
-      <circle cx={cx} cy={cy} r="7" fill="#161b22" stroke={heatColor} strokeWidth="2.5"
-        style={{ transition: "stroke 0.4s ease" }} />
-      <circle cx={cx} cy={cy} r="3" fill={heatColor}
-        style={{ transition: "fill 0.4s ease" }} />
-    </svg>
+    <div style={{ width: "100%", padding: "4px 0" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontSize: 11, color: "#8b949e", fontFamily: FONT_MONO }}>0R</span>
+        <span style={{ fontSize: 32, fontWeight: 700, color, fontFamily: FONT_MONO, lineHeight: 1 }}>
+          {safe.toFixed(1)}<span style={{ fontSize: 16, marginLeft: 2 }}>R</span>
+        </span>
+        <span style={{ fontSize: 11, color: "#8b949e", fontFamily: FONT_MONO }}>8R</span>
+      </div>
+      <div style={{ height: 14, background: "#21262d", borderRadius: 7, overflow: "hidden" }}>
+        <div style={{
+          height: "100%", width: pct + "%", background: color, borderRadius: 7,
+          transition: "width 0.5s ease, background 0.3s ease",
+        }} />
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+        <span style={{ fontSize: 10, color: "#3fb950", fontFamily: FONT_MONO }}>SAFE</span>
+        <span style={{ fontSize: 10, color: "#d29922", fontFamily: FONT_MONO }}>4R CAUTION</span>
+        <span style={{ fontSize: 10, color: "#f85149", fontFamily: FONT_MONO }}>6R MAX</span>
+      </div>
+    </div>
   );
 }
 
@@ -5764,6 +5694,7 @@ function useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, 
   const lastSignalTime    = useRef(Date.now());
   const lastOpenCountRef  = useRef(openTrades.length);
   const lastSessionRef    = useRef(null);
+  const regimeHistoryRef  = useRef([]);
   closedTradesRef.current  = closedTrades;
   openTradesRef2.current   = openTrades;
   strategyRef2.current     = strategy;
@@ -5779,7 +5710,6 @@ function useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, 
   }, []);
 
   const compute = useCallback(() => {
-    console.log('[REGIME]', globalRegime);
     const sess  = getCurrentSession();
     const heat  = openTradesRef2.current.length * 1.5;
     const cur   = strategyRef2.current;
@@ -5822,8 +5752,18 @@ function useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, 
         reason      = `${sess} session — ${matrix.primary} is primary`;
         notifType   = "session";
 
+        // ── Regime stability debounce — require 3/5 consecutive readings ──
+        regimeHistoryRef.current.push(globalRegime);
+        if (regimeHistoryRef.current.length > 5) regimeHistoryRef.current.shift();
+        const regimeCounts = regimeHistoryRef.current.reduce((acc, r) => {
+          if (r) acc[r] = (acc[r] || 0) + 1;
+          return acc;
+        }, {});
+        const stableRegime = Object.entries(regimeCounts)
+          .sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
         // ── Regime-aware override — fires before fallback ──
-        if (globalRegime === "RANGING") {
+        if (stableRegime === "RANGING") {
           const rangeMap = { PRIME: "Mean Revert", LONDON: "Mean Revert", NY: "Range Scalp" };
           const override = rangeMap[sess];
           if (override && override !== recommended) {
@@ -5831,7 +5771,7 @@ function useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, 
             reason      = `Market's ranging — switching to ${override}. ${matrix.primary} needs momentum we don't have right now.`;
             notifType   = "regime";
           }
-        } else if (globalRegime === "VOLATILE") {
+        } else if (stableRegime === "VOLATILE") {
           if (recommended !== "Mean Revert") {
             recommended = "Mean Revert";
             reason      = `Volatile conditions — Mean Revert only. Tighter setups, higher bar.`;
@@ -6130,6 +6070,20 @@ export default function TradingRobot() {
   const oandaNavRef = useRef(null);
   const xavierIntelRef = useRef(null);
   const reinforcement = useTradeReinforcement(closedTrades);
+
+  // Reset reinforcement thresholds to defaults on mount — clears any biased data from sim runs
+  useEffect(() => {
+    const stored = localStorage.getItem("reinforcement_thresholds");
+    if (stored) {
+      try {
+        const r = JSON.parse(stored);
+        if (r.pairThresholds) Object.keys(r.pairThresholds).forEach(k => { r.pairThresholds[k] = 65; });
+        if (r.strategyPenalties) r.strategyPenalties = {};
+        if (r.sessionBonuses)    r.sessionBonuses    = {};
+        localStorage.setItem("reinforcement_thresholds", JSON.stringify(r));
+      } catch {}
+    }
+  }, []);
 
   const signalCount = Object.values(signalMap).filter(Boolean).length;
 
@@ -6431,9 +6385,6 @@ export default function TradingRobot() {
     const poll = async () => {
       // Read ref immediately at top — before any awaits — to capture true current state
       const refSnapshot = signalDataRef.current;
-      console.log('[REF_READ]', Object.keys(refSnapshot), JSON.stringify(refSnapshot));
-      console.log('[AUTO] checking signals:', Object.entries(refSnapshot).map(([p, s]) => `${p}:${s?.signal?.score ?? 'none'}`));
-
       // 1. Sync server display state
       try {
         const r = await fetch(`${BRIDGE}/auto-trades`);
@@ -6449,18 +6400,12 @@ export default function TradingRobot() {
       for (const [pair, data] of Object.entries(refSnapshot)) {
         if (!data) continue;
         const { signal, price, history } = data;
-        if ((signal.score ?? 0) < settings.minConfidence) {
-          console.log('[AUTO] blocked:', pair, 'reason: score', signal.score, '< minConfidence', settings.minConfidence);
-          continue;
-        }
+        if ((signal.score ?? 0) < settings.minConfidence) continue;
         if (autoExecTimestamps.filter(t => Date.now() - t < 3_600_000).length >= settings.maxTradesPerHour) break;
-
-        console.log('[AUTO] executing for', pair, 'score:', signal.score, 'threshold:', settings.minConfidence);
 
         // Gatekeepers
         const gk = runGatekeepers(history, signal, openTradesRef.current, pair, strategyRef.current);
         if (!gk.passed) {
-          console.log('[AUTO] blocked:', pair, 'reason:', gk.rejections[0]?.reason ?? 'gatekeeper');
           onRejectionRef.current?.({
             pair, direction: signal.direction, score: signal.score,
             ...gk.rejections[0],
@@ -6489,10 +6434,7 @@ export default function TradingRobot() {
             }),
           });
           const verdict = await cr.json();
-          if (!verdict.executeAllowed || (verdict.votes?.confirm ?? 0) < settings.consensusRequired) {
-            console.log('[AUTO] blocked:', pair, 'reason: consensus rejected — votes:', verdict.votes?.confirm ?? 0, '/', settings.consensusRequired);
-            continue;
-          }
+          if (!verdict.executeAllowed || (verdict.votes?.confirm ?? 0) < settings.consensusRequired) continue;
 
           autoExecTimestamps.push(Date.now());
           const topReason = verdict.models?.find(m => m.verdict === "CONFIRM")?.reason ?? "Auto consensus";
@@ -6613,21 +6555,12 @@ export default function TradingRobot() {
   }, [recommendedStrategy]); // eslint-disable-line
 
   const onSignalUpdate = useCallback((pair, data) => {
-    console.log('[SIGNAL_UPDATE]', pair, data?.signal?.score ?? null);
     if (data?.signal) {
-      // New signal — store with timestamp so the auto interval can find it
       signalDataRef.current[pair] = { ...data, timestamp: Date.now() };
-      console.log('[REF_WRITE]', pair, data.signal.score, 'ref keys:', Object.keys(signalDataRef.current));
-      console.log(`[SIGNAL] ${pair} → ${data.signal.direction} score:${data.signal.score} threshold:${data.signal.threshold ?? 65}`);
     } else {
-      // Signal cleared by useStableSignal — only evict if the entry is stale (> 35s old)
-      // so the auto interval (30s) has time to execute it before it disappears
       const existing = signalDataRef.current[pair];
       if (existing && Date.now() - existing.timestamp > 35_000) {
         delete signalDataRef.current[pair];
-        console.log('[REF_EVICT]', pair, 'stale — removed');
-      } else if (existing) {
-        console.log('[REF_HOLD]', pair, 'keeping for auto-exec, age:', Date.now() - existing.timestamp, 'ms');
       }
     }
     setSignalMap(prev => {
