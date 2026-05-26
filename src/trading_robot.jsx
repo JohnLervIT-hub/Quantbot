@@ -7459,7 +7459,7 @@ export default function TradingRobot() {
     if (!swingEnabled || Object.keys(pendingSwingSetups).length === 0) return;
     const check = async () => {
       if (isFridayPMBlock() || isSwingNewsBlock()) return;
-      for (const [pair, pendingSig] of Object.entries(pendingSwingSetups)) {
+      for (const [pair] of Object.entries(pendingSwingSetups)) {
         const currentSig = swingSignals[pair];
         if (!currentSig || currentSig.score < 75) { // setup no longer valid
           setPendingSwingSetups(prev => { const n = { ...prev }; delete n[pair]; return n; });
