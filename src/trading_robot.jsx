@@ -1162,7 +1162,7 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
       initial={{ opacity: 0, y: -8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-      style={{ background: "#0d1117", border: "1px solid #21262d", borderLeft: `4px solid ${accentColor}`, borderRadius: 10, padding: "14px", marginTop: 8 }}
+      style={{ background: "#0d1117", borderTop: "1px solid #21262d", borderRight: "1px solid #21262d", borderBottom: "1px solid #21262d", borderLeft: `4px solid ${accentColor}`, borderRadius: 10, padding: "14px", marginTop: 8 }}
     >
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -2051,7 +2051,7 @@ function TradeLog({ trades, isMobile }) {
           trades.slice().reverse().map((t) => (
             <div
               key={t.id}
-              style={{ padding: "10px 12px", borderRadius: 10, fontSize: 12, background: "#161b22", border: "1px solid #21262d", borderLeft: `3px solid ${t.dir === "LONG" ? "#3fb950" : "#f85149"}` }}
+              style={{ padding: "10px 12px", borderRadius: 10, fontSize: 12, background: "#161b22", borderTop: "1px solid #21262d", borderRight: "1px solid #21262d", borderBottom: "1px solid #21262d", borderLeft: `3px solid ${t.dir === "LONG" ? "#3fb950" : "#f85149"}` }}
             >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                 <span style={{ fontWeight: 700, color: "#e6edf3" }}>{t.pair}</span>
@@ -2111,7 +2111,7 @@ function RejectionLogPanel({ log, isMobile }) {
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
         {log.slice(0, 10).map((entry, i) => (
-          <div key={i} style={{ padding: "8px 10px", borderRadius: 7, background: "#0d1117", border: "1px solid #21262d", borderLeft: "3px solid rgba(248,81,73,0.5)" }}>
+          <div key={i} style={{ padding: "8px 10px", borderRadius: 7, background: "#0d1117", borderTop: "1px solid #21262d", borderRight: "1px solid #21262d", borderBottom: "1px solid #21262d", borderLeft: "3px solid rgba(248,81,73,0.5)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: "#e6edf3" }}>
                 {entry.pair} <span style={{ color: entry.direction === "LONG" ? "#3fb950" : "#f85149" }}>{entry.direction}</span>
@@ -2155,7 +2155,7 @@ function TradeManagementLog({ alerts, onDismiss, isMobile }) {
         {alerts.slice(0, 8).map(a => {
           const s = TME_ACTION_STYLES[a.action] || { color: "#8b949e", border: "rgba(139,148,158,0.4)", icon: "·" };
           return (
-            <div key={a.id} style={{ padding: "7px 10px", borderRadius: 7, background: "#0d1117", border: "1px solid #21262d", borderLeft: `3px solid ${s.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <div key={a.id} style={{ padding: "7px 10px", borderRadius: 7, background: "#0d1117", borderTop: "1px solid #21262d", borderRight: "1px solid #21262d", borderBottom: "1px solid #21262d", borderLeft: `3px solid ${s.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                 <span style={{ fontSize: 12, color: s.color }}>{s.icon}</span>
                 <span style={{ fontFamily: FONT_MONO, fontSize: 11, fontWeight: 600, color: "#e6edf3", flexShrink: 0 }}>{a.pair}</span>
@@ -2445,7 +2445,7 @@ function DoctrineCard({ rule, detail, catColor, isExpanded, isSelected, onToggle
   return (
     <div
       onClick={() => { onToggle(); onSelect(rule); }}
-      style={{ background: isSelected ? `${catColor}0c` : "#161b22", border: `1px solid ${isSelected ? catColor : "#21262d"}`, borderLeft: `3px solid ${wStyle.leftBorder}`, borderRadius: 8, cursor: "pointer", overflow: "hidden", transition: "border-color 0.15s, background 0.15s" }}
+      style={{ background: isSelected ? `${catColor}0c` : "#161b22", borderTop: `1px solid ${isSelected ? catColor : "#21262d"}`, borderRight: `1px solid ${isSelected ? catColor : "#21262d"}`, borderBottom: `1px solid ${isSelected ? catColor : "#21262d"}`, borderLeft: `3px solid ${wStyle.leftBorder}`, borderRadius: 8, cursor: "pointer", overflow: "hidden", transition: "border-color 0.15s, background 0.15s" }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px" }}>
         <div style={{ flex: 1, fontSize: 12, color: isSelected ? "#e6edf3" : "#c9d1d9", lineHeight: 1.4, fontWeight: isSelected ? 600 : 400 }}>{rule}</div>
@@ -2643,21 +2643,22 @@ function statusBadge(status) {
 
 // ─── RISK TAB HELPERS ─────────────────────────────────────────────────────────
 function RiskGauge({ heat = 0 }) {
-  if (typeof heat !== "number" || isNaN(heat)) return null;
+  const safeHeat = typeof heat === "number" && !isNaN(heat) ? heat : 0;
   const cx = 140, cy = 124, r = 92;
   const arcLen = Math.PI * r;
   const g50 = arcLen * 0.5;   // green zone length  (0–4R)
   const g25 = arcLen * 0.25;  // amber zone length  (4–6R)
   const GAP = 3;               // px gap between zone segments
 
-  const clamped   = Math.min(Math.max(heat, 0), 8);
+  const clamped   = Math.min(Math.max(safeHeat, 0), 8);
   const fillLen   = (clamped / 8) * arcLen;
-  const heatColor = heat >= 6 ? "#f85149" : heat >= 4 ? "#d29922" : "#3fb950";
+  const heatColor = safeHeat >= 6 ? "#f85149" : safeHeat >= 4 ? "#d29922" : "#3fb950";
 
   // Direct needle endpoint — reliable cross-browser (no CSS rotation on SVG)
   const needleRad = (180 - (clamped / 8) * 180) * Math.PI / 180;
   const nx = cx + 76 * Math.cos(needleRad);
   const ny = cy - 76 * Math.sin(needleRad);
+  const needleValid = Number.isFinite(nx) && Number.isFinite(ny);
 
   // Tick marks at 0, 2, 4, 6, 8R
   const ticks = [0, 2, 4, 6, 8].map(v => {
@@ -2725,11 +2726,13 @@ function RiskGauge({ heat = 0 }) {
       <text x={cx} y={cy - 12} textAnchor="middle" dominantBaseline="middle"
         fontSize="8" fill="#484f58" letterSpacing="2" fontFamily={FONT_MONO}>PORTFOLIO HEAT</text>
 
-      {/* Needle — Framer Motion animates x2/y2 */}
-      <motion.line x1={cx} y1={cy} animate={{ x2: nx, y2: ny }}
-        transition={{ type: "spring", stiffness: 80, damping: 16 }}
-        stroke={heatColor} strokeWidth="2.5" strokeLinecap="round"
-        style={{ transition: "stroke 0.4s ease" }} />
+      {/* Needle — guard ensures x2/y2 are always finite before render */}
+      {needleValid && (
+        <motion.line x1={cx} y1={cy} x2={nx} y2={ny} animate={{ x2: nx, y2: ny }}
+          transition={{ type: "spring", stiffness: 80, damping: 16 }}
+          stroke={heatColor} strokeWidth="2.5" strokeLinecap="round"
+          style={{ transition: "stroke 0.4s ease" }} />
+      )}
       <circle cx={cx} cy={cy} r="7" fill="#161b22" stroke={heatColor} strokeWidth="2.5"
         style={{ transition: "stroke 0.4s ease" }} />
       <circle cx={cx} cy={cy} r="3" fill={heatColor}
@@ -2857,7 +2860,7 @@ function RiskTab({ trades, openTrades = [], balance, session = "AVOID" }) {
       {/* ── Section 1: Risk Status Banner ─────────────────────────────────── */}
       <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}
         style={{ padding: "14px 20px", borderRadius: 10, background: sc.bg,
-          border: `1px solid ${sc.border}`, borderLeft: `3px solid ${sc.leftBorder}`,
+          borderTop: `1px solid ${sc.border}`, borderRight: `1px solid ${sc.border}`, borderBottom: `1px solid ${sc.border}`, borderLeft: `3px solid ${sc.leftBorder}`,
           display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 15, color: sc.color,
@@ -3246,7 +3249,7 @@ function AICoachTab({ trades, closedTrades = [], isMobile, session = "AVOID", st
                   const rMult = t.pnl != null ? (isWin ? "+" : "") + (t.pnl / 1.5).toFixed(2) + "R" : null;
                   return (
                     <motion.div key={t.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
-                      style={{ padding: "11px 13px", borderRadius: 9, background: "#161b22", border: `1px solid ${isWin ? "rgba(63,185,80,0.18)" : "rgba(248,81,73,0.18)"}`, borderLeft: `3px solid ${isWin ? "#3fb950" : "#f85149"}` }}
+                      style={{ padding: "11px 13px", borderRadius: 9, background: "#161b22", borderTop: `1px solid ${isWin ? "rgba(63,185,80,0.18)" : "rgba(248,81,73,0.18)"}`, borderRight: `1px solid ${isWin ? "rgba(63,185,80,0.18)" : "rgba(248,81,73,0.18)"}`, borderBottom: `1px solid ${isWin ? "rgba(63,185,80,0.18)" : "rgba(248,81,73,0.18)"}`, borderLeft: `3px solid ${isWin ? "#3fb950" : "#f85149"}` }}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
                         <span style={{ fontSize: 12, fontWeight: 700, color: "#e6edf3", fontFamily: FONT_MONO }}>{t.pair}</span>
@@ -3545,7 +3548,7 @@ const NewsCard = memo(function NewsCard({ item, isMobile }) {
   const impl     = getImplication(item.title, item.sentiment);
 
   return (
-    <div style={{ background: "#161b22", border: "1px solid #21262d", borderLeft: `3px solid ${ss.border}`, borderRadius: 8, overflow: "hidden", transition: "background 0.15s" }}
+    <div style={{ background: "#161b22", borderTop: "1px solid #21262d", borderRight: "1px solid #21262d", borderBottom: "1px solid #21262d", borderLeft: `3px solid ${ss.border}`, borderRadius: 8, overflow: "hidden", transition: "background 0.15s" }}
       onMouseEnter={e => e.currentTarget.style.background = "#1c2333"}
       onMouseLeave={e => e.currentTarget.style.background = "#161b22"}>
       <div style={{ padding: isMobile ? "10px 12px" : "12px 16px" }}>
@@ -3723,7 +3726,7 @@ function NewsTab({ isMobile }) {
       ) : loading && !hasCached ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {[...Array(6)].map((_, i) => (
-            <div key={i} style={{ background: "#161b22", border: "1px solid #21262d", borderLeft: "3px solid #21262d", borderRadius: 8, padding: "14px 16px", height: 68 }}>
+            <div key={i} style={{ background: "#161b22", borderTop: "1px solid #21262d", borderRight: "1px solid #21262d", borderBottom: "1px solid #21262d", borderLeft: "3px solid #21262d", borderRadius: 8, padding: "14px 16px", height: 68 }}>
               <div style={{ height: 11, background: "#21262d", borderRadius: 4, marginBottom: 10, width: `${65 + (i % 3) * 10}%` }} />
               <div style={{ height: 9, background: "#161b22", border: "1px solid #21262d", borderRadius: 10, width: 80 }} />
             </div>
@@ -3914,7 +3917,7 @@ function PaperTradesPanel({ trades, isMobile }) {
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {trades.slice(0, 20).map(t => (
-          <div key={t.id} style={{ padding: "9px 12px", borderRadius: 8, background: "#0d1117", border: "1px solid #21262d", borderLeft: "3px solid #484f58" }}>
+          <div key={t.id} style={{ padding: "9px 12px", borderRadius: 8, background: "#0d1117", borderTop: "1px solid #21262d", borderRight: "1px solid #21262d", borderBottom: "1px solid #21262d", borderLeft: "3px solid #484f58" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
               <span style={{ fontSize: 10, fontWeight: 700, background: "#21262d", color: "#8b949e", padding: "1px 6px", borderRadius: 3, letterSpacing: "0.5px" }}>PAPER</span>
               <span style={{ fontWeight: 700, fontSize: 13, color: "#e6edf3" }}>{t.instrument.replace("_", "/")}</span>
@@ -3964,7 +3967,7 @@ function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile }) {
               return (
                 <div
                   key={trade.id}
-                  style={{ padding: "12px", borderRadius: 10, background: "#161b22", border: "1px solid #21262d", borderLeft: `3px solid ${isLong ? "#3fb950" : "#f85149"}` }}
+                  style={{ padding: "12px", borderRadius: 10, background: "#161b22", borderTop: "1px solid #21262d", borderRight: "1px solid #21262d", borderBottom: "1px solid #21262d", borderLeft: `3px solid ${isLong ? "#3fb950" : "#f85149"}` }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                     <span style={{ fontWeight: 700, color: "#e6edf3", fontSize: 14 }}>{pair}</span>
@@ -5774,7 +5777,7 @@ function StrategyNotification({ notification, onDismiss }) {
           animate={{ opacity: 1, x: 0 }}
           exit={{ opacity: 0, x: 40 }}
           transition={{ duration: 0.25 }}
-          style={{ position: "fixed", top: 16, right: 16, zIndex: 999, background: "#161b22", border: "1px solid #21262d", borderLeft: "3px solid #58a6ff", borderRadius: 10, padding: "12px 14px", maxWidth: 300, display: "flex", gap: 10, alignItems: "flex-start", boxShadow: "0 4px 24px rgba(0,0,0,0.5)" }}
+          style={{ position: "fixed", top: 16, right: 16, zIndex: 999, background: "#161b22", borderTop: "1px solid #21262d", borderRight: "1px solid #21262d", borderBottom: "1px solid #21262d", borderLeft: "3px solid #58a6ff", borderRadius: 10, padding: "12px 14px", maxWidth: 300, display: "flex", gap: 10, alignItems: "flex-start", boxShadow: "0 4px 24px rgba(0,0,0,0.5)" }}
         >
           <div style={{ width: 26, height: 26, borderRadius: "50%", background: "linear-gradient(135deg, #1f4e8c 0%, #0d1117 100%)", border: "1px solid #388bfd", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
             <span style={{ fontSize: 10, fontWeight: 800, color: "#58a6ff", fontFamily: FONT_MONO }}>X</span>
