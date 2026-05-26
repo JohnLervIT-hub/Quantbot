@@ -113,7 +113,7 @@ const STRATEGY_SESSION_MATRIX = {
   SYDNEY: { primary: "Range Scalp",  fallback: "Mean Revert"  },
   TOKYO:  { primary: "Mean Revert",  fallback: "Range Scalp"  },
   LONDON: { primary: "Trend Follow", fallback: "Breakout"     },
-  PRIME:  { primary: "Breakout",     fallback: "Trend Follow" },
+  PRIME:  { primary: "Trend Follow", fallback: "Breakout"    },
   NY:     { primary: "Momentum",     fallback: "Trend Follow" },
   AVOID:  { primary: null,           fallback: null           },
 };
@@ -5821,11 +5821,18 @@ function useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, 
         reason      = `${sess} session — ${matrix.primary} is primary`;
         notifType   = "session";
 
+        // ── Regime override: Breakout never fires in ranging market ──
+        if (globalRegime === "RANGING" && recommended === "Breakout") {
+          recommended = "Trend Follow";
+          reason      = `Market is ranging — switching from Breakout to Trend Follow`;
+          notifType   = "session";
+        }
+
         // ── Fallback: activate if primary fires no signals in 45 minutes ──
         const FALLBACK_WAIT_MS = 45 * 60 * 1000;
         if (matrix.fallback && Date.now() - lastSignalTime.current > FALLBACK_WAIT_MS) {
           recommended = matrix.fallback;
-          reason      = `No ${matrix.primary} setups in 45 minutes — trying ${matrix.fallback} while we wait`;
+          reason      = `No ${recommended} setups in 45 minutes — trying ${matrix.fallback} while we wait`;
           notifType   = "fallback";
         }
       }
@@ -5896,7 +5903,7 @@ function useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, 
     const boundaries = [
       { h: 0,  session: "TOKYO",  strategy: "Mean Revert"  },
       { h: 7,  session: "LONDON", strategy: "Trend Follow" },
-      { h: 13, session: "PRIME",  strategy: "Breakout"     },
+      { h: 13, session: "PRIME",  strategy: "Trend Follow" },
       { h: 17, session: "NY",     strategy: "Momentum"     },
       { h: 20, session: "AVOID",  strategy: "Mean Revert"  },
       { h: 22, session: "SYDNEY", strategy: "Range Scalp"  },
@@ -6582,6 +6589,9 @@ export default function TradingRobot() {
 
   const onSignalUpdate = useCallback((pair, data) => {
     signalDataRef.current[pair] = data;
+    if (data?.signal) {
+      console.log(`[SIGNAL] ${pair} → ${data.signal.direction} score:${data.signal.score} threshold:${data.signal.threshold ?? 65}`);
+    }
     setSignalMap(prev => {
       const hasSig = !!data;
       return prev[pair] === hasSig ? prev : { ...prev, [pair]: hasSig };
