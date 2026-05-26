@@ -5821,11 +5821,21 @@ function useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, 
         reason      = `${sess} session — ${matrix.primary} is primary`;
         notifType   = "session";
 
-        // ── Regime override: Breakout never fires in ranging market ──
-        if (globalRegime === "RANGING" && recommended === "Breakout") {
-          recommended = "Trend Follow";
-          reason      = `Market is ranging — switching from Breakout to Trend Follow`;
-          notifType   = "session";
+        // ── Regime-aware override — fires before fallback ──
+        if (globalRegime === "RANGING") {
+          const rangeMap = { PRIME: "Mean Revert", LONDON: "Mean Revert", NY: "Range Scalp" };
+          const override = rangeMap[sess];
+          if (override && override !== recommended) {
+            recommended = override;
+            reason      = `Market's ranging — switching to ${override}. ${matrix.primary} needs momentum we don't have right now.`;
+            notifType   = "regime";
+          }
+        } else if (globalRegime === "VOLATILE") {
+          if (recommended !== "Mean Revert") {
+            recommended = "Mean Revert";
+            reason      = `Volatile conditions — Mean Revert only. Tighter setups, higher bar.`;
+            notifType   = "regime";
+          }
         }
 
         // ── Fallback: activate if primary fires no signals in 45 minutes ──
@@ -5894,6 +5904,7 @@ function useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, 
         performance: reason,
         streak:      "Three losses in a row — switching to Mean Revert. Smaller signals, tighter risk.",
         fallback:    reason,
+        regime:      reason,
       };
       setNotification({ text: notifMap[notifType] || reason, key: Date.now() });
     }
