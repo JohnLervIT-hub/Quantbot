@@ -5711,217 +5711,18 @@ const MOBILE_TABS = [
 ];
 
 // ─── STRATEGY INTELLIGENCE ENGINE ────────────────────────────────────────────
-function useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, globalRegime }) {
-  const [recommendedStrategy, setRecommendedStrategy] = useState(strategy);
-  const [strategyReason, setStrategyReason]           = useState("");
-  const [notification, setNotification]               = useState(null);
-  const [performanceMap, setPerformanceMap]           = useState({});
-  const [nextSwitch, setNextSwitch]                   = useState(null);
-  const manualOverrideAt  = useRef(null);
-  const prevRecommended   = useRef(null);
-  const closedTradesRef   = useRef(closedTrades);
-  const openTradesRef2    = useRef(openTrades);
-  const strategyRef2      = useRef(strategy);
-  const lastSignalTime    = useRef(Date.now());
-  const lastOpenCountRef  = useRef(openTrades.length);
-  const lastSessionRef    = useRef(null);
-  const regimeHistoryRef  = useRef([]);
-  closedTradesRef.current  = closedTrades;
-  openTradesRef2.current   = openTrades;
-  strategyRef2.current     = strategy;
-
-  const MANUAL_LOCK_MS = 2 * 60 * 60 * 1000;
-
-  const isManualActive = () => manualOverrideAt.current && (Date.now() - manualOverrideAt.current < MANUAL_LOCK_MS);
-
-  const triggerManual = useCallback((s) => {
-    manualOverrideAt.current = Date.now();
-    prevRecommended.current  = s;
-    setRecommendedStrategy(s);
-  }, []);
-
-  const compute = useCallback(() => {
-    const sess  = getCurrentSession();
-    const heat  = openTradesRef2.current.length * 1.5;
-    const cur   = strategyRef2.current;
-    const trades = closedTradesRef.current;
-
-    if (isManualActive()) {
-      // Still in manual lock — update reason/next but don't switch
-      const lockLeft = Math.ceil((MANUAL_LOCK_MS - (Date.now() - manualOverrideAt.current)) / 60000);
-      setStrategyReason(`Manual override · auto-selection resumes in ${lockLeft}m`);
-      return;
-    }
-
-    // ── Risk gate ──
-    let recommended, reason, notifType;
-    if (heat >= 4) {
-      recommended = "Mean Revert";
-      reason      = `Heat at ${heat.toFixed(1)}R — at limit, Mean Revert minimizes new exposure`;
-      notifType   = "risk";
-    } else {
-      // ── Signal activity tracking (proxy: new open trade = signal fired) ──
-      const curOpenCount = openTradesRef2.current.length;
-      if (curOpenCount !== lastOpenCountRef.current) {
-        lastSignalTime.current = Date.now();
-        lastOpenCountRef.current = curOpenCount;
-      }
-      // Reset signal timer on session boundary so fallback doesn't trigger immediately
-      if (sess !== lastSessionRef.current) {
-        lastSignalTime.current = Date.now();
-        lastSessionRef.current = sess;
-      }
-
-      // ── Session matrix — ONE primary strategy ──
-      const matrix = STRATEGY_SESSION_MATRIX[sess] || STRATEGY_SESSION_MATRIX.AVOID;
-      if (!matrix.primary) {
-        recommended = "Mean Revert";
-        reason      = "AVOID session — Mean Revert only, minimal exposure";
-        notifType   = "session";
-      } else {
-        recommended = matrix.primary;
-        reason      = `${sess} session — ${matrix.primary} is primary`;
-        notifType   = "session";
-
-        // ── Regime stability debounce — require 3/5 consecutive readings ──
-        regimeHistoryRef.current.push(globalRegime);
-        if (regimeHistoryRef.current.length > 5) regimeHistoryRef.current.shift();
-        const regimeCounts = regimeHistoryRef.current.reduce((acc, r) => {
-          if (r) acc[r] = (acc[r] || 0) + 1;
-          return acc;
-        }, {});
-        const stableRegime = Object.entries(regimeCounts)
-          .sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-
-        // ── Regime-aware override — fires before fallback ──
-        if (stableRegime === "RANGING") {
-          const rangeMap = { PRIME: "Mean Revert", LONDON: "Mean Revert" };
-          const override = rangeMap[sess];
-          if (override && override !== recommended) {
-            recommended = override;
-            reason      = `Market's ranging — switching to ${override}. ${matrix.primary} needs momentum we don't have right now.`;
-            notifType   = "regime";
-          }
-        } else if (stableRegime === "VOLATILE") {
-          if (recommended !== "Mean Revert") {
-            recommended = "Mean Revert";
-            reason      = `Volatile conditions — Mean Revert only. Tighter setups, higher bar.`;
-            notifType   = "regime";
-          }
-        }
-
-        // ── Fallback: activate if primary fires no signals in 45 minutes ──
-        const FALLBACK_WAIT_MS = 45 * 60 * 1000;
-        if (matrix.fallback && Date.now() - lastSignalTime.current > FALLBACK_WAIT_MS) {
-          recommended = matrix.fallback;
-          reason      = `No ${recommended} setups in 45 minutes — trying ${matrix.fallback} while we wait`;
-          notifType   = "fallback";
-        }
-      }
-
-      // ── Live performance override (≥10 closed trades) ──
-      if (trades.length >= 10) {
-        const perfMap = {};
-        STRATEGIES.forEach(s => {
-          const st = trades.filter(t => t.strategy === s);
-          if (st.length < 3) return;
-          const wins    = st.filter(t => t.pnl > 0);
-          const losses  = st.filter(t => t.pnl <= 0);
-          const winRate = wins.length / st.length;
-          const avgWin  = wins.length  ? wins.reduce((a, t) => a + t.pnl, 0) / wins.length   : 0;
-          const avgLoss = losses.length ? Math.abs(losses.reduce((a, t) => a + t.pnl, 0) / losses.length) : 0;
-          perfMap[s] = { winRate, avgWin, avgLoss, expectancy: winRate * avgWin - (1 - winRate) * avgLoss, tradeCount: st.length };
-        });
-        setPerformanceMap(perfMap);
-
-        // Promote a better performer
-        let bestExp = -Infinity, bestStrat = null;
-        Object.entries(perfMap).forEach(([s, p]) => {
-          if (p.expectancy > bestExp && p.tradeCount >= 3) { bestExp = p.expectancy; bestStrat = s; }
-        });
-        const curRec = perfMap[recommended];
-        if (bestStrat && bestStrat !== recommended && bestExp > 0 && (!curRec || bestExp > curRec.expectancy + 0.0005)) {
-          recommended = bestStrat;
-          reason      = `${bestStrat} outperforming — ${(perfMap[bestStrat].winRate * 100).toFixed(0)}% win rate this session`;
-          notifType   = "performance";
-        }
-        // Demote negative expectancy
-        const curPerf = perfMap[cur];
-        if (curPerf && curPerf.expectancy < 0 && curPerf.tradeCount >= 5 && recommended === cur) {
-          recommended = matrix.fallback || matrix.primary || "Mean Revert";
-          reason      = `${cur} showing negative expectancy — rotating to ${recommended}`;
-          notifType   = "performance";
-        }
-      }
-
-      // ── Loss streak ──
-      const recentLosses = trades.slice(-3).filter(t => t.pnl < 0).length;
-      if (recentLosses === 3 && recommended !== "Mean Revert") {
-        recommended = "Mean Revert";
-        reason      = "Three losses in a row — Mean Revert until conditions improve";
-        notifType   = "streak";
-      }
-    }
-
-    setStrategyReason(reason);
-
-    // Only switch if genuinely different and not already last auto-switch
-    if (recommended !== cur && recommended !== prevRecommended.current) {
-      prevRecommended.current = recommended;
-      setRecommendedStrategy(recommended);
-
-      const notifMap = {
-        session:     `${sess === "PRIME" ? "Prime overlap is live" : sess + "'s open"} — switching to ${recommended}. This is where it performs best.`,
-        risk:        `Heat's at ${heat.toFixed(1)}R. Dropping to Mean Revert — smaller positions until something closes.`,
-        performance: reason,
-        streak:      "Three losses in a row — switching to Mean Revert. Smaller signals, tighter risk.",
-        fallback:    reason,
-        regime:      reason,
-      };
-      setNotification({ text: notifMap[notifType] || reason, key: Date.now() });
-    }
-
-    // ── Next session switch ──
-    const nowUTC = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
-    const boundaries = [
-      { h: 0,  session: "TOKYO",  strategy: "Mean Revert"  },
-      { h: 7,  session: "LONDON", strategy: "Trend Follow" },
-      { h: 13, session: "PRIME",  strategy: "Trend Follow" },
-      { h: 17, session: "NY",     strategy: "Momentum"     },
-      { h: 20, session: "AVOID",  strategy: "Mean Revert"  },
-      { h: 22, session: "SYDNEY", strategy: "Range Scalp"  },
-    ];
-    let minD = Infinity, nxt = null;
-    for (const b of boundaries) {
-      let d = b.h * 60 - nowUTC;
-      if (d <= 0) d += 1440;
-      if (d < minD) { minD = d; nxt = b; }
-    }
-    if (nxt) {
-      const h = Math.floor(minD / 60), m = String(minD % 60).padStart(2, "0");
-      const mdt = String((nxt.h - 6 + 24) % 24).padStart(2, "0");
-      setNextSwitch({ strategy: nxt.strategy, session: nxt.session, countdown: `${h}h ${m}m`, mdtTime: `${mdt}:00 Calgary` });
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [globalRegime]);
-
-  useEffect(() => {
-    compute();
-    const id = setInterval(compute, 60_000);
-    return () => clearInterval(id);
-  }, [compute]);
-
-  // Recompute when heat or session-relevant state changes
-  useEffect(() => { compute(); }, [openTrades.length, closedTrades.length, balance]);// eslint-disable-line
-
-  const nowMs = Date.now();
-  const isManualOverride = !!(manualOverrideAt.current && (nowMs - manualOverrideAt.current < MANUAL_LOCK_MS));
-  const manualLockMins = isManualOverride
-    ? Math.ceil((MANUAL_LOCK_MS - (nowMs - manualOverrideAt.current)) / 60000)
-    : 0;
-
-  return { recommendedStrategy, strategyReason, notification, clearNotification: () => setNotification(null), nextSwitch, performanceMap, isManualOverride, manualLockMins, triggerManual };
+function useXavierStrategy(session) {
+  const XAVIER_RULES = {
+    TOKYO:  "Mean Revert",
+    SYDNEY: "Mean Revert",
+    LONDON: "Trend Follow",
+    PRIME:  "Trend Follow",
+    NY:     "Momentum",
+    AVOID:  null,
+  };
+  return XAVIER_RULES[session] || "Mean Revert";
 }
+
 
 function StrategyNotification({ notification, onDismiss }) {
   useEffect(() => {
@@ -6568,26 +6369,15 @@ export default function TradingRobot() {
     : regimeValues.filter(r => r === "TRENDING").length > regimeValues.length / 2 ? "TRENDING"
     : "RANGING";
 
-  const STRATEGY_DISABLED = {
-    "Mean Revert":  globalRegime === "TRENDING"  ? "Trending market — mean reversion signals unreliable" : null,
-    "Trend Follow": globalRegime === "VOLATILE"  ? "Extreme volatility — trend signals unreliable" : null,
-  };
-  const STRATEGY_WARNING = {
-    "Trend Follow": globalRegime === "RANGING"   ? "Ranging market — no strong trend · proceed with caution" : null,
-  };
 
-  // ── Strategy Intelligence Engine ──
-  const {
-    recommendedStrategy, strategyReason, notification: strategyNotif,
-    clearNotification: clearStrategyNotif, nextSwitch: strategyNextSwitch,
-    performanceMap: strategyPerfMap, isManualOverride, manualLockMins, triggerManual,
-  } = useStrategyIntelligence({ strategy, closedTrades, openTrades, balance, globalRegime });
-
+  // ── Xavier Strategy — one strategy per session, no overrides ──
+  const session = getCurrentSession();
+  const xavierStrategy = useXavierStrategy(session);
   useEffect(() => {
-    if (recommendedStrategy && recommendedStrategy !== strategy && !STRATEGY_DISABLED[recommendedStrategy]) {
-      handleStrategyChange(recommendedStrategy);
+    if (xavierStrategy && xavierStrategy !== strategy) {
+      handleStrategyChange(xavierStrategy);
     }
-  }, [recommendedStrategy]); // eslint-disable-line
+  }, [session]); // eslint-disable-line
 
   const onSignalUpdate = useCallback((pair, data) => {
     if (data?.signal) {
@@ -6664,7 +6454,6 @@ export default function TradingRobot() {
       {showOnboarding && (
         <XavierOnboarding onComplete={completeOnboarding} enableAutoMode={enableAutoMode} />
       )}
-      <StrategyNotification notification={strategyNotif} onDismiss={clearStrategyNotif} />
       {/* ── Header ── */}
       {isMobile ? (
         /* ── Mobile command-center header ── */
@@ -6800,29 +6589,19 @@ export default function TradingRobot() {
       }}>
         {!isMobile && <span style={{ fontSize: 11, color: "#8b949e", marginRight: 4 }}>Strategy</span>}
         {STRATEGIES.map(s => {
-          const disabledReason = STRATEGY_DISABLED[s];
-          const warningReason  = !disabledReason ? STRATEGY_WARNING[s] : null;
-          const isDisabled = !!disabledReason;
-          const isWarning  = !!warningReason;
-          const isActive   = strategy === s;
-          const isNext     = !isDisabled && !isActive && strategyNextSwitch?.strategy === s;
+          const isActive = strategy === s;
           return (
             <div key={s} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2, flexShrink: 0 }}>
               <button
-                onClick={() => { if (!isDisabled) { triggerManual(s); handleStrategyChange(s); } }}
-                title={isNext ? `Xavier will switch to ${s} at ${strategyNextSwitch.session} open in ${strategyNextSwitch.countdown}` : disabledReason || warningReason || ""}
+                onClick={() => handleStrategyChange(s)}
                 style={{
                   fontSize: isMobile ? 11 : 12,
                   padding: isMobile ? "5px 14px" : "6px 14px",
                   borderRadius: isMobile ? "20px" : "6px",
-                  cursor: isDisabled ? "not-allowed" : "pointer",
-                  border: isDisabled ? "1px solid #21262d"
-                    : isActive   ? "1px solid #58a6ff"
-                    : isWarning  ? "1px solid #7a5200"
-                    : isNext     ? "1px dashed #484f58"
-                    : "1px solid #30363d",
-                  background: isDisabled ? "#0d1117" : isActive ? "#132f4c" : isWarning ? "rgba(210,153,34,0.06)" : "#161b22",
-                  color: isDisabled ? "#484f58" : isActive ? "#58a6ff" : isWarning ? "#d29922" : isNext ? "#6e7681" : "#8b949e",
+                  cursor: "pointer",
+                  border: isActive ? "1px solid #58a6ff" : "1px solid #30363d",
+                  background: isActive ? "#132f4c" : "#161b22",
+                  color: isActive ? "#58a6ff" : "#8b949e",
                   fontWeight: isActive ? 600 : 400,
                   fontFamily: "inherit",
                   transition: "all 0.15s",
@@ -6830,31 +6609,19 @@ export default function TradingRobot() {
                   position: "relative",
                   pointerEvents: "all",
                   whiteSpace: "nowrap",
-                  opacity: isDisabled ? 0.45 : 1,
-                  textDecoration: isDisabled ? "line-through" : "none",
                 }}
               >
                 {s}
               </button>
-              {isDisabled ? (
-                <span style={{ fontSize: 9, color: "#484f58", fontFamily: FONT_MONO, lineHeight: 1, maxWidth: 80, textAlign: "center", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {globalRegime}
-                </span>
-              ) : isActive ? (
+              {isActive && (
                 <span style={{ fontSize: 9, color: signalCount > 0 ? "#3fb950" : "#484f58", fontFamily: FONT_MONO, lineHeight: 1 }}>
                   {signalCount} signal{signalCount !== 1 ? "s" : ""}
                 </span>
-              ) : isNext ? (
-                <span style={{ fontSize: 9, color: "#484f58", fontFamily: FONT_MONO, lineHeight: 1 }}>next</span>
-              ) : isWarning ? (
-                <span style={{ fontSize: 9, color: "#7a5200", fontFamily: FONT_MONO, lineHeight: 1 }}>caution</span>
-              ) : null}
+              )}
             </div>
           );
         })}
       </div>
-
-      <StrategyIntelCard strategyReason={strategyReason} nextSwitch={strategyNextSwitch} isManualOverride={isManualOverride} manualLockMins={manualLockMins} performanceMap={strategyPerfMap} strategy={strategy} />
 
       {!isMobile ? (
         <div style={{ padding: "0 16px 8px", display: "flex", gap: 0, borderBottom: "0.5px solid var(--color-border-tertiary)", marginBottom: 16 }}>
