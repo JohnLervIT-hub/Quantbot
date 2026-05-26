@@ -166,6 +166,44 @@ app.get('/candles/:instrument', async (req, res) => {
   }
 });
 
+// ─── BACKTEST CANDLES — fetches up to 90 days via sequential 5000-candle requests ─
+app.get('/backtest/candles', async (req, res) => {
+  const { instrument, granularity = 'M5' } = req.query;
+  const days = Math.min(parseInt(req.query.days) || 30, 90);
+  if (!instrument) return res.status(400).json({ error: 'instrument required' });
+
+  const VALID = new Set(['EUR_USD','GBP_USD','USD_JPY','AUD_USD','USD_CAD','EUR_GBP','NZD_USD','XAU_USD','SPX500_USD','BCO_USD']);
+  if (!VALID.has(instrument)) return res.status(400).json({ error: `Invalid instrument: ${instrument}` });
+
+  const now = Date.now();
+  const fromMs = now - days * 24 * 3600 * 1000;
+  const allCandles = [];
+  let currentFrom = fromMs;
+  const MAX_REQUESTS = 10;
+
+  try {
+    for (let i = 0; i < MAX_REQUESTS; i++) {
+      if (currentFrom >= now - 60_000) break;
+      const fromISO = new Date(currentFrom).toISOString();
+      const url = `${BASE}/v3/instruments/${instrument}/candles?granularity=${granularity}&from=${encodeURIComponent(fromISO)}&count=5000&price=M`;
+      const r = await fetch(url, { headers: H });
+      if (!r.ok) { const d = await r.json(); return res.status(r.status).json(d); }
+      const data = await r.json();
+      if (!Array.isArray(data.candles) || data.candles.length === 0) break;
+      allCandles.push(...data.candles.filter(c => new Date(c.time).getTime() <= now));
+      const lastTime = new Date(data.candles[data.candles.length - 1].time).getTime();
+      if (lastTime >= now || data.candles.length < 500) break;
+      currentFrom = lastTime + 1;
+    }
+    // Deduplicate by timestamp
+    const seen = new Set();
+    const candles = allCandles.filter(c => { if (seen.has(c.time)) return false; seen.add(c.time); return true; });
+    res.json({ candles, count: candles.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,

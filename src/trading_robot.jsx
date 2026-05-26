@@ -178,6 +178,29 @@ function getCurrentSession() {
   return "SYDNEY";
 }
 
+function getNextSessionInfo() {
+  const BOUNDARIES = [
+    { h: 0,  session: "TOKYO",  strategy: "Mean Revert"  },
+    { h: 4,  session: "SYDNEY", strategy: "Mean Revert"  },
+    { h: 8,  session: "LONDON", strategy: "Trend Follow" },
+    { h: 13, session: "PRIME",  strategy: "Trend Follow" },
+    { h: 17, session: "NY",     strategy: "Momentum"     },
+    { h: 20, session: "TOKYO",  strategy: "Mean Revert"  },
+  ];
+  const now = new Date();
+  const nowMins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  let minD = Infinity, nxt = null;
+  for (const b of BOUNDARIES) {
+    let d = b.h * 60 - nowMins;
+    if (d <= 0) d += 1440;
+    if (d < minD) { minD = d; nxt = b; }
+  }
+  if (!nxt) return null;
+  const h = Math.floor(minD / 60), m = String(minD % 60).padStart(2, "0");
+  const calgaryHour = ((nxt.h - 6) + 24) % 24;
+  return { session: nxt.session, strategy: nxt.strategy, countdown: `${h}h ${m}m`, calgaryTime: `${String(calgaryHour).padStart(2, "0")}:00` };
+}
+
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
   useEffect(() => {
@@ -4911,24 +4934,29 @@ function HistoricalBacktest({ isMobile }) {
   const STRAT_COLOR   = { "Mean Revert": "#1D9E75", "Trend Follow": "#58a6ff", "Breakout": "#F97316", "Momentum": "#8B5CF6", "Range Scalp": "#d29922" };
   const BT_PAIRS      = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD"];
   const BT_TIMEFRAMES = ["M5", "M15", "H1"];
-  const BT_DURATIONS  = ["7 days", "30 days", "90 days"];
+  const BT_DURATIONS  = ["7 days", "30 days", "60 days", "90 days"];
   const BT_SESSIONS   = ["All", "Tokyo", "London", "Prime", "NY"];
   const SESSION_UTC   = { All: null, Tokyo: { start: 0, end: 9 }, London: { start: 7, end: 16 }, Prime: { start: 13, end: 17 }, NY: { start: 17, end: 20 } };
 
-  const [btPair,    setBtPair]    = useState("EUR/USD");
-  const [btTf,      setBtTf]      = useState("M15");
-  const [btDur,     setBtDur]     = useState("30 days");
-  const [btSess,    setBtSess]    = useState("All");
-  const [running,   setRunning]   = useState(false);
-  const [progress,  setProgress]  = useState(0);
-  const [runLabel,  setRunLabel]  = useState("");
-  const [results,   setResults]   = useState(null); // { stratName: { trades, winRate, expectancyR, … } | null }
-  const [selected,  setSelected]  = useState(null); // strategy name for detail view
-  const [btError,   setBtError]   = useState(null);
+  const [btPair,       setBtPair]       = useState("EUR/USD");
+  const [btTf,         setBtTf]         = useState("M15");
+  const [btDur,        setBtDur]        = useState("30 days");
+  const [btSess,       setBtSess]       = useState("All");
+  const [running,      setRunning]      = useState(false);
+  const [progress,     setProgress]     = useState(0);
+  const [runLabel,     setRunLabel]     = useState("");
+  const [results,      setResults]      = useState(null);
+  const [selected,     setSelected]     = useState(null);
+  const [btError,      setBtError]      = useState(null);
+  const [candleInfo,   setCandleInfo]   = useState(null); // { count, fromDate, toDate }
   const cancelRef = useRef(false);
 
   const decFor = (p) => p.includes("JPY") ? 3 : p.includes("XAU") || p.includes("SPX") ? 2 : 5;
   const isInSess = (h, s) => { const r = SESSION_UTC[s]; return !r || (h >= r.start && h < r.end); };
+  const fmtDate = (iso) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  };
 
   const runOneStrategy = async (strat, closes, candles, pair, sess, baseProgress) => {
     const trades = [];
@@ -4990,24 +5018,47 @@ function HistoricalBacktest({ isMobile }) {
     const equityCurve = trades.reduce((acc, t) => { acc.push(acc[acc.length - 1] + t.rMultiple); return acc; }, [0]);
     let maxDD = 0, peak = equityCurve[0];
     for (const v of equityCurve) { if (v > peak) peak = v; if (peak - v > maxDD) maxDD = peak - v; }
-    return { trades, winRate, expectancyR, profitFactor, equityCurve, maxDD, totalR: equityCurve[equityCurve.length - 1] };
+
+    // Sharpe ratio (per-trade, mean/std of R-multiples)
+    const rArr = trades.map(t => t.rMultiple);
+    const rMean = rArr.reduce((a, b) => a + b, 0) / rArr.length;
+    const rStd = Math.sqrt(rArr.reduce((a, b) => a + (b - rMean) ** 2, 0) / rArr.length);
+    const sharpe = rStd > 0 ? parseFloat((rMean / rStd).toFixed(2)) : 0;
+
+    // Max consecutive losses
+    let maxConsecLosses = 0, curStreak = 0;
+    for (const t of trades) { if (!t.win) { curStreak++; maxConsecLosses = Math.max(maxConsecLosses, curStreak); } else curStreak = 0; }
+
+    // Validity confidence
+    const validityScore = trades.length >= 100 ? "High" : trades.length >= 30 ? "Moderate" : "Low";
+
+    return { trades, winRate, expectancyR, profitFactor, equityCurve, maxDD, totalR: equityCurve[equityCurve.length - 1], sharpe, maxConsecLosses, validityScore };
   };
 
   const runBacktest = async () => {
-    setRunning(true); setProgress(0); setResults(null); setBtError(null); setSelected(null);
+    setRunning(true); setProgress(0); setResults(null); setBtError(null); setSelected(null); setCandleInfo(null);
     cancelRef.current = false;
 
     const instrument = btPair.replace("/", "_");
-    const cutoff = Date.now() - parseInt(btDur) * 24 * 3600 * 1000;
+    const days = parseInt(btDur);
     let candles = [];
     try {
-      const r = await fetch(`${BRIDGE}/candles/${instrument}?count=500&granularity=${btTf}`);
+      setRunLabel(`Fetching ${btDur} of ${btTf} candles…`);
+      const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${instrument}&granularity=${btTf}&days=${days}`);
       const data = await r.json();
-      if (!Array.isArray(data.candles) || data.candles.length < 22) { setBtError("Not enough candles. Check bridge connection."); setRunning(false); return; }
-      candles = data.candles.filter(c => !c.time || new Date(c.time).getTime() >= cutoff);
-      if (candles.length < 22) { setBtError(`Only ${candles.length} candles in range. Try a longer duration.`); setRunning(false); return; }
+      if (!Array.isArray(data.candles) || data.candles.length < 22) {
+        setBtError("Not enough candles returned. Check bridge connection.");
+        setRunning(false); return;
+      }
+      candles = data.candles;
+      setCandleInfo({
+        count: candles.length,
+        fromDate: candles[0]?.time ? fmtDate(candles[0].time) : "—",
+        toDate:   candles[candles.length - 1]?.time ? fmtDate(candles[candles.length - 1].time) : "—",
+      });
     } catch { setBtError("Failed to fetch candles. Is the bridge running?"); setRunning(false); return; }
 
+    setProgress(15);
     const closes = candles.map(c => parseFloat(c.mid?.c ?? 0)).filter(v => v > 0 && !isNaN(v));
     if (closes.length < 22) { setBtError("Insufficient price data in candles."); setRunning(false); return; }
 
@@ -5016,7 +5067,7 @@ function HistoricalBacktest({ isMobile }) {
       if (cancelRef.current) break;
       const strat = BT_STRATEGIES[si];
       setRunLabel(`Testing ${strat} (${si + 1}/${BT_STRATEGIES.length})…`);
-      allResults[strat] = await runOneStrategy(strat, closes, candles, btPair, btSess, (si / BT_STRATEGIES.length) * 100);
+      allResults[strat] = await runOneStrategy(strat, closes, candles, btPair, btSess, 15 + (si / BT_STRATEGIES.length) * 85);
     }
 
     if (!cancelRef.current) {
@@ -5038,6 +5089,7 @@ function HistoricalBacktest({ isMobile }) {
   const TARGET_R = 0.583;
 
   const detail = results && selected ? results[selected] : null;
+  const VALIDITY_COLOR = { High: "#3fb950", Moderate: "#d29922", Low: "#f85149" };
 
   // Mini sparkline SVG for comparison table rows
   const Spark = ({ eq, color, w = 80, h = 24 }) => {
@@ -5057,10 +5109,10 @@ function HistoricalBacktest({ isMobile }) {
     <div style={{ marginTop: 24, borderTop: "1px solid #21262d", paddingTop: 24 }}>
       <div style={{ marginBottom: 14 }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: "#e6edf3" }}>Historical Backtest Engine</div>
-        <div style={{ fontSize: 10, color: "#484f58", marginTop: 2 }}>Runs all 5 strategies simultaneously on real OANDA candle data and ranks by expectancy</div>
+        <div style={{ fontSize: 10, color: "#484f58", marginTop: 2 }}>Fetches up to 90 days of real OANDA candles · tests all 5 strategies simultaneously · ranks by expectancy</div>
       </div>
 
-      {/* Controls — no Strategy dropdown; engine tests all 5 */}
+      {/* Controls */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12, alignItems: "flex-end" }}>
         {[
           { label: "Pair",      value: btPair, set: setBtPair, opts: BT_PAIRS      },
@@ -5089,6 +5141,17 @@ function HistoricalBacktest({ isMobile }) {
         </div>
       </div>
 
+      {/* Candle info bar */}
+      {candleInfo && !running && (
+        <div style={{ display: "flex", gap: 16, marginBottom: 10, padding: "7px 12px", background: "#161b22", borderRadius: 6, border: "1px solid #21262d", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 10, color: "#3fb950", fontFamily: FONT_MONO, fontWeight: 600 }}>{candleInfo.count.toLocaleString()} candles loaded</span>
+          <span style={{ fontSize: 10, color: "#484f58" }}>·</span>
+          <span style={{ fontSize: 10, color: "#8b949e" }}>{candleInfo.fromDate} – {candleInfo.toDate}</span>
+          <span style={{ fontSize: 10, color: "#484f58" }}>·</span>
+          <span style={{ fontSize: 10, color: "#484f58" }}>{btTf} · {btPair}</span>
+        </div>
+      )}
+
       {/* Progress */}
       {running && (
         <div style={{ marginBottom: 12 }}>
@@ -5099,11 +5162,11 @@ function HistoricalBacktest({ isMobile }) {
           <div style={{ height: 4, background: "#21262d", borderRadius: 2, overflow: "hidden" }}>
             <div style={{ height: "100%", width: `${progress}%`, background: "#3fb950", borderRadius: 2, transition: "width 0.15s" }} />
           </div>
-          {/* Strategy dots */}
           <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
             {BT_STRATEGIES.map((s, si) => {
-              const done = progress >= ((si + 1) / BT_STRATEGIES.length) * 100;
-              const active = progress >= (si / BT_STRATEGIES.length) * 100 && !done;
+              const stratBase = 15 + (si / BT_STRATEGIES.length) * 85;
+              const done = progress >= stratBase + (85 / BT_STRATEGIES.length);
+              const active = progress >= stratBase && !done;
               return (
                 <div key={s} style={{ display: "flex", alignItems: "center", gap: 4 }}>
                   <div style={{ width: 6, height: 6, borderRadius: "50%", background: done ? STRAT_COLOR[s] : active ? STRAT_COLOR[s] + "88" : "#21262d", transition: "background 0.3s" }} />
@@ -5150,6 +5213,7 @@ function HistoricalBacktest({ isMobile }) {
                       <div style={{ width: 8, height: 8, borderRadius: 2, background: r ? color : "#21262d", flexShrink: 0 }} />
                       <span style={{ color: r ? "#e6edf3" : "#484f58", fontWeight: isBest ? 600 : 400 }}>{strat}</span>
                       {isBest && <span style={{ fontSize: 8, background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 3, padding: "1px 4px", fontWeight: 700 }}>BEST</span>}
+                      {r && r.validityScore === "Low" && <span style={{ fontSize: 8, background: "rgba(248,81,73,0.1)", color: "#f85149", border: "1px solid rgba(248,81,73,0.3)", borderRadius: 3, padding: "1px 4px" }}>{"<30 trades"}</span>}
                     </div>
                     <span style={{ fontFamily: FONT_MONO, color: r ? "#8b949e" : "#484f58" }}>{r ? r.trades.length : "—"}</span>
                     <span style={{ fontFamily: FONT_MONO, color: r ? (r.winRate >= 50 ? "#3fb950" : "#f85149") : "#484f58" }}>{r ? `${r.winRate.toFixed(0)}%` : "—"}</span>
@@ -5187,16 +5251,42 @@ function HistoricalBacktest({ isMobile }) {
                   </div>
                 </div>
 
-                {/* Stats */}
+                {/* Low sample warning */}
+                {detail.validityScore === "Low" && (
+                  <div style={{ padding: "8px 12px", background: "rgba(248,81,73,0.06)", border: "1px solid rgba(248,81,73,0.2)", borderRadius: 6, fontSize: 10, color: "#f85149" }}>
+                    Only {detail.trades.length} signals — minimum 30 required for statistical confidence. Results are directional only, not reliable for live trading decisions.
+                  </div>
+                )}
+
+                {/* Stats row 1 — core metrics */}
                 <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(5, 1fr)", gap: 8 }}>
                   {[
-                    { label: "Trades",        value: detail.trades.length,                                                                       color: "#e6edf3" },
-                    { label: "Win Rate",       value: `${detail.winRate.toFixed(1)}%`,                                                            color: detail.winRate >= 50 ? "#3fb950" : "#f85149" },
-                    { label: "Expectancy",     value: `${detail.expectancyR >= 0 ? "+" : ""}${detail.expectancyR.toFixed(2)}R`,                   color: pc(detail.expectancyR) },
-                    { label: "Profit Factor",  value: detail.profitFactor >= 999 ? "∞" : detail.profitFactor.toFixed(2),                          color: detail.profitFactor >= 1.5 ? "#3fb950" : detail.profitFactor >= 1 ? "#d29922" : "#f85149" },
-                    { label: "Max Drawdown",   value: `${detail.maxDD.toFixed(1)}R`,                                                              color: "#f85149" },
+                    { label: "Trades",        value: detail.trades.length,                                                                    color: "#e6edf3" },
+                    { label: "Win Rate",       value: `${detail.winRate.toFixed(1)}%`,                                                         color: detail.winRate >= 50 ? "#3fb950" : "#f85149" },
+                    { label: "Expectancy",     value: `${detail.expectancyR >= 0 ? "+" : ""}${detail.expectancyR.toFixed(2)}R`,                color: pc(detail.expectancyR) },
+                    { label: "Profit Factor",  value: detail.profitFactor >= 999 ? "∞" : detail.profitFactor.toFixed(2),                       color: detail.profitFactor >= 1.5 ? "#3fb950" : detail.profitFactor >= 1 ? "#d29922" : "#f85149" },
+                    { label: "Max Drawdown",   value: `${detail.maxDD.toFixed(1)}R`,                                                           color: "#f85149" },
                   ].map((c, i) => (
                     <div key={i} style={CARD}>
+                      <div style={{ fontSize: 9, color: "#8b949e", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 3 }}>{c.label}</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, fontFamily: FONT_MONO, color: c.color }}>{c.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Stats row 2 — advanced metrics */}
+                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: 8 }}>
+                  {[
+                    { label: "Sharpe Ratio",      value: detail.sharpe.toFixed(2),          color: detail.sharpe >= 1 ? "#3fb950" : detail.sharpe >= 0 ? "#d29922" : "#f85149",
+                      tip: "Mean R ÷ Std R — measures return per unit of risk" },
+                    { label: "Max Consec. Losses", value: `${detail.maxConsecLosses}`,       color: detail.maxConsecLosses <= 3 ? "#3fb950" : detail.maxConsecLosses <= 6 ? "#d29922" : "#f85149",
+                      tip: "Longest losing streak in the backtest period" },
+                    { label: "Confidence",         value: detail.validityScore,              color: VALIDITY_COLOR[detail.validityScore],
+                      tip: "Low <30 trades · Moderate 30–99 · High 100+" },
+                    { label: "Total R",            value: `${detail.totalR >= 0 ? "+" : ""}${detail.totalR.toFixed(1)}R`, color: pc(detail.totalR),
+                      tip: "Cumulative R-multiple over the backtest period" },
+                  ].map((c, i) => (
+                    <div key={i} style={{ ...CARD, position: "relative" }} title={c.tip}>
                       <div style={{ fontSize: 9, color: "#8b949e", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 3 }}>{c.label}</div>
                       <div style={{ fontSize: 16, fontWeight: 700, fontFamily: FONT_MONO, color: c.color }}>{c.value}</div>
                     </div>
@@ -6622,6 +6712,24 @@ export default function TradingRobot() {
           );
         })}
       </div>
+
+      {/* ── AUTO strategy bar ── */}
+      {(() => {
+        const next = getNextSessionInfo();
+        return (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 16px", background: "#0d1117", borderBottom: "1px solid #161b22", fontSize: 10, flexWrap: "wrap", minHeight: 26 }}>
+            <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "rgba(63,185,80,0.08)", border: "1px solid #238636", color: "#3fb950", fontWeight: 700, flexShrink: 0 }}>AUTO</span>
+            <span style={{ color: "#21262d" }}>·</span>
+            <span style={{ color: "#8b949e" }}>{session} session — <span style={{ color: "#e6edf3", fontWeight: 600 }}>{xavierStrategy}</span> is primary</span>
+            {next && (
+              <>
+                <span style={{ color: "#21262d" }}>·</span>
+                <span style={{ color: "#484f58" }}>Next: <span style={{ color: "#8b949e" }}>{next.strategy}</span> at {next.session} open in <span style={{ color: "#58a6ff", fontFamily: FONT_MONO }}>{next.countdown}</span></span>
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {!isMobile ? (
         <div style={{ padding: "0 16px 8px", display: "flex", gap: 0, borderBottom: "0.5px solid var(--color-border-tertiary)", marginBottom: 16 }}>
