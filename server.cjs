@@ -2,7 +2,15 @@ require('dotenv').config({ override: true });
 const express = require('express');
 const cors = require('cors');
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:5174',
+    /\.railway\.app$/,
+    /\.up\.railway\.app$/,
+  ],
+  credentials: true,
+}));
 app.use(express.json());
 
 const BASE    = 'https://api-fxpractice.oanda.com';
