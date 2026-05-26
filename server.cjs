@@ -199,6 +199,11 @@ const SYS_DEEP   = 'You are a quantitative trading validator. Validate math and 
 const SYS_GEM    = 'You are a macro and liquidity forex analyst. Validate market context only. Be decisive. Respond ONLY in the format shown.';
 
 function buildClaudePrompt(p) {
+  const xavierBlock = (p.xavierKeyRisk || p.xavierSentiment)
+    ? `\nXavier Market Intelligence:
+- Market sentiment: ${p.xavierSentiment || 'UNKNOWN'}
+- Key risk flagged: ${p.xavierKeyRisk || 'none'}${p.xavierBrief ? `\n- Context: ${p.xavierBrief}` : ''}`
+    : '';
   return `You are the Risk Guardian. Protect capital. Most likely to reject.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
@@ -208,7 +213,7 @@ Portfolio Heat: ${p.heat || '0'}R / 6R max
 News risk: ${p.newsRisk || 'LOW'}
 ATR: ${p.atr || '?'} (${p.atrPips || '?'} pips)
 Stop Loss: ${p.sl || '?'} | Take Profit: ${p.tp || '?'}
-Signal reason: ${p.reason}
+Signal reason: ${p.reason}${xavierBlock}
 
 Van Tharp Rules:
 - R:R must be >= 2.0
@@ -216,6 +221,7 @@ Van Tharp Rules:
 - Circuit breaker at 6R heat
 - Session must be GOOD or PRIME for this pair
 
+If Xavier's key risk directly references this instrument, treat it as an elevated risk factor.
 CONFIRM only if ALL conditions are safe. REJECT if ANY risk condition is violated.
 
 Respond in this EXACT format:
@@ -274,6 +280,12 @@ REASON: (one sentence, max 15 words, cite the key number, trader language — no
 }
 
 function buildGeminiPrompt(p) {
+  const xavierBlock = (p.xavierKeyRisk || p.xavierSentiment)
+    ? `\nXavier AI market read (proprietary — treat as additional signal context):
+- Overall sentiment: ${p.xavierSentiment || 'UNKNOWN'}
+- Best opportunity: ${p.xavierBestPair || 'none'}
+- Key risk: ${p.xavierKeyRisk || 'none'}${p.xavierBrief ? `\n- Analysis: ${p.xavierBrief}` : ''}`
+    : '';
   return `You are the Macro & Liquidity Analyst. Validate market context and liquidity only.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
@@ -283,13 +295,14 @@ Spread: ${p.spread || '?'} pips (limit: ${p.spreadLimit || '?'} pips)
 Correlated pairs: ${p.correlatedPairs || 'N/A'}
 Market sentiment: ${p.sentiment || 'NEUTRAL'}
 Volatility state: ${p.regime || 'RANGING'}
-Change: ${p.change}%
+Change: ${p.change}%${xavierBlock}
 
 CONFIRM only if:
 - News sentiment supports ${p.direction}
 - Liquidity adequate for session
 - Spread within acceptable limits
 - No macro tail risk events
+- Xavier's key risk does not directly threaten this trade
 
 Respond in this EXACT format:
 VERDICT: CONFIRM or REJECT

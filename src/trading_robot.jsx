@@ -1051,7 +1051,7 @@ function OandaChart({ pair, history: simHistory, height = 40 }) {
 }
 
 // ─── MULTI-MODEL CONSENSUS ────────────────────────────────────────────────────
-function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConfirmed, onRejected, marketOpen, regimeData, session, openTrades, balance }) {
+function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConfirmed, onRejected, marketOpen, regimeData, session, openTrades, balance, xavierIntel }) {
   const [loading, setLoading]   = useState(false);
   const [consensus, setConsensus] = useState(null);
   const [showLog, setShowLog]   = useState(false);
@@ -1118,6 +1118,11 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
           scoreValid: signal.score >= 65 ? "YES" : "NO", rrValid: "YES", atrValid: atr > 0.0001 ? "YES" : "NO", sizeValid: "YES",
           // Macro Analyst (Gemini)
           spread, spreadLimit, correlatedPairs, sentiment,
+          // Xavier market intelligence
+          xavierKeyRisk: xavierIntel?.keyRisk || null,
+          xavierBestPair: xavierIntel?.bestPair || null,
+          xavierSentiment: xavierIntel?.sentiment || null,
+          xavierBrief: xavierIntel?.brief || null,
         }),
       });
       const data = await r.json();
@@ -1321,7 +1326,7 @@ function IntelCard({ label, value, sub, color = "#8b949e", bgColor, borderColor,
   );
 }
 
-function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isMobile, session = "AVOID", strategy = "Mean Revert", openTrades = [], signalMap = {} }) {
+function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isMobile, session = "AVOID", strategy = "Mean Revert", openTrades = [], signalMap = {}, onIntelUpdate }) {
   const [briefLoading, setBriefLoading] = useState(false);
   const [metrics, setMetrics] = useState(null);
   const [question, setQuestion] = useState("");
@@ -1360,12 +1365,14 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
         const idx = line.indexOf(":");
         if (idx > 0) { parsed[line.slice(0, idx).trim()] = line.slice(idx + 1).trim(); }
       });
-      setMetrics({
+      const newMetrics = {
         sentiment: parsed.SENTIMENT?.toUpperCase() || "NEUTRAL",
         bestPair: parsed.BEST_PAIR || "—",
         keyRisk: parsed.KEY_RISK || "—",
         brief: parsed.BRIEF || result,
-      });
+      };
+      setMetrics(newMetrics);
+      onIntelUpdate?.(newMetrics);
       setAnalysisCount(c => c + 1);
     } catch {
       setMetrics({ sentiment: "NEUTRAL", bestPair: "—", keyRisk: "Check connection", brief: "Market analysis unavailable." });
@@ -1644,7 +1651,7 @@ const SESSION_BADGE_COLORS = {
 // ─── PAIR ROW WITH AI CONFIRM ─────────────────────────────────────────────────
 const MOBILE_ACTION_ROW_H = 62;
 
-function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignalUpdate, onRegimeUpdate, onRejection, onClose, openTrades, marketOpen, isMobile, balance }) {
+function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignalUpdate, onRegimeUpdate, onRejection, onClose, openTrades, marketOpen, isMobile, balance, xavierIntel }) {
   const { price: simPrice, history: simHistory } = usePriceSimulator(basePrice);
   const { price: oandaPrice, history: oandaHistory, isReal } = useOandaPrice(pair);
 
@@ -1775,6 +1782,7 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
             pair={pair} signal={signal} price={price} history={history}
             currentHeadline={currentHeadline} marketOpen={marketOpen}
             regimeData={regimeData} session={getCurrentSession()} openTrades={openTrades} balance={balance}
+            xavierIntel={xavierIntel}
             onConfirmed={(verdict) => { onTrade(pair, signal, price, { ...verdict, atr: regimeData.atr5 }); setShowAI(false); }}
             onRejected={() => setShowAI(false)}
           />
@@ -5865,6 +5873,7 @@ export default function TradingRobot() {
     (() => { try { return JSON.parse(localStorage.getItem("qb_closed_trades") || "[]").map(t => t.oandaId); } catch { return []; } })()
   ));
   const oandaNavRef = useRef(null);
+  const xavierIntelRef = useRef(null);
 
   const signalCount = Object.values(signalMap).filter(Boolean).length;
 
@@ -6606,7 +6615,7 @@ export default function TradingRobot() {
           {isMobile ? (
             <div style={{ marginBottom: 12 }}>
               {PAIRS.map(pair => (
-                <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} onClose={closeTrade} openTrades={openTrades} marketOpen={marketOpen} balance={balance} isMobile />
+                <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} onClose={closeTrade} openTrades={openTrades} marketOpen={marketOpen} balance={balance} isMobile xavierIntel={xavierIntelRef.current} />
               ))}
             </div>
           ) : (
@@ -6628,7 +6637,7 @@ export default function TradingRobot() {
                 <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px", textAlign: "right" }}>Action</span>
               </div>
               {PAIRS.map(pair => (
-                <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} onClose={closeTrade} openTrades={openTrades} marketOpen={marketOpen} balance={balance} isMobile={false} />
+                <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} onClose={closeTrade} openTrades={openTrades} marketOpen={marketOpen} balance={balance} isMobile={false} xavierIntel={xavierIntelRef.current} />
               ))}
             </div>
             </>
@@ -6649,7 +6658,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "ai" ? "block" : "none" }}>
-        <AIAnalystTab isVisible={tab === "ai"} headlines={LIVE_HEADLINES} prices={livePrices} trades={trades} balance={balance} currentHeadline={currentHeadline} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} signalMap={signalMap} />
+        <AIAnalystTab isVisible={tab === "ai"} headlines={LIVE_HEADLINES} prices={livePrices} trades={trades} balance={balance} currentHeadline={currentHeadline} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} signalMap={signalMap} onIntelUpdate={(intel) => { xavierIntelRef.current = intel; }} />
       </div>
 
       <div style={{ display: tab === "knowledge" ? "block" : "none", padding: "0 16px", paddingBottom: 16 }}>
