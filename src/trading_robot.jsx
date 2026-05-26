@@ -4675,11 +4675,14 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
                   <div style={{ width: 3, height: 28, borderRadius: 2, background: col, flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 11, color: "#e6edf3", fontWeight: 600 }}>{c.pair} <span style={{ color: col }}>{c.strategy}</span></div>
-                    <div style={{ fontSize: 9, color: "#484f58", marginTop: 1 }}>{c.session} session · {c.trades} trades</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
+                      <span style={{ fontSize: 9, color: "#484f58" }}>{c.session}</span>
+                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, fontWeight: 700, padding: "1px 5px", borderRadius: 3, background: "#1D9E7520", border: "1px solid #1D9E7544", color: "#1D9E75" }}>{c.trades} trades</span>
+                    </div>
                   </div>
                   <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <div style={{ fontSize: 12, fontFamily: FONT_MONO, color: c.expectancyR >= 0 ? "#3fb950" : "#f85149", fontWeight: 600 }}>{c.expectancyR >= 0 ? "+" : ""}{c.expectancyR.toFixed(2)}R</div>
-                    <div style={{ fontSize: 9, color: "#484f58" }}>{c.winRate.toFixed(0)}% WR</div>
+                    <div style={{ fontSize: 13, fontFamily: FONT_MONO, color: c.expectancyR >= 0 ? "#3fb950" : "#f85149", fontWeight: 700 }}>{c.expectancyR >= 0 ? "+" : ""}{c.expectancyR.toFixed(2)}R</div>
+                    <div style={{ fontSize: 9, color: "#8b949e", marginTop: 1 }}>{c.winRate.toFixed(0)}% win rate</div>
                   </div>
                 </div>
               );
@@ -6009,8 +6012,8 @@ function useAutonomousBacktest() {
           setLabel(`${pair} · ${strat} · ${sess}`);
           const res = await runBtSimulation(closes, candles, strat, SESS_UTC[sess], pair);
           combosDone++; setDone(combosDone); setProgress(Math.round(combosDone / TOTAL * 100));
-          if (res && res.expectancyR >= 0 && res.trades >= 10 && res.maxDD <= 15) {
-            const score = Math.max(0, res.expectancyR) * 60 + res.profitFactor * 20 + res.sharpe * 10 + (res.trades >= 20 ? 10 : 0);
+          if (res && res.expectancyR >= 0 && res.trades >= 30 && res.maxDD <= 15) {
+            const score = Math.max(0, res.expectancyR) * 60 + res.profitFactor * 20 + res.sharpe * 10 + (res.trades >= 30 ? 10 : 0);
             allCombos.push({ strategy: strat, pair, session: sess, score, expectancyR: res.expectancyR, winRate: res.winRate, profitFactor: res.profitFactor, sharpe: res.sharpe, trades: res.trades });
           }
         }
