@@ -2483,18 +2483,43 @@ function TickerTrack({ items }) {
 }
 
 function NewsTicker({ onHeadlineChange }) {
-  const [, setIdx] = useState(0);
+  const [tickerItems, setTickerItems] = useState(TICKER_ITEMS);
+  const itemsRef    = useRef(TICKER_ITEMS);
+  const idxRef      = useRef(0);
+  const onChangeRef = useRef(onHeadlineChange);
+  onChangeRef.current = onHeadlineChange;
+
   useEffect(() => {
-    setTimeout(() => onHeadlineChange(LIVE_HEADLINES[0]), 0);
-    const id = setInterval(() => {
-      setIdx(i => {
-        const next = (i + 1) % LIVE_HEADLINES.length;
-        setTimeout(() => onHeadlineChange(LIVE_HEADLINES[next]), 0);
-        return next;
-      });
-    }, 5000);
-    return () => clearInterval(id);
-  }, []);
+    // Start rotation immediately with fallback items
+    onChangeRef.current(itemsRef.current[0].headline);
+    const rotateId = setInterval(() => {
+      idxRef.current = (idxRef.current + 1) % itemsRef.current.length;
+      onChangeRef.current(itemsRef.current[idxRef.current].headline);
+    }, 8000);
+
+    // Fetch real RSS headlines; refresh every 5 minutes
+    const fetchNews = async () => {
+      try {
+        const r = await fetch(`${BRIDGE}/news?category=forex`);
+        if (!r.ok) return;
+        const data = await r.json();
+        if (!Array.isArray(data.items) || data.items.length === 0) return;
+        const mapped = data.items.map(item => ({
+          source:   item.source || "Reuters",
+          headline: item.title,
+        }));
+        itemsRef.current = mapped;
+        idxRef.current   = 0;
+        setTickerItems(mapped);
+        onChangeRef.current(mapped[0].headline);
+      } catch { /* keep fallback items on network error */ }
+    };
+
+    fetchNews();
+    const fetchId = setInterval(fetchNews, 5 * 60_000);
+
+    return () => { clearInterval(rotateId); clearInterval(fetchId); };
+  }, []); // eslint-disable-line
 
   return (
     <div style={{ display: "flex", alignItems: "center", overflow: "hidden", height: 36, background: "#0d1117", borderBottom: "1px solid #21262d" }}>
@@ -2503,8 +2528,8 @@ function NewsTicker({ onHeadlineChange }) {
       </div>
       <div style={{ overflow: "hidden", flex: 1, height: "100%", display: "flex", alignItems: "center", maskImage: "linear-gradient(90deg, transparent 0%, #000 2%, #000 98%, transparent 100%)" }}>
         <span style={{ display: "inline-flex", alignItems: "center", whiteSpace: "nowrap", animation: "marquee 40s linear infinite", paddingLeft: "100%", fontSize: 12 }}>
-          <TickerTrack items={TICKER_ITEMS} />
-          <TickerTrack items={TICKER_ITEMS} />
+          <TickerTrack items={tickerItems} />
+          <TickerTrack items={tickerItems} />
         </span>
       </div>
     </div>
