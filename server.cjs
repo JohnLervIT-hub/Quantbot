@@ -79,6 +79,42 @@ app.post('/close/:tradeId', async (req, res) => {
   res.json(await r.json());
 });
 
+// Partial close — body: { units: "500" }
+app.post('/close/:tradeId/partial', async (req, res) => {
+  const { tradeId } = req.params;
+  const { units } = req.body;
+  if (!units) return res.status(400).json({ error: 'units required' });
+  try {
+    const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/close`, {
+      method: 'PUT', headers: H,
+      body: JSON.stringify({ units: String(units) }),
+    });
+    const data = await r.json();
+    console.log(`[PARTIAL] ${tradeId} — ${units} units — ${r.status}`);
+    res.status(r.ok ? 200 : r.status).json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Modify stop loss — body: { price: "1.23456" }
+app.patch('/order/:tradeId/sl', async (req, res) => {
+  const { tradeId } = req.params;
+  const { price } = req.body;
+  if (!price) return res.status(400).json({ error: 'price required' });
+  try {
+    const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/orders`, {
+      method: 'PUT', headers: H,
+      body: JSON.stringify({ stopLoss: { price: String(price), timeInForce: 'GTC' } }),
+    });
+    const data = await r.json();
+    console.log(`[SL] ${tradeId} → ${price} — ${r.status}`);
+    res.status(r.ok ? 200 : r.status).json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/candles/:instrument', async (req, res) => {
   const { instrument } = req.params;
   const count = Math.min(parseInt(req.query.count) || 60, 500);
@@ -136,10 +172,107 @@ const paperTrades   = [];        // newest-first, capped at 100
 const AUTO_PAIRS = 'EUR_USD,GBP_USD,USD_JPY,AUD_USD,USD_CAD,XAU_USD,BTC_USD,SPX500_USD';
 
 // ─── SHARED LLM HELPERS ──────────────────────────────────────────────────────
-const SYS = 'You are an elite forex risk analyst. Be decisive. Never hedge. Respond ONLY in the format shown.';
+const SYS_CLAUDE = 'You are an elite forex risk guardian. Protect capital above all else. Be decisive. Respond ONLY in the format shown.';
+const SYS_GPT    = 'You are an expert technical pattern analyst for forex. Validate price action only. Be decisive. Respond ONLY in the format shown.';
+const SYS_DEEP   = 'You are a quantitative trading validator. Validate math and statistical edge only. Be decisive. Respond ONLY in the format shown.';
+const SYS_GEM    = 'You are a macro and liquidity forex analyst. Validate market context only. Be decisive. Respond ONLY in the format shown.';
 
-function buildSignalPrompt(p) {
-  return `Pair: ${p.instrument} | Direction: ${p.direction} | Confidence: ${p.score}% | Price: ${p.price} | Change: ${p.change}% | Reason: ${p.reason} | RSI: ${p.rsi} | News: "${p.headline}"\n\nRespond in this EXACT format:\nVERDICT: CONFIRM or REJECT\nREASON: (one sentence, max 15 words)`;
+function buildClaudePrompt(p) {
+  return `You are the Risk Guardian. Protect capital. Most likely to reject.
+
+Trade: ${p.instrument} ${p.direction} @ ${p.price}
+Session: ${p.session || 'UNKNOWN'} (${p.sessionQuality || 'UNKNOWN'})
+R:R Ratio: ${p.rr || '2.0'}
+Portfolio Heat: ${p.heat || '0'}R / 6R max
+News risk: ${p.newsRisk || 'LOW'}
+ATR: ${p.atr || '?'} (${p.atrPips || '?'} pips)
+Stop Loss: ${p.sl || '?'} | Take Profit: ${p.tp || '?'}
+Signal reason: ${p.reason}
+
+Van Tharp Rules:
+- R:R must be >= 2.0
+- No trading during HIGH impact news
+- Circuit breaker at 6R heat
+- Session must be GOOD or PRIME for this pair
+
+CONFIRM only if ALL conditions are safe. REJECT if ANY risk condition is violated.
+
+Respond in this EXACT format:
+VERDICT: CONFIRM or REJECT
+REASON: (one sentence, max 15 words, use specific numbers, trader language — no corporate phrases)`;
+}
+
+function buildGPTPrompt(p) {
+  return `You are the Pattern Analyst. Validate price action and trend structure only.
+
+Trade: ${p.instrument} ${p.direction} @ ${p.price}
+Signal score: ${p.score}%
+EMA9: ${p.ema9 || '?'} | EMA21: ${p.ema21 || '?'} | EMA50 side: ${p.ema50side || '?'}
+Last 5 closes: ${p.closes || p.price}
+Trend regime: ${p.regime || 'UNKNOWN'}
+Momentum: ${p.momentum || '0'}%
+RSI: ${p.rsi}
+
+CONFIRM only if:
+- EMA structure confirms direction
+- Price is on correct side of EMA50
+- Momentum supports entry
+- Regime is not VOLATILE
+
+Respond in this EXACT format:
+VERDICT: CONFIRM or REJECT
+REASON: (one sentence, max 15 words, use specific numbers, trader language — no corporate phrases)`;
+}
+
+function buildDeepSeekPrompt(p) {
+  return `You are the Quantitative Validator. Validate math and statistical edge only.
+
+Trade: ${p.instrument} ${p.direction} @ ${p.price}
+Strategy: ${p.strategy || 'Mean Revert'}
+Signal score: ${p.score}% (threshold: 65%)
+Deviation from mean: ${p.deviation || '0'}%
+ATR: ${p.atr || '?'} (${p.atrPips || '?'} pips)
+Stop loss distance: ${p.slDistance || '?'} pips
+Take profit distance: ${p.tpDistance || '?'} pips
+R:R ratio: ${p.rr || '2.0'}
+Position size: 1000 units
+Risk amount: $${p.riskAmount || '1.50'} (1.5% of $${p.balance || '100'})
+Target expectancy: +0.583R per trade
+
+Validations:
+- Score >= 65: ${p.scoreValid || (p.score >= 65 ? 'YES' : 'NO')}
+- R:R >= 2.0: ${p.rrValid || 'YES'}
+- ATR stop properly sized: ${p.atrValid || 'YES'}
+- Position size correct: ${p.sizeValid || 'YES'}
+
+CONFIRM only if numbers support positive expectancy.
+
+Respond in this EXACT format:
+VERDICT: CONFIRM or REJECT
+REASON: (one sentence, max 15 words, cite the key number, trader language — no corporate phrases)`;
+}
+
+function buildGeminiPrompt(p) {
+  return `You are the Macro & Liquidity Analyst. Validate market context and liquidity only.
+
+Trade: ${p.instrument} ${p.direction} @ ${p.price}
+Session: ${p.session || 'UNKNOWN'}
+Current headline: "${p.headline}"
+Spread: ${p.spread || '?'} pips (limit: ${p.spreadLimit || '?'} pips)
+Correlated pairs: ${p.correlatedPairs || 'N/A'}
+Market sentiment: ${p.sentiment || 'NEUTRAL'}
+Volatility state: ${p.regime || 'RANGING'}
+Change: ${p.change}%
+
+CONFIRM only if:
+- News sentiment supports ${p.direction}
+- Liquidity adequate for session
+- Spread within acceptable limits
+- No macro tail risk events
+
+Respond in this EXACT format:
+VERDICT: CONFIRM or REJECT
+REASON: (one sentence, max 15 words, trader language — name the specific macro factor, no corporate phrases)`;
 }
 
 function parseVerdict(text) {
@@ -151,12 +284,12 @@ function parseVerdict(text) {
 
 function apiErr(d, fallback) { return d?.error?.message || d?.error?.type || fallback; }
 
-async function askClaude(prompt) {
+async function askClaude(prompt, sys) {
   if (!process.env.VITE_ANTHROPIC_KEY) throw new Error('Missing VITE_ANTHROPIC_KEY');
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.VITE_ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 120, system: SYS, messages: [{ role: 'user', content: prompt }] }),
+    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 120, system: sys || SYS_CLAUDE, messages: [{ role: 'user', content: prompt }] }),
   });
   const d = await r.json();
   if (!r.ok) throw new Error(apiErr(d, `Claude HTTP ${r.status}`));
@@ -165,26 +298,26 @@ async function askClaude(prompt) {
   return { name: 'Claude Sonnet', ...parseVerdict(text) };
 }
 
-async function askGPT(prompt) {
+async function askGPT(prompt, sys) {
   if (!process.env.VITE_OPENAI_API_KEY) throw new Error('Missing VITE_OPENAI_API_KEY');
   const r = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.VITE_OPENAI_API_KEY}` },
-    body: JSON.stringify({ model: 'gpt-4o-mini', max_tokens: 120, messages: [{ role: 'system', content: SYS }, { role: 'user', content: prompt }] }),
+    body: JSON.stringify({ model: 'gpt-4o', max_tokens: 120, messages: [{ role: 'system', content: sys || SYS_GPT }, { role: 'user', content: prompt }] }),
   });
   const d = await r.json();
   if (!r.ok) throw new Error(apiErr(d, `OpenAI HTTP ${r.status}`));
   const text = d.choices?.[0]?.message?.content;
   if (!text) throw new Error('GPT empty response');
-  return { name: 'GPT-4o mini', ...parseVerdict(text) };
+  return { name: 'GPT-4o', ...parseVerdict(text) };
 }
 
-async function askDeepSeek(prompt) {
+async function askDeepSeek(prompt, sys) {
   if (!process.env.VITE_DEEPSEEK_API_KEY) throw new Error('Missing VITE_DEEPSEEK_API_KEY');
   const r = await fetch('https://api.deepseek.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.VITE_DEEPSEEK_API_KEY}` },
-    body: JSON.stringify({ model: 'deepseek-chat', max_tokens: 120, messages: [{ role: 'system', content: SYS }, { role: 'user', content: prompt }] }),
+    body: JSON.stringify({ model: 'deepseek-chat', max_tokens: 120, messages: [{ role: 'system', content: sys || SYS_DEEP }, { role: 'user', content: prompt }] }),
   });
   const d = await r.json();
   if (!r.ok) throw new Error(apiErr(d, `DeepSeek HTTP ${r.status}`));
@@ -193,15 +326,15 @@ async function askDeepSeek(prompt) {
   return { name: 'DeepSeek', ...parseVerdict(text) };
 }
 
-async function askGemini(prompt) {
+async function askGemini(prompt, sys) {
   if (!process.env.VITE_GEMINI_API_KEY) throw new Error('Missing VITE_GEMINI_API_KEY');
   const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.VITE_GEMINI_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.VITE_GEMINI_API_KEY}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYS }] },
+        systemInstruction: { parts: [{ text: sys || SYS_GEM }] },
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         tools: [{ google_search: {} }],
       }),
@@ -211,13 +344,19 @@ async function askGemini(prompt) {
   if (!r.ok) throw new Error(apiErr(d, `Gemini HTTP ${r.status}`));
   const text = d.candidates?.[0]?.content?.parts?.find(p => p.text)?.text;
   if (!text) throw new Error('Gemini empty response');
-  return { name: 'Gemini 2.0 Flash', ...parseVerdict(text) };
+  return { name: 'Gemini 2.5 Flash', ...parseVerdict(text) };
 }
 
+const MODEL_TAG = { 'Claude Sonnet': 'CLAUDE', 'GPT-4o': 'GPT4', 'DeepSeek': 'DEEPSEEK', 'Gemini 2.5 Flash': 'GEMINI' };
+
 async function runConsensus(params) {
-  const prompt = buildSignalPrompt(params);
-  const settled = await Promise.allSettled([askClaude(prompt), askGPT(prompt), askDeepSeek(prompt), askGemini(prompt)]);
-  const NAMES = ['Claude Sonnet', 'GPT-4o mini', 'DeepSeek', 'Gemini 2.0 Flash'];
+  const settled = await Promise.allSettled([
+    askClaude(buildClaudePrompt(params),    SYS_CLAUDE),
+    askGPT(buildGPTPrompt(params),          SYS_GPT),
+    askDeepSeek(buildDeepSeekPrompt(params),SYS_DEEP),
+    askGemini(buildGeminiPrompt(params),    SYS_GEM),
+  ]);
+  const NAMES = ['Claude Sonnet', 'GPT-4o', 'DeepSeek', 'Gemini 2.5 Flash'];
   const models = settled.map((r, i) => {
     if (r.status === 'fulfilled') return r.value;
     const raw = r.reason?.message || 'Model unreachable';
@@ -228,11 +367,18 @@ async function runConsensus(params) {
     return { name: NAMES[i], verdict: 'REJECT', reason };
   });
   const confirms = models.filter(m => m.verdict === 'CONFIRM').length;
+  const voteLog = models.map(m => {
+    const tag  = MODEL_TAG[m.name] || m.name.toUpperCase();
+    const icon = m.verdict === 'CONFIRM' ? '✓' : '✗';
+    return `[${tag}] ${m.verdict} — ${m.reason} ${icon}`;
+  });
+  voteLog.push(`Result: ${confirms}/4 CONFIRM → ${confirms >= 3 ? 'EXECUTE' : 'BLOCKED'}`);
   return {
     votes: { confirm: confirms, reject: models.length - confirms },
     consensus: confirms >= 3 ? 'CONFIRM' : 'REJECT',
     confidence: `${Math.round((confirms / models.length) * 100)}%`,
     models,
+    voteLog,
     executeAllowed: confirms >= 3,
   };
 }
@@ -291,7 +437,7 @@ async function getGeminiCommentary(category, headlines) {
   const prompt = `You are a concise forex market analyst. Based on these recent ${catName} headlines, write exactly 2 sentences: (1) the dominant market theme right now, (2) the key directional bias traders should watch. Max 50 words total. Be specific — name pairs, assets, or data.\n\nHeadlines:\n${list}`;
   try {
     const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.VITE_GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.VITE_GEMINI_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
