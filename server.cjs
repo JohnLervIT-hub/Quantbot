@@ -1,4 +1,4 @@
-require('dotenv').config({ override: true });
+require('dotenv').config({ override: true, path: require('path').join(__dirname, '.env') });
 const express = require('express');
 const cors = require('cors');
 const app = express();
@@ -602,7 +602,6 @@ async function askGemini(prompt, sys) {
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: sys || SYS_GEM }] },
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        tools: [{ google_search: {} }],
       }),
     }
   );
