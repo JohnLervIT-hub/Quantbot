@@ -334,6 +334,12 @@ const XAVIER_RULES = {
   AVOID:  { strategy: null,           pairs: [],                                           minScore: 999 },
 };
 
+// Validated pairs for M5 server auto-execution — DO NOT ADD unvalidated pairs
+const SERVER_PAIRS = new Set([
+  'EUR_USD', 'GBP_USD', 'USD_JPY',
+  'AUD_USD', 'USD_CAD', 'XAU_USD',
+]);
+
 const SERVER_PIP_SIZE = {
   EUR_USD: 0.0001, GBP_USD: 0.0001, USD_JPY: 0.01,
   AUD_USD: 0.0001, USD_CAD: 0.0001, NZD_USD: 0.0001,
@@ -1166,7 +1172,9 @@ async function serverAutoTrade() {
     return;
   }
 
-  const { strategy, pairs } = rule;
+  const { strategy } = rule;
+  const pairs = rule.pairs.filter(p => SERVER_PAIRS.has(p));
+  if (pairs.length === 0) return;
   const ts = new Date().toISOString();
 
   let openTrades = [];
