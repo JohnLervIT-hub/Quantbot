@@ -2650,7 +2650,17 @@ function _atr(candles, period = 14) {
   return a;
 }
 
-function generateSwingSignal(h4Candles, weeklyCandles) {
+const MIN_SWING_STOP = {
+  EUR_USD: 0.0025, GBP_USD: 0.0025, USD_JPY: 0.25,
+  AUD_USD: 0.0025, USD_CAD: 0.0025, EUR_GBP: 0.0020,
+  NZD_USD: 0.0025,
+  XAU_USD: 2.00,   XAG_USD: 0.15,
+  BCO_USD: 0.80,   WTICO_USD: 0.80,
+  NAS100_USD: 50,  JP225_USD: 150, SPX500_USD: 15,
+  UK100_GBP: 20,   AU200_AUD: 20,
+};
+
+function generateSwingSignal(h4Candles, weeklyCandles, pairKey = "") {
   if (!h4Candles || h4Candles.length < 55) return null;
   const closes = h4Candles.map(c => parseFloat(c.mid?.c ?? c.c));
   const last    = closes[closes.length - 1];
@@ -2703,17 +2713,29 @@ function generateSwingSignal(h4Candles, weeklyCandles) {
   }
   score += weekPts; bd.weekly = weekPts;
 
-  const slBuf  = atr * 0.5;
-  const sl     = isBull ? ema50 - slBuf : ema50 + slBuf;
-  const slDist = Math.abs(last - sl);
-  const tp1    = isBull ? last + slDist * 1.5 : last - slDist * 1.5;
-  const tp2    = isBull ? last + slDist * 3   : last - slDist * 3;
-  const tp3    = isBull ? last + slDist * 5   : last - slDist * 5;
+  // Stop: ema50 buffer + ATR cushion, enforced minimum for H4 swing
+  const ema50Distance = Math.abs(last - ema50);
+  const atrStop  = ema50Distance + (atr * 0.5);
+  const minStop  = MIN_SWING_STOP[pairKey] || 0.0025;
+  const stopDistance = Math.max(atrStop, minStop);
+  const sl  = isBull ? last - stopDistance : last + stopDistance;
+
+  // TPs always based on actual risk distance (entry → SL)
+  const riskDistance = Math.abs(last - sl);
+  const tp1 = isBull ? last + riskDistance * 1.5 : last - riskDistance * 1.5;
+  const tp2 = isBull ? last + riskDistance * 3.0 : last - riskDistance * 3.0;
+  const tp3 = isBull ? last + riskDistance * 5.0 : last - riskDistance * 5.0;
+
+  // Position sizing: 1.5% of $100k account risk / dollar risk per unit
+  const accountRisk = 100000 * 0.015;
+  const rawUnits = stopDistance > 0 ? Math.floor(accountRisk / stopDistance) : 1000;
+  const swingUnits = Math.min(rawUnits, 1000);
 
   return {
     score: Math.round(score), direction,
     entry: last, sl, tp1, tp2, tp3,
     ema21, ema50, atr, rsi,
+    swingUnits,
     breakdown: bd,
     label: score >= 85 ? "PERFECT" : score >= 75 ? "SETUP" : "WATCHING",
   };
@@ -7747,7 +7769,7 @@ export default function TradingRobot() {
             fetch(`${BRIDGE}/candles/${sym}?count=100&granularity=H4`).then(r => r.ok ? r.json() : null).catch(() => null),
             fetch(`${BRIDGE}/candles/${sym}?count=10&granularity=W`).then(r => r.ok ? r.json() : null).catch(() => null),
           ]);
-          const sig = generateSwingSignal(h4Res?.candles || [], wRes?.candles || []);
+          const sig = generateSwingSignal(h4Res?.candles || [], wRes?.candles || [], sym);
           if (sig) {
             results[pair] = sig;
             // Guard 1: queue valid setups detected outside the execution window
