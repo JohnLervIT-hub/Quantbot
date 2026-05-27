@@ -313,6 +313,13 @@ let   lastScanAt         = null;
 const swingAutoTrades    = [];        // newest-first, capped at 50
 const lastSwingConsensus = new Map(); // instrument → ms (4-hour cooldown per pair)
 
+// Upgrade state — trade management, calendar, daily stats
+const tradeManagementState = new Map(); // tradeId → { movedToBreakeven, partialClosed, peakR }
+const lastKnownTradeIds    = new Set(); // for closed trade detection
+let   economicEvents       = [];        // high-impact events this week
+let   dailyStats           = { date: '', trades: 0, winners: 0, losers: 0, totalPnl: 0, bestTrade: '', _bestPnl: -Infinity };
+let   lastDailySummaryDate = '';
+
 
 // ─── XAVIER RULES ────────────────────────────────────────────────────────────
 // USER EXPLICIT OVERRIDE — backtest-validated combinations (2026-05-27)
@@ -1018,6 +1025,274 @@ app.get('/auto-status', (_req, res) => {
   });
 });
 
+// ─── TELEGRAM NOTIFICATIONS ───────────────────────────────────────────────────
+// Setup: Add these two env vars to Railway (Settings → Variables):
+//   TELEGRAM_BOT_TOKEN   — get from @BotFather: /newbot → copy token
+//   TELEGRAM_CHAT_ID     — start your bot, then visit:
+//                          https://api.telegram.org/bot<TOKEN>/getUpdates
+//                          and copy "chat":{"id":...}
+const TELEGRAM_TOKEN   = process.env.TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID   || '';
+
+async function sendTelegram(message) {
+  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message, parse_mode: 'HTML' }),
+    });
+  } catch (e) {
+    console.error('[telegram] Send failed:', e.message);
+  }
+}
+
+// ─── ECONOMIC CALENDAR ────────────────────────────────────────────────────────
+const CALENDAR_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
+
+const PAIR_CURRENCIES = {
+  EUR_USD: ['EUR', 'USD'], GBP_USD: ['GBP', 'USD'], USD_JPY: ['USD', 'JPY'],
+  AUD_USD: ['AUD', 'USD'], NZD_USD: ['NZD', 'USD'], USD_CAD: ['USD', 'CAD'],
+  XAU_USD: ['USD'],        XAG_USD: ['USD'],         EUR_GBP: ['EUR', 'GBP'],
+  SPX500_USD: ['USD'],     NAS100_USD: ['USD'],       UK100_GBP: ['GBP'],
+  AU200_AUD:  ['AUD'],
+};
+
+async function refreshEconomicCalendar() {
+  try {
+    const r    = await fetch(CALENDAR_URL, { headers: { 'User-Agent': 'QuantBot/1.0' } });
+    const data = await r.json();
+    if (!Array.isArray(data)) return;
+    economicEvents = data
+      .filter(e => e.impact === 'High')
+      .map(e => ({
+        time:     new Date(e.date).getTime(),
+        currency: e.currency,
+        title:    e.title || e.event || '',
+      }))
+      .filter(e => !isNaN(e.time));
+    console.log(`[calendar] Loaded ${economicEvents.length} high-impact events`);
+  } catch (e) {
+    console.error('[calendar] Fetch failed:', e.message);
+  }
+}
+
+function isNewsWindow(instrument) {
+  if (economicEvents.length === 0) return false;
+  const now        = Date.now();
+  const currencies = PAIR_CURRENCIES[instrument] || [];
+  for (const ev of economicEvents) {
+    const diff = ev.time - now;          // ms until event (negative = past)
+    if (diff > 120 * 60_000) continue;   // event is > 2h away — not yet a risk
+    if (diff < -60 * 60_000) continue;   // event was > 1h ago — dust settled
+    if (currencies.includes(ev.currency)) return true;
+  }
+  return false;
+}
+
+// ─── OANDA TRADE MANAGEMENT HELPERS ──────────────────────────────────────────
+async function updateTradeSL(tradeId, newSLPrice, instrument) {
+  const price = formatPrice(newSLPrice, instrument);
+  try {
+    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/orders`, {
+      method: 'PUT', headers: H,
+      body: JSON.stringify({ stopLoss: { price, timeInForce: 'GTC' } }),
+    });
+    const data = await r.json();
+    if (data.stopLossOrderTransaction || data.relatedTransactionIDs) {
+      console.log(`[mgmt] Trade ${tradeId} SL → ${price}`);
+      return true;
+    }
+    console.error('[mgmt] SL update unexpected response:', JSON.stringify(data).slice(0, 200));
+    return false;
+  } catch (e) {
+    console.error('[mgmt] updateTradeSL error:', e.message);
+    return false;
+  }
+}
+
+async function partialCloseTrade(tradeId, units) {
+  try {
+    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/close`, {
+      method: 'PUT', headers: H,
+      body: JSON.stringify({ units: String(Math.abs(units)) }),
+    });
+    const data = await r.json();
+    if (data.orderFillTransaction) {
+      const fill = parseFloat(data.orderFillTransaction.price || 0);
+      const pnl  = parseFloat(data.orderFillTransaction.pl   || 0);
+      console.log(`[mgmt] Trade ${tradeId} partial ${units} units @ ${fill} P&L: ${pnl}`);
+      return { fill, pnl };
+    }
+    console.error('[mgmt] Partial close failed:', JSON.stringify(data).slice(0, 200));
+    return null;
+  } catch (e) {
+    console.error('[mgmt] partialCloseTrade error:', e.message);
+    return null;
+  }
+}
+
+// ─── OPEN TRADE MANAGER (runs every 30s) ─────────────────────────────────────
+async function manageOpenTrades() {
+  if (process.env.AUTO_MODE_ENABLED !== 'true') return;
+
+  let openTrades = [];
+  try {
+    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
+    const data = await r.json();
+    openTrades = data.trades || [];
+  } catch (e) {
+    console.error('[mgmt] Open trades fetch failed:', e.message);
+    return;
+  }
+
+  // ── Detect closed trades ────────────────────────────────────────────────────
+  const currentIds = new Set(openTrades.map(t => t.id));
+  for (const id of lastKnownTradeIds) {
+    if (!currentIds.has(id)) {
+      const state = tradeManagementState.get(id);
+      if (state) {
+        try {
+          const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${id}`, { headers: H });
+          const data = await r.json();
+          const trade = data.trade;
+          if (trade) {
+            const pnl   = parseFloat(trade.realizedPL || 0);
+            const instr = trade.instrument;
+            const dir   = parseFloat(trade.initialUnits || 1) >= 0 ? 'LONG' : 'SHORT';
+            const won   = pnl > 0;
+            // Update daily stats
+            const today = new Date().toISOString().slice(0, 10);
+            if (dailyStats.date !== today) {
+              dailyStats = { date: today, trades: 0, winners: 0, losers: 0, totalPnl: 0, bestTrade: '', _bestPnl: -Infinity };
+            }
+            dailyStats.trades++;
+            if (won) dailyStats.winners++; else dailyStats.losers++;
+            dailyStats.totalPnl += pnl;
+            if (pnl > dailyStats._bestPnl) {
+              dailyStats._bestPnl   = pnl;
+              dailyStats.bestTrade  = `${instr.replace('_', '/')} ${dir} +$${pnl.toFixed(2)}`;
+            }
+            const emoji = won ? '✅' : '❌';
+            await sendTelegram(
+              `${emoji} <b>TRADE CLOSED</b>\n` +
+              `Pair: ${instr.replace('_', '/')} ${dir}\n` +
+              `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n` +
+              `Today: ${dailyStats.winners}W/${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`
+            );
+          }
+        } catch (e) {
+          console.error('[mgmt] Closed trade fetch failed:', e.message);
+        }
+        tradeManagementState.delete(id);
+      }
+      lastKnownTradeIds.delete(id);
+    }
+  }
+  // Update known IDs with current open trades
+  for (const t of openTrades) lastKnownTradeIds.add(t.id);
+
+  // ── Manage each open trade ──────────────────────────────────────────────────
+  for (const trade of openTrades) {
+    const tradeId    = trade.id;
+    const instrument = trade.instrument;
+    const units      = parseFloat(trade.currentUnits);
+    const dir        = units > 0 ? 'LONG' : 'SHORT';
+    const entry      = parseFloat(trade.price);
+    const sl         = trade.stopLossOrder?.price ? parseFloat(trade.stopLossOrder.price) : null;
+
+    if (!sl) continue;
+    const risk = Math.abs(entry - sl);
+    if (risk <= 0) continue;
+
+    // Fetch live mid price
+    let price = 0;
+    try {
+      const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/pricing?instruments=${instrument}`, { headers: H });
+      const data = await r.json();
+      const px   = data.prices?.[0];
+      if (!px) continue;
+      price = (parseFloat(px.bids[0].price) + parseFloat(px.asks[0].price)) / 2;
+    } catch { continue; }
+
+    const priceDelta = dir === 'LONG' ? price - entry : entry - price;
+    const currentR   = priceDelta / risk;
+
+    if (!tradeManagementState.has(tradeId)) {
+      tradeManagementState.set(tradeId, { movedToBreakeven: false, partialClosed: false, peakR: 0 });
+    }
+    const state   = tradeManagementState.get(tradeId);
+    state.peakR   = Math.max(state.peakR, currentR);
+
+    // ── 1R reached: breakeven + partial close 50% ────────────────────────────
+    if (currentR >= 1.0 && !state.movedToBreakeven) {
+      const pip     = SERVER_PIP_SIZE[instrument] || 0.0001;
+      const bePrice = dir === 'LONG' ? entry + pip : entry - pip;
+      const moved   = await updateTradeSL(tradeId, bePrice, instrument);
+      if (moved) {
+        state.movedToBreakeven = true;
+        await sendTelegram(
+          `🛡 <b>BREAKEVEN</b>\n` +
+          `${instrument.replace('_', '/')} ${dir}\n` +
+          `SL → ${formatPrice(bePrice, instrument)} (entry +1pip)\n` +
+          `Current: +${currentR.toFixed(2)}R`
+        );
+      }
+    }
+
+    if (currentR >= 1.0 && !state.partialClosed) {
+      const halfUnits = Math.round(Math.abs(units) * 0.5);
+      if (halfUnits > 0) {
+        const result = await partialCloseTrade(tradeId, halfUnits);
+        if (result) {
+          state.partialClosed = true;
+          await sendTelegram(
+            `💰 <b>PARTIAL CLOSE</b>\n` +
+            `${instrument.replace('_', '/')} ${dir}\n` +
+            `Closed ${halfUnits} units @ ${formatPrice(result.fill, instrument)}\n` +
+            `Locked: ${result.pnl >= 0 ? '+' : ''}$${result.pnl.toFixed(2)}`
+          );
+        }
+      }
+    }
+
+    // ── 2R+ reached: trail stop to (currentR - 0.5R), only if improving ──────
+    if (currentR >= 2.0) {
+      const trailPrice = dir === 'LONG'
+        ? entry + risk * (currentR - 0.5)
+        : entry - risk * (currentR - 0.5);
+      const currentSL = parseFloat(trade.stopLossOrder?.price || sl);
+      const improving  = dir === 'LONG' ? trailPrice > currentSL + risk * 0.1
+                                        : trailPrice < currentSL - risk * 0.1;
+      if (improving) {
+        await updateTradeSL(tradeId, trailPrice, instrument);
+      }
+    }
+  }
+}
+
+// ─── DAILY SUMMARY ────────────────────────────────────────────────────────────
+async function maybeSendDailySummary() {
+  const now   = new Date();
+  const today = now.toISOString().slice(0, 10);
+  if (now.getUTCHours() !== 0 || now.getUTCMinutes() > 1) return;
+  if (lastDailySummaryDate === today) return;
+  lastDailySummaryDate = today;
+
+  const yesterday = dailyStats.date;
+  if (!yesterday || dailyStats.trades === 0) {
+    await sendTelegram(`📊 <b>DAILY SUMMARY</b>\nNo trades executed yesterday.`);
+    return;
+  }
+  const winRate = ((dailyStats.winners / dailyStats.trades) * 100).toFixed(0);
+  await sendTelegram(
+    `📊 <b>DAILY SUMMARY — ${yesterday}</b>\n` +
+    `Trades: ${dailyStats.trades} (${dailyStats.winners}W/${dailyStats.losers}L · ${winRate}%)\n` +
+    `Net P&L: ${dailyStats.totalPnl >= 0 ? '+' : ''}$${dailyStats.totalPnl.toFixed(2)}\n` +
+    `Best: ${dailyStats.bestTrade || '—'}`
+  );
+}
+
 // ─── SERVER-SIDE AUTO TRADE ENGINE ────────────────────────────────────────────
 function getServerSession() {
   const now = new Date();
@@ -1211,6 +1486,15 @@ async function serverAutoTrade() {
   for (const instrument of pairs) {
     if (Date.now() - (lastConsensus.get(instrument) || 0) < 5 * 60_000) continue;
 
+    // Upgrade 2 — news guard
+    if (isNewsWindow(instrument)) {
+      console.log(`[auto] ${instrument} — NEWS BLOCK (high-impact event ±2h)`);
+      serverRejections.unshift({ ts, instrument, direction: '?', score: 0, session, strategy, rejections: [{ condition: 'News Block', actual: 'High-impact event ±2h', threshold: 'No trading' }] });
+      if (serverRejections.length > 50) serverRejections.pop();
+      await sendTelegram(`📰 <b>NEWS BLOCK</b>\n${instrument.replace('_', '/')} — high-impact event within ±2h\nSession: ${session}`);
+      continue;
+    }
+
     const history = await getM5History(instrument);
     if (history.length < 20) {
       console.log(`[auto] ${instrument} — insufficient M5 history (${history.length} bars)`);
@@ -1323,6 +1607,15 @@ async function serverAutoTrade() {
         autoTrades.unshift({ id: Date.now(), timestamp: ts, instrument, direction: signal.direction, units, price: fill, session, strategy, score: signal.score, consensus: consensus.votes, models: consensus.models, oandaOrderId: result.orderFillTransaction?.id || null });
         if (autoTrades.length > 100) autoTrades.pop();
         console.log(`[auto] ✓ EXECUTED ${instrument} ${signal.direction} @ ${fill} — ${consensus.votes.confirm}/4 — ${strategy} — ${session}`);
+        // Upgrade 3 — Telegram notification
+        await sendTelegram(
+          `⚡ <b>TRADE OPENED</b>\n` +
+          `${instrument.replace('_', '/')} ${signal.direction}\n` +
+          `Entry: ${formatPrice(parseFloat(fill), instrument)}\n` +
+          `SL: ${formatPrice(sl, instrument)} · TP: ${formatPrice(tp, instrument)}\n` +
+          `Score: ${signal.score}% · Models: ${consensus.votes.confirm}/4\n` +
+          `Strategy: ${strategy} · Session: ${session}`
+        );
       }
     } catch (e) {
       console.error(`[auto] Order error ${instrument}: ${e.message}`);
@@ -1608,3 +1901,14 @@ setInterval(() => serverAutoTrade().catch(e => console.error('[auto] Loop:', e.m
 // Kill Shot swing scan — every 4 hours + 15s startup delay
 setTimeout(() => serverSwingAutoTrade().catch(e => console.error('[swing-auto] Startup:', e.message)), 15_000);
 setInterval(() => serverSwingAutoTrade().catch(e => console.error('[swing-auto] Loop:', e.message)), 4 * 60 * 60 * 1000);
+
+// Upgrade 1 — Trade management (breakeven, partial close, trail) every 30s
+setTimeout(() => manageOpenTrades().catch(e => console.error('[mgmt] Startup:', e.message)), 20_000);
+setInterval(() => manageOpenTrades().catch(e => console.error('[mgmt] Loop:', e.message)), 30_000);
+
+// Daily summary check every 60s (fires Telegram at 00:00–00:01 UTC)
+setInterval(() => maybeSendDailySummary().catch(e => console.error('[mgmt] Summary:', e.message)), 60_000);
+
+// Upgrade 2 — Economic calendar refresh every hour
+refreshEconomicCalendar().catch(e => console.error('[calendar] Startup:', e.message));
+setInterval(() => refreshEconomicCalendar().catch(e => console.error('[calendar] Refresh:', e.message)), 60 * 60_000);
