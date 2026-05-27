@@ -426,6 +426,121 @@ VERDICT: CONFIRM or REJECT
 REASON: (one sentence, max 15 words, trader language — name the specific macro factor, no corporate phrases)`;
 }
 
+// ─── KILL SHOT SWING CONSENSUS — MODEL ROLES ─────────────────────────────────
+const SYS_CLAUDE_SWING = 'You are an elite swing trade risk guardian evaluating multi-day positions. Protect capital. Be decisive. Respond ONLY in the format shown.';
+const SYS_GPT_SWING    = 'You are an H4 swing trade technical analyst. Validate H4 trend structure and EMA alignment for multi-day holds. Be decisive. Respond ONLY in the format shown.';
+const SYS_DEEP_SWING   = 'You are a quantitative swing trade validator. Validate R:R math and expectancy for multi-day positions only. Be decisive. Respond ONLY in the format shown.';
+const SYS_GEM_SWING    = 'You are a macro analyst evaluating conditions for a 2–5 day swing trade. Use Google Search to check news if needed. Be decisive. Respond ONLY in the format shown.';
+
+function buildClaudeSwingPrompt(p) {
+  const riskDist = Math.abs(parseFloat(p.entry) - parseFloat(p.sl));
+  const tp1R = riskDist > 0 ? (Math.abs(parseFloat(p.tp1) - parseFloat(p.entry)) / riskDist).toFixed(2) : '?';
+  const tp2R = riskDist > 0 ? (Math.abs(parseFloat(p.tp2) - parseFloat(p.entry)) / riskDist).toFixed(2) : '?';
+  const tp3R = riskDist > 0 ? (Math.abs(parseFloat(p.tp3) - parseFloat(p.entry)) / riskDist).toFixed(2) : '?';
+  return `You are evaluating a SWING TRADE setup targeting 3–5R over 2–5 days.
+
+Kill Shot Setup:
+- Pair: ${p.instrument} | Direction: ${p.direction}
+- H4 Score: ${p.score}%
+- Entry: ${p.entry} | Stop Loss: ${p.sl}
+- TP1: ${p.tp1} (${tp1R}R) | TP2: ${p.tp2} (${tp2R}R) | TP3: ${p.tp3} (${tp3R}R)
+
+Key questions:
+1. Is H4 trend structure valid for a ${p.direction} swing over 5 days?
+2. Is the stop loss placement logical relative to entry?
+3. Does the R:R justify multi-day risk?
+4. Any obvious macro risks for ${p.instrument} over next 5 days?
+
+CONFIRM if structure is valid and R:R >= 1.5 at TP1. REJECT if any condition fails.
+
+Respond in this EXACT format:
+VERDICT: CONFIRM or REJECT
+REASON: (one sentence, max 15 words, trader language)`;
+}
+
+function buildGPTSwingPrompt(p) {
+  return `You are a technical analyst evaluating an H4 swing trade setup.
+
+Setup: ${p.instrument} ${p.direction}
+EMA21: ${p.ema21 || '?'} | EMA50: ${p.ema50 || '?'} | Current price: ${p.price}
+RSI(14): ${p.rsi || '?'} | ATR(H4): ${p.atr || '?'}
+Score: ${p.score}%
+
+Key questions:
+1. Is the EMA stack properly aligned for ${p.direction}?
+2. Is price at a valid EMA21 pullback level?
+3. Does the structure support a multi-day hold?
+4. Is ATR sufficient for a 5-day position?
+
+CONFIRM only if EMA alignment, pullback, and trend structure all support this direction.
+
+Respond in this EXACT format:
+VERDICT: CONFIRM or REJECT
+REASON: (one sentence, max 15 words, trader language)`;
+}
+
+function buildDeepSeekSwingPrompt(p) {
+  const SWING_PIP = { EUR_USD: 0.0001, GBP_USD: 0.0001, USD_JPY: 0.01, XAU_USD: 0.1, NAS100_USD: 1.0, BCO_USD: 0.01 };
+  const pip = SWING_PIP[p.instrument] || 0.0001;
+  const entry = parseFloat(p.entry), sl = parseFloat(p.sl);
+  const tp1 = parseFloat(p.tp1), tp2 = parseFloat(p.tp2), tp3 = parseFloat(p.tp3);
+  const riskDist = Math.abs(entry - sl);
+  const riskPips  = (riskDist / pip).toFixed(1);
+  const tp1R = riskDist > 0 ? (Math.abs(tp1 - entry) / riskDist).toFixed(2) : '?';
+  const tp2R = riskDist > 0 ? (Math.abs(tp2 - entry) / riskDist).toFixed(2) : '?';
+  const tp3R = riskDist > 0 ? (Math.abs(tp3 - entry) / riskDist).toFixed(2) : '?';
+  const tp1Pips = (Math.abs(tp1 - entry) / pip).toFixed(1);
+  const tp2Pips = (Math.abs(tp2 - entry) / pip).toFixed(1);
+  const tp3Pips = (Math.abs(tp3 - entry) / pip).toFixed(1);
+  const tp1RNum = parseFloat(tp1R);
+  const breakEven = tp1RNum > 0 ? (1 / (1 + tp1RNum) * 100).toFixed(1) : '?';
+  const ev40 = tp1RNum > 0 ? ((0.4 * tp1RNum - 0.6) * 100).toFixed(1) : '?';
+  return `Validate this swing trade mathematically.
+
+Entry: ${p.entry} | Stop: ${p.sl}
+Risk: ${riskPips} pips | Position: 500 units
+TP1: ${p.tp1} (${tp1Pips} pips, ${tp1R}R)
+TP2: ${p.tp2} (${tp2Pips} pips, ${tp2R}R)
+TP3: ${p.tp3} (${tp3Pips} pips, ${tp3R}R)
+
+Calculated:
+- Break-even win rate at TP1: ${breakEven}%
+- Expected value at 40% win rate: ${ev40}% of risk
+
+CONFIRM if R:R >= 1.5 at TP1. REJECT if R:R < 1.5.
+
+Respond in this EXACT format:
+VERDICT: CONFIRM or REJECT
+REASON: (one sentence, max 15 words, cite the R:R number)`;
+}
+
+function buildGeminiSwingPrompt(p) {
+  const xavierBlock = (p.xavierKeyRisk || p.xavierSentiment)
+    ? `\nXavier AI read:\n- Sentiment: ${p.xavierSentiment || 'UNKNOWN'}\n- Key risk: ${p.xavierKeyRisk || 'none'}\n- Best pair: ${p.xavierBestPair || 'none'}`
+    : '';
+  const newsBlock = p.freshNews ? `\nLive news context:\n${p.freshNews}` : '';
+  const retailBlock = p.retailSentiment
+    ? `\nRetail positioning (OANDA — contrarian): ${p.retailSentiment.longPct}% LONG / ${p.retailSentiment.shortPct}% SHORT — institutional read: ${p.retailSentiment.contrarian}`
+    : '';
+  return `You are evaluating macro conditions for a multi-day swing trade.
+
+Trade: ${p.instrument} ${p.direction}
+Hold period: up to 5 days | Session: ${p.session || 'UNKNOWN'}
+H4 Score: ${p.score}%${xavierBlock}${newsBlock}${retailBlock}
+
+Evaluate:
+1. Are macro conditions favorable for ${p.direction} on ${p.instrument} over 5 days?
+2. Any scheduled HIGH-impact events in next 5 days that could invalidate this trade?
+3. Does institutional positioning support ${p.direction}?
+4. Is the multi-day trend intact?
+
+CONFIRM if macro environment supports this swing. REJECT if significant headwinds exist.
+
+Respond in this EXACT format:
+VERDICT: CONFIRM or REJECT
+REASON: (one sentence, max 15 words, name the specific macro factor)`;
+}
+
 function parseVerdict(text) {
   const lines = (text || '').split('\n').reduce((a, l) => {
     const i = l.indexOf(':'); if (i > 0) a[l.slice(0, i).trim()] = l.slice(i + 1).trim(); return a;
@@ -714,6 +829,58 @@ app.get('/economic-calendar', async (_req, res) => {
 app.post('/consensus', async (req, res) => {
   try {
     res.json(await runConsensus(req.body));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── KILL SHOT SWING CONSENSUS ENDPOINT ─────────────────────────────────────
+app.post('/swing-consensus', async (req, res) => {
+  try {
+    const p = { ...req.body };
+    // Fetch retail sentiment inline if not provided
+    if (!p.retailSentiment && p.instrument) {
+      try {
+        const r = await fetch(`${BASE}/v3/instruments/${p.instrument}/positionBook`, { headers: H });
+        const d = await r.json();
+        if (r.ok && d.positionBook?.buckets) {
+          let longU = 0, shortU = 0;
+          d.positionBook.buckets.forEach(b => { longU += parseFloat(b.longCountPercent || 0); shortU += parseFloat(b.shortCountPercent || 0); });
+          const tot = longU + shortU;
+          const longPct = tot > 0 ? Math.round((longU / tot) * 100) : 50;
+          p.retailSentiment = { longPct, shortPct: 100 - longPct, contrarian: longPct >= 65 ? 'BEARISH' : (100 - longPct) >= 65 ? 'BULLISH' : 'NEUTRAL' };
+        }
+      } catch { /* skip — non-fatal */ }
+    }
+    const settled = await Promise.allSettled([
+      askClaude(buildClaudeSwingPrompt(p),    SYS_CLAUDE_SWING),
+      askGPT(buildGPTSwingPrompt(p),          SYS_GPT_SWING),
+      askDeepSeek(buildDeepSeekSwingPrompt(p),SYS_DEEP_SWING),
+      askGemini(buildGeminiSwingPrompt(p),    SYS_GEM_SWING),
+    ]);
+    const NAMES = ['Claude Sonnet', 'GPT-4o', 'DeepSeek', 'Gemini 2.5 Flash'];
+    const models = settled.map((r, i) => {
+      if (r.status === 'fulfilled') return r.value;
+      const raw = r.reason?.message || 'Model unreachable';
+      const reason = raw.includes('prepayment') || raw.includes('credits') ? 'Credits depleted — check billing'
+        : raw.includes('quota') || raw.includes('Quota') ? 'Quota exceeded'
+        : raw.includes('Missing') ? raw : raw.slice(0, 80);
+      return { name: NAMES[i], verdict: 'REJECT', reason };
+    });
+    const confirms = models.filter(m => m.verdict === 'CONFIRM').length;
+    const voteLog = models.map(m => {
+      const tag  = MODEL_TAG[m.name] || m.name.toUpperCase();
+      const icon = m.verdict === 'CONFIRM' ? '✓' : '✗';
+      return `[${tag}] ${m.verdict} — ${m.reason} ${icon}`;
+    });
+    voteLog.push(`Result: ${confirms}/4 CONFIRM → ${confirms >= 3 ? 'KILL SHOT EXECUTE' : 'BLOCKED'}`);
+    res.json({
+      votes: { confirm: confirms, reject: models.length - confirms },
+      consensus: confirms >= 3 ? 'CONFIRM' : 'REJECT',
+      confidence: `${Math.round((confirms / models.length) * 100)}%`,
+      models, voteLog,
+      executeAllowed: confirms >= 3,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

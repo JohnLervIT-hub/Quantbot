@@ -2752,7 +2752,156 @@ function XavierKillShotNote({ score, pair, direction }) {
   );
 }
 
-function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriPM, isNewsBlock, pendingSetups }) {
+// ─── KILL SHOT CONSENSUS PANEL ────────────────────────────────────────────────
+function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, livePrices, onExecute, onCancel }) {
+  const [loading, setLoading] = useState(true);
+  const [consensus, setConsensus] = useState(null);
+  const [showLog, setShowLog] = useState(false);
+
+  useEffect(() => {
+    const run = async () => {
+      const instrument = pair.replace("/", "_");
+      const currentPrice = parseFloat(livePrices?.[pair] || sig.entry);
+      try {
+        const r = await fetch(`${BRIDGE}/swing-consensus`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            instrument, direction: sig.direction, score: sig.score,
+            entry: sig.entry?.toFixed(5) || "?",
+            sl:    sig.sl?.toFixed(5)    || "?",
+            tp1:   sig.tp1?.toFixed(5)   || "?",
+            tp2:   sig.tp2?.toFixed(5)   || "?",
+            tp3:   sig.tp3?.toFixed(5)   || "?",
+            ema21: sig.ema21?.toFixed(5) || "?",
+            ema50: sig.ema50?.toFixed(5) || "?",
+            rsi:   sig.rsi?.toFixed(1)   || "?",
+            atr:   sig.atr?.toFixed(5)   || "?",
+            price: currentPrice.toFixed(5),
+            session,
+            xavierSentiment:  xavierIntel?.sentiment  || null,
+            xavierKeyRisk:    xavierIntel?.keyRisk     || null,
+            xavierBestPair:   xavierIntel?.bestPair    || null,
+            xavierBrief:      xavierIntel?.brief       || null,
+            freshNews: freshNews?.slice(0, 5).join(" | ") || null,
+          }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `Bridge error ${r.status}`);
+        setConsensus(data);
+      } catch (err) {
+        const msg = err?.name === "TypeError" || err?.message?.includes("Failed to fetch")
+          ? "Bridge offline — run: npm run server"
+          : err?.message || "Connection failed";
+        const fallbackModel = (name) => ({ name, verdict: "REJECT", reason: msg });
+        setConsensus({
+          votes: { confirm: 0, reject: 4 },
+          consensus: "REJECT", confidence: "0%",
+          models: ["Claude Sonnet", "GPT-4o", "DeepSeek", "Gemini 2.5 Flash"].map(fallbackModel),
+          voteLog: ["[CLAUDE] REJECT ✗", "[GPT4] REJECT ✗", "[DEEPSEEK] REJECT ✗", "[GEMINI] REJECT ✗", `Result: 0/4 CONFIRM → BLOCKED — ${msg}`],
+          executeAllowed: false, bridgeError: true,
+        });
+      }
+      setLoading(false);
+    };
+    run();
+  }, []); // eslint-disable-line
+
+  const confirms = consensus?.votes?.confirm ?? 0;
+  const total    = consensus?.models?.length ?? 4;
+  const accent   = confirms >= 3 ? "#F97316" : confirms === 2 ? "#d29922" : "#f85149";
+  const MODEL_PLACEHOLDERS = ["Claude Sonnet", "GPT-4o", "DeepSeek", "Gemini 2.5 Flash"];
+
+  return (
+    <div style={{ marginTop: 8, padding: 12, borderRadius: 8, background: "#0d1117", border: `1px solid ${accent}40`, borderLeft: `3px solid ${accent}` }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: accent, letterSpacing: "0.04em" }}>
+          {loading
+            ? "⚔️ KILL SHOT CONSENSUS — consulting models…"
+            : confirms >= 3
+              ? `⚔️ ${confirms}/${total} CONFIRM — Kill Shot cleared`
+              : `⚔️ ${confirms}/${total} — BLOCKED`}
+        </div>
+        {!loading && consensus && (
+          <span style={{ fontSize: 10, fontWeight: 600, color: accent }}>{consensus.confidence}</span>
+        )}
+      </div>
+
+      {/* 2×2 model grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1, marginBottom: 10, background: "#21262d", borderRadius: 6, overflow: "hidden", border: "1px solid #21262d" }}>
+        {(loading ? MODEL_PLACEHOLDERS.map(n => ({ name: n, verdict: null, reason: null })) : (consensus?.models ?? [])).map((model, i) => {
+          const isC = model.verdict === "CONFIRM";
+          const isR = model.verdict === "REJECT";
+          const mc  = isC ? "#3fb950" : isR ? "#f85149" : "#484f58";
+          const top = loading ? "#30363d" : isC ? "#238636" : "#da3633";
+          return (
+            <div key={i} style={{ padding: "8px 10px", background: "#0d1117", borderTop: `2px solid ${top}`, transition: "all 0.3s" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
+                <span style={{ fontSize: 10, fontWeight: 600, color: loading ? "#484f58" : "#e6edf3" }}>{model.name}</span>
+                {!loading && <span style={{ fontSize: 10, fontWeight: 800, color: mc }}>{isC ? "✅" : isR ? "❌" : ""} {model.verdict}</span>}
+              </div>
+              <div style={{ fontSize: 10, color: loading ? "#30363d" : "#8b949e", lineHeight: 1.4 }}>
+                {loading ? "evaluating…" : model.reason}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Vote log */}
+      {consensus && !loading && consensus.voteLog && (
+        <div style={{ marginBottom: 8 }}>
+          <button onClick={() => setShowLog(v => !v)} style={{ fontSize: 10, background: "none", border: "none", color: "#484f58", cursor: "pointer", padding: "0 0 4px", fontFamily: FONT_MONO }}>
+            {showLog ? "▲ Hide vote log" : "▼ View vote log"}
+          </button>
+          {showLog && (
+            <div style={{ padding: "8px 10px", background: "#0d1117", borderRadius: 6, border: "1px solid #21262d", fontFamily: FONT_MONO, fontSize: 10, lineHeight: 1.8 }}>
+              {consensus.voteLog.map((line, i) => {
+                const isResult = line.startsWith("Result:");
+                const color = isResult ? (line.includes("EXECUTE") ? "#F97316" : "#f85149")
+                  : line.includes("] CONFIRM") ? "#3fb950"
+                  : line.includes("] REJECT")  ? "#f85149" : "#8b949e";
+                return (
+                  <div key={i} style={{ color, borderTop: isResult ? "1px solid #21262d" : "none", paddingTop: isResult ? 4 : 0, marginTop: isResult ? 4 : 0, fontWeight: isResult ? 700 : 400 }}>
+                    {line}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Actions */}
+      {!loading && consensus && (
+        <div style={{ display: "flex", gap: 8 }}>
+          {consensus.executeAllowed ? (
+            <button
+              onClick={() => { onExecute(pair, sig); onCancel(); }}
+              style={{ flex: 1, padding: "8px 0", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", background: "#F9731618", color: "#F97316", border: "1px solid #F97316", letterSpacing: "0.04em", fontFamily: "inherit" }}
+            >
+              ⚔️ Execute Kill Shot
+            </button>
+          ) : (
+            <div style={{ flex: 1, padding: "8px 0", borderRadius: 6, fontSize: 11, fontWeight: 600, textAlign: "center", color: "#f85149", border: "1px solid #f8514940", background: "#f8514908" }}>
+              Kill Shot blocked — {confirms}/4 models
+            </div>
+          )}
+          <button
+            onClick={onCancel}
+            style={{ flex: 0.4, padding: "8px 0", borderRadius: 6, fontSize: 11, cursor: "pointer", background: "#161b22", color: "#8b949e", border: "0.5px solid #30363d", fontFamily: "inherit" }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriPM, isNewsBlock, pendingSetups, session, xavierIntel, freshNews, livePrices }) {
+  const [consensusPair, setConsensusPair] = useState(null);
   const activePairs = KILL_SHOT_PAIRS.filter(p => signals[p]?.score >= 75);
   const watchPairs  = KILL_SHOT_PAIRS.filter(p => !signals[p] || signals[p].score < 75);
   return (
@@ -2817,18 +2966,26 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
               </div>
             )}
             <XavierKillShotNote score={sig.score} pair={pair} direction={sig.direction} />
-            <button
-              onClick={() => canExec && !isAlreadyOpen && onExecute(pair, sig)}
-              disabled={isAlreadyOpen || !canExec}
-              style={{ marginTop: 8, width: "100%", padding: "7px 0", borderRadius: 6, fontFamily: "inherit", letterSpacing: "0.04em", transition: "all 0.15s", fontSize: 11, fontWeight: 700,
-                border: `1px solid ${isAlreadyOpen ? "#30363d" : canExec ? "#F97316" : "#30363d"}`,
-                background: isAlreadyOpen ? "#161b22" : canExec ? "#F9731618" : "#161b22",
-                color: isAlreadyOpen ? "#484f58" : canExec ? "#F97316" : "#484f58",
-                cursor: isAlreadyOpen || !canExec ? "default" : "pointer",
-              }}
-            >
-              {isAlreadyOpen ? "Already Open" : canExec ? "⚔️ Execute Kill Shot" : isPending ? `⏳ Auto-executes at ${nextSwingWindow(pair).split(" in ")[0]}` : `⏳ ${nextSwingWindow(pair)}`}
-            </button>
+            {consensusPair === pair ? (
+              <SwingConsensusPanel
+                pair={pair} sig={sig} session={session}
+                xavierIntel={xavierIntel} freshNews={freshNews} livePrices={livePrices}
+                onExecute={onExecute} onCancel={() => setConsensusPair(null)}
+              />
+            ) : (
+              <button
+                onClick={() => canExec && !isAlreadyOpen && setConsensusPair(pair)}
+                disabled={isAlreadyOpen || !canExec}
+                style={{ marginTop: 8, width: "100%", padding: "7px 0", borderRadius: 6, fontFamily: "inherit", letterSpacing: "0.04em", transition: "all 0.15s", fontSize: 11, fontWeight: 700,
+                  border: `1px solid ${isAlreadyOpen ? "#30363d" : canExec ? "#F97316" : "#30363d"}`,
+                  background: isAlreadyOpen ? "#161b22" : canExec ? "#F9731618" : "#161b22",
+                  color: isAlreadyOpen ? "#484f58" : canExec ? "#F97316" : "#484f58",
+                  cursor: isAlreadyOpen || !canExec ? "default" : "pointer",
+                }}
+              >
+                {isAlreadyOpen ? "Already Open" : canExec ? "⚔️ Execute Kill Shot" : isPending ? `⏳ Auto-executes at ${nextSwingWindow(pair).split(" in ")[0]}` : `⏳ ${nextSwingWindow(pair)}`}
+              </button>
+            )}
           </div>
         );
       })}
@@ -7931,7 +8088,7 @@ export default function TradingRobot() {
       <div style={{ display: tab === "markets" ? "block" : "none" }}>
         <div style={isMobile ? {} : { padding: "0 16px" }}>
           {swingEnabled && (
-            <SwingPanel signals={swingSignals} scanning={swingScanning} onExecute={executeKillShot} openTrades={openTrades} isMobile={isMobile} isFriPM={isFridayPMBlock()} isNewsBlock={isSwingNewsBlock()} pendingSetups={pendingSwingSetups} />
+            <SwingPanel signals={swingSignals} scanning={swingScanning} onExecute={executeKillShot} openTrades={openTrades} isMobile={isMobile} isFriPM={isFridayPMBlock()} isNewsBlock={isSwingNewsBlock()} pendingSetups={pendingSwingSetups} session={getCurrentSession()} xavierIntel={xavierIntelRef.current} freshNews={liveHeadlines} livePrices={livePrices} />
           )}
           {swingEnabled && swingTrades.length > 0 && (
             <SwingJournalPanel swingTrades={swingTrades} openTrades={openTrades} livePrices={livePrices} displayNav={displayNav} isMobile={isMobile} />
