@@ -1555,7 +1555,21 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
       swingBlock = `\n\nKILL SHOT SWING SETUPS:\n${setups.length > 0 ? setups.join("\n") : "No qualifying setups right now."}\n\nACTIVE SWING TRADES:\n${activeSwings.length > 0 ? activeSwings.join("\n") : "No open swing trades."}\n\nYou are aware of both M5 intraday trades AND H4 Kill Shot swing trades. When discussing setups, reference Kill Shot opportunities and active swing positions. These are high-conviction multi-day trades targeting 3–5R.`;
     }
 
-    return `You are Xavier, a seasoned forex prop trader based in Calgary. Session: ${session}. Strategy: ${strategy}. Portfolio heat: ${heat}R. Open trades: ${openCount}. Active signals: ${signalPairs}. Current headline: "${currentHeadline}". Talk like a human — direct, confident, occasionally dry. Contractions always. No bullet points, no corporate phrasing. Max 80 words.\n\n${liveContext}${swingBlock}`;
+    const openTradesContext = openTrades.length > 0
+      ? `\n\nCURRENTLY OPEN TRADES:\n${openTrades.map(t => {
+          const tPair = oandaToSlash(t.instrument);
+          const tUnits = parseFloat(t.currentUnits);
+          const tDir = tUnits > 0 ? "LONG" : "SHORT";
+          const tEntry = parseFloat(t.price).toFixed(priceDecimals(tPair));
+          const tSL = t.stopLossOrder?.price ? parseFloat(t.stopLossOrder.price).toFixed(priceDecimals(tPair)) : "—";
+          const tTP = t.takeProfitOrder?.price ? parseFloat(t.takeProfitOrder.price).toFixed(priceDecimals(tPair)) : "—";
+          const tPnl = parseFloat(t.unrealizedPL || 0).toFixed(2);
+          const tDur = tradeDuration(t.openTime);
+          return `${tPair} ${tDir} @ ${tEntry} | SL: ${tSL} | TP: ${tTP} | P&L: ${tPnl >= 0 ? "+" : ""}$${tPnl} | Duration: ${tDur}`;
+        }).join("\n")}\n\nYou are aware of these positions. When asked about open trades or portfolio status, reference these exact positions.`
+      : "";
+
+    return `You are Xavier, a seasoned forex prop trader based in Calgary. Session: ${session}. Strategy: ${strategy}. Portfolio heat: ${heat}R. Open trades: ${openCount}. Active signals: ${signalPairs}. Current headline: "${currentHeadline}". Talk like a human — direct, confident, occasionally dry. Contractions always. No bullet points, no corporate phrasing. Max 80 words.\n\n${liveContext}${openTradesContext}${swingBlock}`;
   };
 
   const runAnalysis = async () => {
@@ -3334,8 +3348,10 @@ function SwingJournalPanel({ swingTrades, openTrades, livePrices, displayNav, is
       {activeTrades.map(t => {
         const liveOanda = openTrades?.find(o => o.id === t.oandaId);
         const livePrice = liveOanda ? parseFloat(liveOanda.price) : (livePrices?.[t.pair] || t.entry);
+        const liveSL    = liveOanda?.stopLossOrder?.price  ? parseFloat(liveOanda.stopLossOrder.price)  : t.sl;
+        const liveTP    = liveOanda?.takeProfitOrder?.price ? parseFloat(liveOanda.takeProfitOrder.price) : t.tp1;
         const pnlPips   = t.direction === "LONG" ? livePrice - t.entry : t.entry - livePrice;
-        const pnlR      = oneR > 0 ? (pnlPips / Math.abs(t.entry - t.sl)) * 1 : 0;
+        const pnlR      = oneR > 0 ? (pnlPips / Math.abs(t.entry - liveSL)) * 1 : 0;
         const rColor    = pnlR >= 2 ? "#3fb950" : pnlR >= 1 ? "#d29922" : pnlR >= 0 ? "#8b949e" : "#f85149";
         return (
           <div key={t.id} style={{ padding: "10px 14px", borderBottom: "0.5px solid #21262d" }}>
@@ -3348,7 +3364,7 @@ function SwingJournalPanel({ swingTrades, openTrades, livePrices, displayNav, is
               <span style={{ fontSize: 12, fontWeight: 800, color: rColor, fontFamily: FONT_MONO }}>{pnlR >= 0 ? "+" : ""}{pnlR.toFixed(1)}R</span>
             </div>
             <div style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO, marginBottom: 2 }}>
-              {fmtDays(t.openedAt)} · Score {t.score}% · SL {swingFmt(t.pair, t.sl)} · TP1 {swingFmt(t.pair, t.tp1)}
+              {fmtDays(t.openedAt)} · Score {t.score}% · SL {swingFmt(t.pair, liveSL)} · TP1 {swingFmt(t.pair, liveTP)}
             </div>
             <div style={{ fontSize: 10, color: "#8b949e", fontStyle: "italic" }}>{t.thesis}</div>
           </div>
@@ -5121,6 +5137,8 @@ function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile, mgmtRef
             const mgmt = mgmtRef?.current?.[trade.id] || {};
             const isBE    = mgmt.breakevenDone;
             const isTrail = mgmt.trailingActive;
+            const sl  = trade.stopLossOrder?.price  ? parseFloat(trade.stopLossOrder.price)  : null;
+            const tp  = trade.takeProfitOrder?.price ? parseFloat(trade.takeProfitOrder.price) : null;
 
             if (isMobile) {
               return (
@@ -5136,10 +5154,16 @@ function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile, mgmtRef
                     </div>
                     <span style={{ fontSize: 11, fontWeight: 600, color: isLong ? "#3fb950" : "#f85149" }}>{isLong ? "LONG" : "SHORT"}</span>
                   </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, fontFamily: FONT_MONO, fontSize: 11 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6, fontFamily: FONT_MONO, fontSize: 11 }}>
                     <span style={{ color: "#8b949e" }}>@ {entry.toFixed(dec)}</span>
                     <span style={{ color: "#c9d1d9" }}>{current ? current.toFixed(dec) : "—"}</span>
                   </div>
+                  {(sl !== null || tp !== null) && (
+                    <div style={{ display: "flex", gap: 12, marginBottom: 8, fontFamily: FONT_MONO, fontSize: 10 }}>
+                      {sl !== null && <span style={{ color: "#8b949e" }}>SL <span style={{ color: "#f85149" }}>{sl.toFixed(dec)}</span></span>}
+                      {tp !== null && <span style={{ color: "#8b949e" }}>TP <span style={{ color: "#3fb950" }}>{tp.toFixed(dec)}</span></span>}
+                    </div>
+                  )}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
                       <span style={{ fontFamily: FONT_MONO, fontWeight: 600, fontSize: 14, fontVariantNumeric: "tabular-nums", color: pnl >= 0 ? "#3fb950" : "#f85149" }}>{pnlStr}</span>
@@ -5160,11 +5184,14 @@ function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile, mgmtRef
             return (
               <div
                 key={trade.id}
-                style={{ display: "grid", gridTemplateColumns: "80px 58px 110px 110px auto 70px auto", alignItems: "center", gap: 8, padding: "10px 12px", borderRadius: 8, background: isLong ? "rgba(29,158,117,0.05)" : "rgba(226,75,74,0.05)", border: `0.5px solid ${isLong ? "rgba(29,158,117,0.2)" : "rgba(226,75,74,0.2)"}`, fontSize: 12 }}
+                style={{ display: "grid", gridTemplateColumns: "80px 52px 95px 95px 95px auto 60px auto", alignItems: "center", gap: 8, padding: "10px 12px", borderRadius: 8, background: isLong ? "rgba(29,158,117,0.05)" : "rgba(226,75,74,0.05)", border: `0.5px solid ${isLong ? "rgba(29,158,117,0.2)" : "rgba(226,75,74,0.2)"}`, fontSize: 12 }}
               >
                 <span style={{ fontWeight: 600, color: "var(--color-text-primary)" }}>{pair}</span>
                 <span style={{ color: isLong ? "#1D9E75" : "#E24B4A", fontWeight: 600, fontSize: 11 }}>{isLong ? "LONG" : "SHORT"}</span>
                 <span style={{ fontFamily: FONT_MONO, color: "var(--color-text-tertiary)", fontSize: 11 }}>@ {entry.toFixed(dec)}</span>
+                <span style={{ fontFamily: FONT_MONO, fontSize: 11, fontVariantNumeric: "tabular-nums" }}>
+                  {sl !== null ? <span style={{ color: "#f85149" }}>{sl.toFixed(dec)}</span> : <span style={{ color: "#484f58" }}>—</span>}
+                </span>
                 <span style={{ fontFamily: FONT_MONO, color: "var(--color-text-primary)", fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{current ? current.toFixed(dec) : "—"}</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                   <span style={{ fontFamily: FONT_MONO, fontWeight: 600, color: pnl >= 0 ? "#1D9E75" : "#E24B4A", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>{pnlStr}</span>
