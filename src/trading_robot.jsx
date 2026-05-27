@@ -7924,7 +7924,6 @@ export default function TradingRobot() {
           continue;
         }
         if (!canExecuteSwing(pair)) continue; // window not open yet
-        // Window just opened and setup still valid — auto-execute (no confirm for queued trades)
         const sym   = pair.replace("/", "_");
         const units = currentSig.direction === "LONG" ? 500 : -500;
         const current = openTradesRef.current;
@@ -7933,6 +7932,41 @@ export default function TradingRobot() {
           setPendingSwingSetups(prev => { const n = { ...prev }; delete n[pair]; return n; });
           continue;
         }
+        // Consensus gate — same as manual path: score >= 75 → 3/4 CONFIRM → execute
+        try {
+          let freshMid = parseFloat(currentSig.entry) || 0;
+          try {
+            const pr = await fetch(`${BRIDGE}/prices?instruments=${sym}`).then(r => r.json());
+            const px = pr.prices?.[0];
+            if (px) freshMid = (parseFloat(px.bids[0].price) + parseFloat(px.asks[0].price)) / 2;
+          } catch {}
+          const xavier = xavierIntelRef.current;
+          const xavierAge = xavier?.timestamp ? Date.now() - xavier.timestamp : Infinity;
+          const xavierAgeMin = xavierAge === Infinity ? 999 : Math.round(xavierAge / 60000);
+          const isXavierStale = xavierAge > 15 * 60 * 1000;
+          const newsAgeMin = newsLastFetchedAt ? Math.round((Date.now() - newsLastFetchedAt) / 60000) : 999;
+          const freshNewsStr = newsAgeMin > 30 ? null : liveHeadlines?.slice(0, 5).join(" | ") || null;
+          const toF = v => (typeof v === "number" ? v : parseFloat(v) || 0).toFixed(5);
+          const cr = await fetch(`${BRIDGE}/swing-consensus`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              instrument: sym, direction: currentSig.direction, score: currentSig.score,
+              price: freshMid.toFixed(5),
+              entry: toF(currentSig.entry), sl: toF(currentSig.sl),
+              tp1: toF(currentSig.tp1), tp2: toF(currentSig.tp2), tp3: toF(currentSig.tp3),
+              ema21: toF(currentSig.ema21), ema50: toF(currentSig.ema50),
+              rsi: currentSig.rsi?.toFixed?.(1) || "50", atr: toF(currentSig.atr),
+              session: getCurrentSession(), freshNews: freshNewsStr,
+              xavierSentiment: isXavierStale ? null : xavier?.sentiment || null,
+              xavierKeyRisk:   isXavierStale ? null : xavier?.keyRisk   || null,
+              xavierBestPair:  isXavierStale ? null : xavier?.bestPair  || null,
+              xavierBrief:     isXavierStale ? null : xavier?.brief     || null,
+              newsAgeMin, xavierIntelAgeMin: xavierAgeMin,
+            }),
+          });
+          const cd = await cr.json();
+          if (!cd.executeAllowed || (cd.votes?.confirm ?? 0) < 3) continue; // retry next poll
+        } catch { continue; } // consensus unreachable — don't fire
         try {
           const r = await fetch(`${BRIDGE}/swing/order`, {
             method: "POST", headers: { "Content-Type": "application/json" },
