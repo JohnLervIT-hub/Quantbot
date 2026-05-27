@@ -296,12 +296,30 @@ app.post('/ai', async (req, res) => {
 });
 
 // ─── IN-MEMORY STATE ─────────────────────────────────────────────────────────
-const priceHistory  = new Map(); // instrument → number[] (capped at 60)
-const lastConsensus = new Map(); // instrument → ms timestamp (5-min cooldown)
-const autoTrades    = [];        // newest-first, capped at 100
-const paperTrades   = [];        // newest-first, capped at 100
+const lastConsensus    = new Map(); // instrument → ms timestamp (5-min cooldown)
+const autoTrades       = [];        // newest-first, capped at 100
+const paperTrades      = [];        // newest-first, capped at 100
+const m5History        = new Map(); // instrument → number[] (60 M5 closes)
+const lastM5Fetch      = new Map(); // instrument → ms timestamp
+const serverRejections = [];        // newest-first, capped at 50
+let   lastScanAt       = null;
 
-const AUTO_PAIRS = 'EUR_USD,GBP_USD,USD_JPY,AUD_USD,USD_CAD,XAU_USD,SPX500_USD';
+
+// ─── XAVIER RULES ────────────────────────────────────────────────────────────
+const XAVIER_RULES = {
+  TOKYO:  { strategy: 'Mean Revert',  pairs: ['USD_JPY', 'AUD_USD'],                       minScore: 65 },
+  SYDNEY: { strategy: 'Breakout',     pairs: ['AUD_USD', 'NZD_USD'],                       minScore: 65 },
+  LONDON: { strategy: 'Trend Follow', pairs: ['EUR_USD', 'GBP_USD', 'XAU_USD'],            minScore: 65 },
+  PRIME:  { strategy: 'Trend Follow', pairs: ['EUR_USD', 'GBP_USD', 'USD_JPY', 'XAU_USD'], minScore: 65 },
+  NY:     { strategy: 'Momentum',     pairs: ['EUR_USD', 'USD_CAD', 'USD_JPY'],            minScore: 65 },
+  AVOID:  { strategy: null,           pairs: [],                                           minScore: 999 },
+};
+
+const SERVER_PIP_SIZE = {
+  EUR_USD: 0.0001, GBP_USD: 0.0001, USD_JPY: 0.01,
+  AUD_USD: 0.0001, USD_CAD: 0.0001, NZD_USD: 0.0001,
+  XAU_USD: 0.01,   SPX500_USD: 0.1,
+};
 
 // ─── SHARED LLM HELPERS ──────────────────────────────────────────────────────
 const SYS_CLAUDE = 'You are an elite forex risk guardian. Protect capital above all else. Be decisive. Respond ONLY in the format shown.';
@@ -941,136 +959,322 @@ app.get('/paper-trades', (_req, res) => {
   res.json({ count: paperTrades.length, trades: paperTrades });
 });
 
-// ─── AUTONOMOUS CHECK ─────────────────────────────────────────────────────────
-async function runAutonomousCheck() {
-  const ts = new Date().toISOString();
+// ─── AUTO STATUS ENDPOINT ─────────────────────────────────────────────────────
+app.get('/auto-status', (_req, res) => {
+  const session = getServerSession();
+  const rule    = XAVIER_RULES[session] || {};
+  res.json({
+    autoMode:         process.env.AUTO_MODE_ENABLED === 'true',
+    session,
+    strategy:         rule.strategy  || null,
+    activePairs:      rule.pairs     || [],
+    lastScanAt:       lastScanAt ? new Date(lastScanAt).toISOString() : null,
+    autoTrades:       autoTrades.slice(0, 10),
+    recentRejections: serverRejections.slice(0, 10),
+  });
+});
 
-  let prices;
+// ─── SERVER-SIDE AUTO TRADE ENGINE ────────────────────────────────────────────
+function getServerSession() {
+  const now = new Date();
+  const h   = now.getUTCHours();
+  const d   = now.getUTCDay();
+  if (d === 6 || (d === 0 && h < 22)) return 'AVOID';
+  if (h >= 22 || h < 4)  return 'SYDNEY';
+  if (h >= 4  && h < 8)  return 'TOKYO';
+  if (h >= 8  && h < 13) return 'LONDON';
+  if (h >= 13 && h < 17) return 'PRIME';
+  if (h >= 17 && h < 20) return 'NY';
+  return 'AVOID';
+}
+
+async function getM5History(instrument) {
+  const cached = m5History.get(instrument);
+  const age    = Date.now() - (lastM5Fetch.get(instrument) || 0);
+  if (cached && cached.length >= 20 && age < 4 * 60_000) return cached;
   try {
-    const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/pricing?instruments=${AUTO_PAIRS}`, { headers: H });
+    const r    = await fetch(`${BASE}/v3/instruments/${instrument}/candles?count=60&granularity=M5&price=M`, { headers: H });
     const data = await r.json();
-    prices = data.prices;
-    if (!prices?.length) return;
-  } catch (e) {
-    console.error(`[auto] Price fetch failed: ${e.message}`);
+    if (!Array.isArray(data.candles)) return cached || [];
+    const closes = data.candles.filter(c => c.mid?.c).map(c => parseFloat(c.mid.c)).filter(v => v > 0 && !isNaN(v));
+    if (closes.length >= 5) {
+      m5History.set(instrument, closes);
+      lastM5Fetch.set(instrument, Date.now());
+      return closes;
+    }
+    return cached || [];
+  } catch {
+    return cached || [];
+  }
+}
+
+function serverGenerateSignal(history, strategy, instrument) {
+  if (history.length < 20) return null;
+  const recent = history.slice(-20);
+  const ema9   = recent.slice(-9).reduce((a, b) => a + b, 0) / 9;
+  const ema21  = recent.reduce((a, b) => a + b, 0) / 20;
+  const last   = recent[recent.length - 1];
+  const prev   = recent[recent.length - 2];
+  const change = (last - recent[0]) / recent[0];
+  let score = 0, direction = null, reason = [];
+
+  if (strategy === 'Trend Follow') {
+    if      (ema9 > ema21 && last > ema9) { score += 40; direction = 'LONG';  reason.push('EMA bullish cross'); }
+    else if (ema9 < ema21 && last < ema9) { score += 40; direction = 'SHORT'; reason.push('EMA bearish cross'); }
+    if      (change >  0.003)             { score += 25; direction = direction || 'LONG';  reason.push('Strong uptrend');   }
+    else if (change < -0.003)             { score += 25; direction = direction || 'SHORT'; reason.push('Strong downtrend'); }
+  } else if (strategy === 'Mean Revert') {
+    const mean   = recent.reduce((a, b) => a + b, 0) / recent.length;
+    const dev    = Math.abs(last - mean) / mean;
+    const isGold = instrument.includes('XAU');
+    const isJpy  = instrument.includes('JPY');
+    const t1 = isGold ? 0.0008 : isJpy ? 0.0015 : 0.001;
+    const t2 = isGold ? 0.0015 : isJpy ? 0.003  : 0.002;
+    const t3 = isGold ? 0.003  : isJpy ? 0.005  : 0.004;
+    if (dev > t1) {
+      const dir = last > mean ? 'SHORT' : 'LONG';
+      score += 50;
+      if (dev > t2) score += 10;
+      if (dev > t3) score += 10;
+      if ((dir === 'LONG' && last > prev) || (dir === 'SHORT' && last < prev)) score += 10;
+      direction = dir;
+      reason.push(`${(dev * 100).toFixed(2)}% deviation`);
+    }
+    if (direction) {
+      const tr20  = recent.slice(1).map((p, i) => Math.abs(p - recent[i]));
+      const atr20 = tr20.reduce((a, b) => a + b, 0) / tr20.length || 0.00001;
+      const atr5n = tr20.slice(-5).reduce((a, b) => a + b, 0) / 5;
+      const atr5p = tr20.slice(-10, -5).reduce((a, b) => a + b, 0) / 5;
+      const mean2 = recent.reduce((a, b) => a + b, 0) / recent.length;
+      const dev2  = Math.abs(last - mean2) / mean2;
+      if (atr5p > atr20 * 2.0 && atr5n < atr5p * 0.85 && dev2 > 0.0015) {
+        score += 10; reason.push('Post-spike reversion');
+      }
+    }
+  } else if (strategy === 'Breakout') {
+    const high = Math.max(...recent), low = Math.min(...recent), range = high - low;
+    if      (last > high - range * 0.05) { score += 45; direction = 'LONG';  reason.push('Near range high'); }
+    else if (last < low  + range * 0.05) { score += 45; direction = 'SHORT'; reason.push('Near range low');  }
+    if (direction) {
+      const tr      = recent.slice(1).map((p, i) => Math.abs(p - recent[i]));
+      const atr5    = tr.slice(-5).reduce((a, b) => a + b, 0) / 5;
+      const atrFull = tr.reduce((a, b) => a + b, 0) / tr.length;
+      if (atr5 > atrFull * 1.1)                  { score += 10; reason.push('ATR expanding'); }
+      if (Math.abs(last - prev) > atrFull * 1.5) { score += 10; reason.push('Strong thrust'); }
+      const sess = getServerSession();
+      if (sess === 'PRIME' || sess === 'LONDON')  { score += 5;  reason.push(`${sess} session`); }
+    }
+  } else if (strategy === 'Momentum') {
+    const momentum = (last - recent[recent.length - 10]) / recent[recent.length - 10];
+    if (Math.abs(momentum) >= 0.004) {
+      direction = momentum > 0 ? 'LONG' : 'SHORT';
+      score += 55;
+      reason.push(`${(momentum * 100).toFixed(2)}% momentum`);
+      if (Math.abs(momentum) > 0.006)                                                        { score += 10; reason.push('Strong momentum'); }
+      if ((direction === 'LONG' && ema9 > ema21) || (direction === 'SHORT' && ema9 < ema21)) { score += 5;  reason.push('EMA confirms'); }
+      const sess = getServerSession();
+      if (sess === 'NY' || sess === 'PRIME')                                                  { score += 5;  reason.push(`${sess} session`); }
+    }
+  }
+
+  if (!direction) return null;
+
+  const rsi = 50 + (change / 0.01) * 20;
+  if (strategy === 'Momentum') {
+    if (direction === 'LONG'  && rsi > 55) { score += 15; reason.push('RSI momentum confirm'); }
+    if (direction === 'SHORT' && rsi < 45) { score += 15; reason.push('RSI momentum confirm'); }
+  } else {
+    if (direction === 'LONG'  && rsi < 45) { score += 15; reason.push('RSI oversold'); }
+    if (direction === 'SHORT' && rsi > 55) { score += 15; reason.push('RSI overbought'); }
+  }
+
+  score = Math.min(score, 100);
+  if (score < 65) return null;
+  return { direction, score, reason, rsi: parseFloat(rsi.toFixed(1)) };
+}
+
+function serverRunGatekeepers(history, signal, openTrades, _instrument, strategy) {
+  const rejections = [];
+  const session    = getServerSession();
+
+  if (session === 'AVOID') {
+    rejections.push({ condition: 'Dead zone block', reason: 'AVOID session — no trades' });
+    return { passed: false, rejections };
+  }
+  if (signal.score < 65) {
+    rejections.push({ condition: 'Score threshold', actual: `${signal.score}%`, threshold: '65%' });
+  }
+  if (openTrades.length >= 2) {
+    rejections.push({ condition: 'Position limit', actual: `${openTrades.length} open`, threshold: 'Max 2' });
+  }
+  const heat = openTrades.length * 1.5;
+  if (heat >= 4) {
+    rejections.push({ condition: 'Heat limit', actual: `${heat.toFixed(1)}R`, threshold: '4R max' });
+  }
+  if (history.length >= 21) {
+    const bars  = history.slice(-21);
+    const tr    = bars.slice(1).map((p, i) => Math.abs(p - bars[i]));
+    const atr5  = tr.slice(-5).reduce((a, b) => a + b, 0) / 5;
+    const atr20 = tr.reduce((a, b) => a + b, 0) / tr.length || atr5;
+    if (atr20 > 0 && atr5 > atr20 * 2.5) {
+      rejections.push({ condition: 'Volatility spike', actual: `${(atr5 / atr20).toFixed(1)}×`, threshold: '< 2.5×' });
+    }
+  }
+  if (strategy === 'Trend Follow' && history.length >= 50) {
+    const ema50  = history.slice(-50).reduce((a, b) => a + b, 0) / 50;
+    const last   = history[history.length - 1];
+    const biasOk = signal.direction === 'LONG' ? last > ema50 : last < ema50;
+    if (!biasOk) {
+      rejections.push({ condition: 'EMA50 bias', actual: `Price ${signal.direction === 'LONG' ? 'below' : 'above'} EMA50`, threshold: 'Wrong side' });
+    }
+  }
+  return { passed: rejections.length === 0, rejections };
+}
+
+async function serverAutoTrade() {
+  lastScanAt = Date.now();
+  if (process.env.AUTO_MODE_ENABLED !== 'true') return;
+
+  const session = getServerSession();
+  const rule    = XAVIER_RULES[session];
+  if (!rule?.strategy || rule.pairs.length === 0) {
+    console.log(`[auto] ${session} — AVOID, no trades`);
     return;
   }
 
-  for (const px of prices) {
-    const { instrument } = px;
-    const mid = (parseFloat(px.asks[0].price) + parseFloat(px.bids[0].price)) / 2;
+  const { strategy, pairs } = rule;
+  const ts = new Date().toISOString();
 
-    const hist = priceHistory.get(instrument) || [];
-    hist.push(mid);
-    if (hist.length > 60) hist.shift();
-    priceHistory.set(instrument, hist);
+  let openTrades = [];
+  try {
+    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
+    const data = await r.json();
+    openTrades = data.trades || [];
+  } catch (e) {
+    console.error(`[auto] Open trades fetch failed: ${e.message}`);
+    return;
+  }
 
-    if (hist.length < 6) continue;
+  if (openTrades.length >= 2) {
+    console.log(`[auto] ${session} — ${openTrades.length} open trades, skipping scan`);
+    return;
+  }
 
-    const avg5      = hist.slice(-6, -1).reduce((a, b) => a + b, 0) / 5;
-    const changePct = (mid - avg5) / avg5 * 100;
-
-    // v3.0: raise signal threshold from 0.3% to 0.45%
-    if (Math.abs(changePct) < 0.45) {
-      console.log(`AUTO SKIP: ${instrument} | change ${changePct.toFixed(3)}% < 0.45% threshold`);
-      continue;
-    }
+  for (const instrument of pairs) {
     if (Date.now() - (lastConsensus.get(instrument) || 0) < 5 * 60_000) continue;
 
-    // v3.0 gatekeeper — EMA50 higher-timeframe bias
-    if (hist.length >= 50) {
-      const ema50 = hist.slice(-50).reduce((a, b) => a + b, 0) / 50;
-      const direction_test = changePct > 0 ? 'LONG' : 'SHORT';
-      const biasOk = direction_test === 'LONG' ? mid > ema50 : mid < ema50;
-      if (!biasOk) {
-        console.log(`AUTO SKIP: ${instrument} | EMA50 bias opposes ${direction_test} (price ${mid.toFixed(5)} vs EMA50 ${ema50.toFixed(5)})`);
-        continue;
-      }
+    const history = await getM5History(instrument);
+    if (history.length < 20) {
+      console.log(`[auto] ${instrument} — insufficient M5 history (${history.length} bars)`);
+      continue;
     }
 
-    // v3.0 gatekeeper — ATR volatility spike check
-    if (hist.length >= 21) {
-      const bars  = hist.slice(-21);
-      const tr    = bars.slice(1).map((p, i) => Math.abs(p - bars[i]));
-      const atr5  = tr.slice(-5).reduce((a, b) => a + b, 0) / 5;
-      const atr20 = tr.reduce((a, b) => a + b, 0) / tr.length;
-      if (atr20 > 0 && atr5 > atr20 * 2) {
-        console.log(`AUTO SKIP: ${instrument} | volatility spike ATR5/ATR20=${(atr5/atr20).toFixed(2)}`);
-        continue;
-      }
+    let price = 0;
+    try {
+      const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/pricing?instruments=${instrument}`, { headers: H });
+      const data = await r.json();
+      const px   = data.prices?.[0];
+      if (!px) continue;
+      price = (parseFloat(px.bids[0].price) + parseFloat(px.asks[0].price)) / 2;
+    } catch { continue; }
+
+    const liveHistory = [...history, price];
+    const signal = serverGenerateSignal(liveHistory, strategy, instrument);
+
+    if (!signal) {
+      console.log(`[auto] ${instrument} — no ${strategy} signal`);
+      continue;
+    }
+
+    console.log(`[auto] ${instrument} ${signal.direction} ${signal.score}% — ${strategy} — gatekeeping`);
+
+    const gate = serverRunGatekeepers(liveHistory, signal, openTrades, instrument, strategy);
+    if (!gate.passed) {
+      const reasons = gate.rejections.map(r => r.condition).join(', ');
+      console.log(`[auto] ${instrument} — BLOCKED: ${reasons}`);
+      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: gate.rejections });
+      if (serverRejections.length > 50) serverRejections.pop();
+      continue;
     }
 
     lastConsensus.set(instrument, Date.now());
 
-    const direction = changePct > 0 ? 'LONG' : 'SHORT';
-    const score     = Math.min(Math.round(Math.abs(changePct) * 33), 100);
+    const bars      = liveHistory.slice(-21);
+    const tr        = bars.slice(1).map((v, i) => Math.abs(v - bars[i]));
+    const atr       = tr.reduce((a, b) => a + b, 0) / tr.length || 0.00001;
+    const pip       = SERVER_PIP_SIZE[instrument] || 0.0001;
+    const atrPips   = (atr / pip).toFixed(1);
+    const sl        = signal.direction === 'LONG' ? price - atr * 1.5 : price + atr * 1.5;
+    const tp        = signal.direction === 'LONG' ? price + atr * 3.0 : price - atr * 3.0;
+    const ema9v     = liveHistory.slice(-9).reduce((a, b) => a + b, 0) / 9;
+    const ema21v    = liveHistory.slice(-21).reduce((a, b) => a + b, 0) / 21;
+    const ema50v    = liveHistory.length >= 50 ? liveHistory.slice(-50).reduce((a, b) => a + b, 0) / 50 : ema21v;
+    const ema50side = signal.direction === 'LONG' ? (price > ema50v ? 'ABOVE' : 'BELOW') : (price < ema50v ? 'BELOW' : 'ABOVE');
+    const heat      = (openTrades.length * 1.5).toFixed(1);
 
-    let result;
+    console.log(`[auto] ${instrument} — calling consensus`);
+    let consensus;
     try {
-      result = await runConsensus({
-        instrument, direction, score,
-        price:    mid.toFixed(5),
-        change:   changePct.toFixed(3),
-        rsi:      50,
-        reason:   `Price ${direction === 'LONG' ? 'above' : 'below'} 5-bar avg by ${Math.abs(changePct).toFixed(3)}%`,
-        headline: 'Autonomous scan',
+      consensus = await runConsensus({
+        instrument, direction: signal.direction, score: signal.score,
+        price:         price.toFixed(5),
+        change:        '0',
+        session,       strategy,
+        atr:           atr.toFixed(5),
+        atrPips,
+        sl:            sl.toFixed(5),
+        tp:            tp.toFixed(5),
+        ema9:          ema9v.toFixed(5),
+        ema21:         ema21v.toFixed(5),
+        ema50side,
+        regime:        'RANGING',
+        heat,
+        rr:            '2.0',
+        rsi:           signal.rsi?.toFixed(1) || '50',
+        reason:        signal.reason.join(', '),
+        headline:      `Auto ${session} scan`,
+        newsRisk:      'LOW',
+        sessionQuality: (session === 'PRIME' || session === 'LONDON') ? 'PRIME' : 'GOOD',
       });
     } catch (e) {
       console.error(`[auto] Consensus error ${instrument}: ${e.message}`);
       continue;
     }
 
-    const confirmLabel = `${result.votes.confirm}/3 confirm`;
+    console.log(`[auto] ${instrument} — consensus ${consensus.votes.confirm}/4 — ${consensus.executeAllowed ? 'EXECUTE' : 'BLOCKED'}`);
 
-    if (result.executeAllowed && process.env.AUTO_MODE_ENABLED === 'true') {
-      const units = direction === 'LONG' ? 1000 : -1000;
-      try {
-        const orderBody = JSON.stringify({
-          order: { type: 'MARKET', instrument, units: String(units), timeInForce: 'FOK', positionFill: 'DEFAULT' },
-        });
-        const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: orderBody });
-        const oandaResult = await r.json();
+    if (!consensus.executeAllowed) {
+      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Consensus', actual: `${consensus.votes.confirm}/4`, threshold: '3/4 required' }], models: consensus.models });
+      if (serverRejections.length > 50) serverRejections.pop();
+      continue;
+    }
 
-        const isHalted = oandaResult.orderRejectTransaction?.rejectReason === 'MARKET_HALTED'
-          || JSON.stringify(oandaResult).includes('MARKET_HALTED');
+    const units = signal.direction === 'LONG' ? 1000 : -1000;
+    try {
+      const orderPayload = {
+        order: {
+          type: 'MARKET', instrument, units: String(units),
+          timeInForce: 'FOK', positionFill: 'DEFAULT',
+          stopLossOnFill:   { price: sl.toFixed(5), timeInForce: 'GTC' },
+          takeProfitOnFill: { price: tp.toFixed(5), timeInForce: 'GTC' },
+        },
+      };
+      const r      = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify(orderPayload) });
+      const result = await r.json();
+      const isHalted = JSON.stringify(result).includes('MARKET_HALTED');
 
-        if (isHalted) {
-          const paper = {
-            id:        Date.now(),
-            type:      'PAPER',
-            instrument,
-            direction,
-            units,
-            price:     mid,
-            consensus: `${result.votes.confirm}/3 CONFIRM`,
-            reason:    'Market closed — paper trade logged',
-            timestamp: ts,
-          };
-          paperTrades.unshift(paper);
-          if (paperTrades.length > 100) paperTrades.pop();
-          console.log(`AUTO CHECK: ${instrument} ${direction} ${score}% — ${confirmLabel} — PAPER logged (market closed)`);
-        } else {
-          const trade = {
-            id:           Date.now(),
-            timestamp:    ts,
-            instrument,
-            direction,
-            units,
-            price:        mid,
-            changePct:    `${changePct.toFixed(3)}%`,
-            consensus:    result.votes,
-            models:       result.models,
-            oandaOrderId: oandaResult.orderFillTransaction?.id || oandaResult.orderCreateTransaction?.id || null,
-          };
-          autoTrades.unshift(trade);
-          if (autoTrades.length > 100) autoTrades.pop();
-          console.log(`Xavier executed ${instrument} ${direction} automatically — ${confirmLabel} @ ${mid.toFixed(5)}`);
-        }
-      } catch (e) {
-        console.error(`AUTO CHECK: ${instrument} ${direction} ${score}% — ${confirmLabel} — order error: ${e.message}`);
+      if (isHalted) {
+        paperTrades.unshift({ id: Date.now(), type: 'PAPER', instrument, direction: signal.direction, units, price, session, strategy, score: signal.score, consensus: `${consensus.votes.confirm}/4`, timestamp: ts });
+        if (paperTrades.length > 100) paperTrades.pop();
+        console.log(`[auto] ${instrument} — PAPER logged (market halted)`);
+      } else {
+        const fill = result?.orderFillTransaction?.price ?? price.toFixed(5);
+        autoTrades.unshift({ id: Date.now(), timestamp: ts, instrument, direction: signal.direction, units, price: fill, session, strategy, score: signal.score, consensus: consensus.votes, models: consensus.models, oandaOrderId: result.orderFillTransaction?.id || null });
+        if (autoTrades.length > 100) autoTrades.pop();
+        console.log(`[auto] ✓ EXECUTED ${instrument} ${signal.direction} @ ${fill} — ${consensus.votes.confirm}/4 — ${strategy} — ${session}`);
       }
-    } else {
-      console.log(`AUTO CHECK: ${instrument} ${direction} ${score}% — ${confirmLabel} — ${result.executeAllowed ? 'auto mode off' : 'REJECTED'}`);
+    } catch (e) {
+      console.error(`[auto] Order error ${instrument}: ${e.message}`);
     }
   }
 }
@@ -1083,5 +1287,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  Auto mode: ${process.env.AUTO_MODE_ENABLED === 'true' ? 'ENABLED ⚡' : 'disabled (set AUTO_MODE_ENABLED=true to activate)'}`);
 });
 
-setTimeout(() => runAutonomousCheck().catch(e => console.error('[auto] Startup:', e.message)), 10_000);
-setInterval(() => runAutonomousCheck().catch(e => console.error('[auto] Loop:', e.message)), 60_000);
+setTimeout(() => serverAutoTrade().catch(e => console.error('[auto] Startup:', e.message)), 10_000);
+setInterval(() => serverAutoTrade().catch(e => console.error('[auto] Loop:', e.message)), 60_000);
