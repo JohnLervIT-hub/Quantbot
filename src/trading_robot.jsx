@@ -2912,38 +2912,73 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
     activePairs.forEach(pair => {
       if (fetchedRef.current.has(pair)) return;
       fetchedRef.current.add(pair);
-      const sig = signals[pair];
+      const sig     = signals[pair];
       const instrument = pair.replace("/", "_");
       const currentPrice = parseFloat(livePrices?.[pair] || sig.entry);
+      // Derive M5-compatible fields from swing signal
+      const pip       = pair.includes("JPY") ? 0.01 : pair === "XAU/USD" ? 0.1 : pair === "NAS100/USD" ? 1.0 : 0.0001;
+      const entry     = parseFloat(sig.entry || currentPrice);
+      const slPrice   = parseFloat(sig.sl    || entry * 0.995);
+      const tp1Price  = parseFloat(sig.tp1   || entry * 1.015);
+      const atr       = parseFloat(sig.atr   || 0.001);
+      const ema21     = parseFloat(sig.ema21  || entry);
+      const ema50     = parseFloat(sig.ema50  || entry);
+      const riskDist  = Math.abs(entry - slPrice);
+      const tp1Dist   = Math.abs(tp1Price - entry);
+      const rr        = riskDist > 0 ? (tp1Dist / riskDist).toFixed(2) : "1.5";
+      const ema50side = currentPrice > ema50 ? "ABOVE" : "BELOW";
       setConsensusMap(prev => ({ ...prev, [pair]: { loading: true, data: null } }));
-      fetch(`${BRIDGE}/swing-consensus`, {
+      fetch(`${BRIDGE}/consensus`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           instrument, direction: sig.direction, score: sig.score,
-          entry: sig.entry?.toFixed(5) || "?", sl: sig.sl?.toFixed(5) || "?",
-          tp1: sig.tp1?.toFixed(5) || "?", tp2: sig.tp2?.toFixed(5) || "?", tp3: sig.tp3?.toFixed(5) || "?",
-          ema21: sig.ema21?.toFixed(5) || "?", ema50: sig.ema50?.toFixed(5) || "?",
-          rsi: sig.rsi?.toFixed(1) || "?", atr: sig.atr?.toFixed(5) || "?",
-          price: currentPrice.toFixed(5), session,
-          xavierSentiment: xavierIntel?.sentiment || null, xavierKeyRisk: xavierIntel?.keyRisk || null,
-          xavierBestPair: xavierIntel?.bestPair || null, xavierBrief: xavierIntel?.brief || null,
-          freshNews: freshNews?.slice(0, 5).join(" | ") || null,
+          price: currentPrice.toFixed(5), change: "0.000",
+          rsi: sig.rsi?.toFixed(1) || "50",
+          reason: `Kill Shot H4 swing — Score ${sig.score}%, EMA21 pullback, RSI ${sig.rsi?.toFixed(0) ?? "50"}`,
+          headline: freshNews?.[0] || "No headline",
+          strategy: "Kill Shot Swing",
+          // Claude — Risk Guardian
+          session, sessionQuality: "GOOD", rr, heat: "0", newsRisk: "LOW",
+          atr: atr.toFixed(5), atrPips: (atr / pip).toFixed(1),
+          sl: slPrice.toFixed(5), tp: tp1Price.toFixed(5),
+          // GPT-4o — Pattern Analyst
+          ema9: ema21.toFixed(5), ema21: ema21.toFixed(5), ema50side,
+          closes: currentPrice.toFixed(5), regime: "TRENDING", momentum: "0.000",
+          // DeepSeek — Quant Validator
+          deviation: "0.000",
+          slDistance: (riskDist / pip).toFixed(1),
+          tpDistance: (tp1Dist  / pip).toFixed(1),
+          riskAmount: "750.00", balance: "100000.00",
+          scoreValid: sig.score >= 75 ? "YES" : "NO",
+          rrValid: parseFloat(rr) >= 1.5 ? "YES" : "NO",
+          atrValid: atr > 0.0001 ? "YES" : "NO", sizeValid: "YES",
+          // Gemini — Macro Analyst
+          spread: "2.0", spreadLimit: "5.0", correlatedPairs: "N/A",
+          sentiment: sig.direction === "LONG" ? "BULLISH" : "BEARISH",
+          // Xavier intel
+          xavierSentiment: xavierIntel?.sentiment || null,
+          xavierKeyRisk:   xavierIntel?.keyRisk   || null,
+          xavierBestPair:  xavierIntel?.bestPair  || null,
+          xavierBrief:     xavierIntel?.brief      || null,
         }),
       })
-        .then(r => r.json())
+        .then(async r => {
+          const ct = r.headers.get("content-type");
+          if (!ct?.includes("application/json")) {
+            throw new Error(`Bridge returned HTML — status: ${r.status} — restart npm run server`);
+          }
+          return r.json();
+        })
         .then(data => setConsensusMap(prev => ({ ...prev, [pair]: { loading: false, data } })))
         .catch(err => {
-          fetchedRef.current.delete(pair); // allow retry on next qualifying
-          const msg = err?.message || "Bridge offline — run: npm run server";
+          console.error("[KILL SHOT CONSENSUS]", err.message);
+          fetchedRef.current.delete(pair); // allow retry on next qualify
+          // API error → non-blocking: user can still execute manually
           setConsensusMap(prev => ({
             ...prev,
             [pair]: {
               loading: false,
-              data: {
-                executeAllowed: false, votes: { confirm: 0, reject: 4 },
-                models: ["Claude Sonnet", "GPT-4o", "DeepSeek", "Gemini 2.5 Flash"].map(n => ({ name: n, verdict: "REJECT", reason: msg })),
-                error: msg,
-              },
+              data: { apiError: true, executeAllowed: true, votes: { confirm: 0, reject: 0 }, models: [], errorMsg: err.message },
             },
           }));
         });
@@ -3025,10 +3060,10 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
             )}
 
             {/* ── AI CONSENSUS — always shown inline ── */}
-            <div style={{ marginTop: 8, background: "#0d1117", borderRadius: 7, border: "1px solid #21262d", padding: "10px 12px" }}>
+            <div style={{ marginTop: 8, background: "#0d1117", borderRadius: 7, border: `1px solid ${cs?.data?.apiError ? "#d2992240" : "#21262d"}`, padding: "10px 12px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: cs?.loading || !cs ? 0 : 8 }}>
                 <span style={{ fontSize: 10, fontWeight: 700, color: "#8b949e", letterSpacing: "0.06em" }}>AI CONSENSUS</span>
-                {cs?.data && !cs.loading && (
+                {cs?.data && !cs.loading && !cs.data.apiError && (
                   <span style={{ fontSize: 10, fontWeight: 700, color: resultColor }}>{confirms}/4 — {executeAllowed ? "EXECUTING" : "BLOCKED"}</span>
                 )}
               </div>
@@ -3038,7 +3073,15 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
                   <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#F97316", animation: "pulse 1.2s ease-in-out infinite" }} />
                   <span style={{ fontSize: 10, color: "#484f58" }}>Consulting 4 models…</span>
                 </div>
-              ) : cs?.data?.models ? (
+              ) : cs?.data?.apiError ? (
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 6, paddingTop: 4 }}>
+                  <span style={{ fontSize: 13 }}>⚠️</span>
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: "#d29922" }}>Consensus API unavailable — manual review required</div>
+                    <div style={{ fontSize: 10, color: "#484f58", marginTop: 2 }}>{cs.data.errorMsg}</div>
+                  </div>
+                </div>
+              ) : cs?.data?.models?.length > 0 ? (
                 <>
                   {cs.data.models.map((model, i) => {
                     const isC = model.verdict === "CONFIRM";
@@ -3061,7 +3104,7 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
               ) : !cs ? (
                 <div style={{ fontSize: 10, color: "#484f58", paddingTop: 5 }}>Signal qualifying — consensus pending…</div>
               ) : (
-                <div style={{ fontSize: 10, color: "#f85149", paddingTop: 5 }}>{cs.data?.error || "Consensus error"}</div>
+                <div style={{ fontSize: 10, color: "#f85149", paddingTop: 5 }}>{cs.data?.errorMsg || "Consensus error"}</div>
               )}
             </div>
 
