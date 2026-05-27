@@ -5779,12 +5779,25 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
               </div>
             )}
             {xavierOpt.result.blockedPairs?.length > 0 && (
-              <div style={{ padding: "8px 10px", background: "rgba(248,81,73,0.06)", border: "1px solid #f8514933", borderRadius: 6 }}>
+              <div style={{ padding: "8px 10px", background: "rgba(248,81,73,0.06)", border: "1px solid #f8514933", borderRadius: 6, marginBottom: 6 }}>
                 <div style={{ fontSize: 9, color: "#f85149", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>✗ Blocked — insufficient edge</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                   {xavierOpt.result.blockedPairs.map(({ pair, reason }) => (
                     <div key={pair} style={{ fontSize: 9, color: "#484f58", fontFamily: FONT_MONO }}>
                       <span style={{ color: "#8b949e" }}>{pair}</span><span style={{ color: "#30363d" }}> — </span>{reason}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {xavierOpt.result.candleCounts && (
+              <div style={{ padding: "8px 10px", background: "#0d111740", border: "0.5px solid #21262d", borderRadius: 6 }}>
+                <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>M15 candles loaded (90 days)</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {Object.entries(xavierOpt.result.candleCounts).map(([pair, info]) => (
+                    <div key={pair} style={{ display: "flex", justifyContent: "space-between", fontFamily: FONT_MONO, fontSize: 9 }}>
+                      <span style={{ color: "#8b949e" }}>{pair}</span>
+                      <span style={{ color: "#484f58" }}>{info.count.toLocaleString()} candles · {info.days}d</span>
                     </div>
                   ))}
                 </div>
@@ -7110,13 +7123,13 @@ function useAutonomousBacktest() {
     if (runningRef.current) return;
     runningRef.current = true; cancelRef.current = false;
     setRunning(true); setProgress(0); setDone(0); setLabel("Starting optimization…");
-    const allCombos = []; const pairStats = {}; let combosDone = 0;
+    const allCombos = []; const pairStats = {}; const candleCounts = {}; let combosDone = 0;
     for (const pair of PAIRS) {
       if (cancelRef.current) break;
-      setLabel(`Fetching ${pair} (90d M5)…`);
+      setLabel(`Fetching ${pair} (90d M15)…`);
       let candles = [];
       try {
-        const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M5&days=90`);
+        const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M15&days=90`);
         const data = await r.json();
         if (!Array.isArray(data.candles) || data.candles.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
         candles = data.candles;
@@ -7126,6 +7139,7 @@ function useAutonomousBacktest() {
         const _calDays = candles[0]?.time && candles[candles.length - 1]?.time
           ? Math.round((new Date(candles[candles.length - 1].time) - new Date(candles[0].time)) / 86400000) : 0;
         console.log('[BACKTEST] candles fetched:', candles.length, 'for', pair, '|', _calDays, 'calendar days |', _fDate, '→', _lDate);
+        candleCounts[pair] = { count: candles.length, days: _calDays };
       } catch { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
       const closes = candles.map(c => parseFloat(c.mid?.c ?? 0)).filter(v => v > 0 && !isNaN(v));
       if (closes.length !== candles.length)
@@ -7138,8 +7152,16 @@ function useAutonomousBacktest() {
           setLabel(`${pair} · ${strat} · ${sess}`);
           const res = await runBtSimulation(closes, candles, strat, SESS_UTC[sess], pair);
           combosDone++; setDone(combosDone); setProgress(Math.round(combosDone / TOTAL * 100));
-          if (res && (!pairStats[pair] || res.expectancyR > pairStats[pair].bestExpectancy))
-            pairStats[pair] = { bestExpectancy: res.expectancyR, bestTrades: res.trades, bestDD: res.maxDD };
+          // Track best metrics independently across all combos for this pair
+          if (res) {
+            if (!pairStats[pair]) {
+              pairStats[pair] = { bestExpectancy: res.expectancyR, bestTrades: res.trades, bestDD: res.maxDD };
+            } else {
+              if (res.expectancyR > pairStats[pair].bestExpectancy) pairStats[pair].bestExpectancy = res.expectancyR;
+              if (res.trades     > pairStats[pair].bestTrades)     pairStats[pair].bestTrades     = res.trades;
+              if (res.maxDD      < pairStats[pair].bestDD)         pairStats[pair].bestDD          = res.maxDD;
+            }
+          }
           if (res && res.expectancyR >= 0 && res.trades >= 30 && res.maxDD <= 15) {
             const score = Math.max(0, res.expectancyR) * 60 + res.profitFactor * 20 + res.sharpe * 10 + (res.trades >= 30 ? 10 : 0);
             allCombos.push({ strategy: strat, pair, session: sess, score, expectancyR: res.expectancyR, winRate: res.winRate, profitFactor: res.profitFactor, sharpe: res.sharpe, trades: res.trades });
@@ -7170,7 +7192,7 @@ function useAutonomousBacktest() {
           blockedPairs.push({ pair: p, reason });
         }
       }
-      const newResult = { lastUpdated: Date.now(), totalCombinationsTested: combosDone, rules, top3, validatedPairs, blockedPairs };
+      const newResult = { lastUpdated: Date.now(), totalCombinationsTested: combosDone, rules, top3, validatedPairs, blockedPairs, candleCounts };
       localStorage.setItem(OPT_KEY, JSON.stringify(newResult));
       setResult(newResult);
     }
