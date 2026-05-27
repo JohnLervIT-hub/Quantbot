@@ -1506,8 +1506,10 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
     if (metrics) localStorage.setItem("xavier_intel", JSON.stringify(metrics));
   }, [metrics]);
 
-  const buildSystemPrompt = () =>
-    `You are Xavier, a seasoned forex prop trader based in Calgary. Session: ${session}. Strategy: ${strategy}. Portfolio heat: ${heat}R. Open trades: ${openCount}. Active signals: ${signalPairs}. Current headline: "${currentHeadline}". Talk like a human — direct, confident, occasionally dry. Contractions always. No bullet points, no corporate phrasing. Max 80 words.`;
+  const buildSystemPrompt = () => {
+    const liveContext = `Current live prices from OANDA (as of ${new Date().toISOString()}):\n${Object.entries(prices).map(([pair, price]) => `${pair}: ${parseFloat(price).toFixed(priceDecimals(pair))}`).join("\n")}`;
+    return `You are Xavier, a seasoned forex prop trader based in Calgary. Session: ${session}. Strategy: ${strategy}. Portfolio heat: ${heat}R. Open trades: ${openCount}. Active signals: ${signalPairs}. Current headline: "${currentHeadline}". Talk like a human — direct, confident, occasionally dry. Contractions always. No bullet points, no corporate phrasing. Max 80 words.\n\n${liveContext}`;
+  };
 
   const runAnalysis = async () => {
     briefLoadingRef.current = true;
