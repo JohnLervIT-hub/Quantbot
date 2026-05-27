@@ -4593,6 +4593,69 @@ function openTradesFingerprint(trades) {
   return trades.map(t => `${t.id}:${t.unrealizedPL}:${t.currentUnits}`).join("|");
 }
 
+// ─── XAVIER MEMORY ────────────────────────────────────────────────────────────
+// Derives session label from a UTC openTime ISO string
+function deriveSession(openTimeStr) {
+  if (!openTimeStr) return 'UNKNOWN';
+  const h = new Date(openTimeStr).getUTCHours();
+  if (h >= 22 || h < 4)  return 'SYDNEY';
+  if (h >= 4  && h < 8)  return 'TOKYO';
+  if (h >= 8  && h < 13) return 'LONDON';
+  if (h >= 13 && h < 17) return 'PRIME';
+  if (h >= 17 && h < 20) return 'NY';
+  return 'AVOID';
+}
+
+// Persists a closed trade into xavier_memory localStorage
+function updateXavierMemory(closedTrade) {
+  try {
+    const memory = JSON.parse(
+      localStorage.getItem('xavier_memory') ||
+      '{"trades":[],"patterns":{},"recentLessons":[]}'
+    );
+
+    // Add trade record
+    memory.trades.push({
+      id:        closedTrade.id,
+      pair:      closedTrade.pair,
+      direction: closedTrade.direction,
+      session:   closedTrade.session,
+      strategy:  closedTrade.strategy,
+      score:     closedTrade.score,
+      outcome:   closedTrade.pnl > 0 ? 'WIN' : 'LOSS',
+      rMultiple: closedTrade.rMultiple,
+      duration:  closedTrade.duration,
+      timestamp: closedTrade.timestamp || Date.now(),
+    });
+
+    // Update pattern stats (pair_session_strategy key)
+    const patternKey = `${closedTrade.pair}_${closedTrade.session}_${closedTrade.strategy}`;
+    if (!memory.patterns[patternKey]) {
+      memory.patterns[patternKey] = { attempts: 0, wins: 0, totalR: 0, xavierNote: null };
+    }
+    const pattern = memory.patterns[patternKey];
+    pattern.attempts++;
+    if (closedTrade.pnl > 0) pattern.wins++;
+    pattern.totalR += (closedTrade.rMultiple || 0);
+
+    // Generate lesson on loss
+    if (closedTrade.pnl < 0) {
+      memory.recentLessons.unshift(
+        `${closedTrade.pair} ${closedTrade.session} ${closedTrade.strategy} lost ${closedTrade.rMultiple}R — review setup conditions`
+      );
+      memory.recentLessons = memory.recentLessons.slice(0, 10);
+    }
+
+    // Cap at 100 trades
+    memory.trades = memory.trades.slice(-100);
+
+    localStorage.setItem('xavier_memory', JSON.stringify(memory));
+    console.log('[XAVIER MEMORY] updated —', memory.trades.length, 'trades remembered');
+  } catch (e) {
+    console.error('[XAVIER MEMORY] update failed:', e.message);
+  }
+}
+
 // ─── CLOSED TRADES PANEL ─────────────────────────────────────────────────────
 function ClosedTradesPanel({ trades, isMobile }) {
   if (trades.length === 0) return null;
@@ -7468,6 +7531,24 @@ export default function TradingRobot() {
   const seenClosedIdsRef = useRef(new Set(
     (() => { try { return JSON.parse(localStorage.getItem("qb_closed_trades") || "[]").map(t => t.oandaId); } catch { return []; } })()
   ));
+
+  // One-time seed: XAG/USD LONDON loss (2026-05-27) — occurred before xavier_memory existed
+  useEffect(() => {
+    if (localStorage.getItem('xavier_memory_seeded_v1')) return;
+    updateXavierMemory({
+      id:        'seed-xagusd-london-loss-20260527',
+      pair:      'XAG/USD',
+      direction: 'SHORT',
+      session:   'LONDON',
+      strategy:  'Mean Revert',
+      score:     65,
+      pnl:       -1,
+      rMultiple: -1.0,
+      duration:  '11 minutes',
+      timestamp: new Date('2026-05-27T10:00:00Z').getTime(),
+    });
+    localStorage.setItem('xavier_memory_seeded_v1', '1');
+  }, []);
   const oandaNavRef = useRef(null);
   const xavierIntelRef = useRef(null);
   const reinforcement = useTradeReinforcement(closedTrades);
@@ -7636,6 +7717,19 @@ export default function TradingRobot() {
           setClosedTrades(prev => [...newEntries, ...prev].slice(0, 200));
           for (const entry of newEntries) {
             notifyRef.current?.(entry.realizedPL > 0 ? 'take_profit' : 'stop_loss', entry);
+            // Feed Xavier's memory on every trade close
+            updateXavierMemory({
+              id:        entry.oandaId,
+              pair:      entry.pair,
+              direction: entry.dir,
+              session:   deriveSession(entry.openTime),
+              strategy:  localStorage.getItem('active_strategy') || 'UNKNOWN',
+              score:     0,
+              pnl:       entry.realizedPL,
+              rMultiple: entry.rMultiple || 0,
+              duration:  entry.duration,
+              timestamp: Date.now(),
+            });
           }
         }
       } catch {}
