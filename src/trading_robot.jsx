@@ -447,7 +447,7 @@ function generateSignal(history, strategy, pair) {
     const pairBase = rt.pairThresholds?.[pairKey] ?? 65;
     const stratPenalty = rt.strategyPenalties?.[strategy] ?? 0;
     const sesBonus = rt.sessionBonuses?.[getCurrentSession()] ?? 0;
-    threshold = Math.max(55, Math.min(80, pairBase + stratPenalty + sesBonus));
+    threshold = Math.max(55, Math.min(65, pairBase + stratPenalty + sesBonus));
   } catch {}
   if (!direction || score < threshold) return null;
   return { direction, score: Math.min(score, 100), reason, rsi: parseFloat(rsi.toFixed(1)), threshold };
