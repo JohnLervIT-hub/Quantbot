@@ -635,13 +635,13 @@ function runGatekeepers(history, signal, openTrades, pair, strategy = "") {
     }
   }
 
-  // 6. Volatility check — block if ATR5 > 2× ATR20
-  if (atr20 > 0 && atr5 > atr20 * 2) {
+  // 6. Volatility check — block if ATR5 > 2.5× ATR20
+  if (atr20 > 0 && atr5 > atr20 * 2.5) {
     rejections.push({
       condition: "Volatility check",
       actual: `${(atr5 / atr20).toFixed(1)}× avg ATR`,
-      threshold: "< 2.0×",
-      reason: `Market's spiking — 5-bar ATR is ${(atr5 / atr20).toFixed(1)}× the 20-bar average. I don't trade into noise like this.`,
+      threshold: "< 2.5×",
+      reason: `Market spiking — 5-bar ATR is ${(atr5 / atr20).toFixed(1)}× the 20-bar average. I don't trade into noise like this.`,
     });
   }
 
