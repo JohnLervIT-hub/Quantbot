@@ -2794,8 +2794,9 @@ function generateSwingSignal(h4Candles, weeklyCandles, pairKey = "") {
 }
 
 function swingFmt(pair, price) {
-  if (pair.includes("JPY") || pair.includes("NAS100") || pair.includes("JP225") || pair.includes("SPX") || pair.includes("UK100") || pair.includes("AU200")) return price.toFixed(2);
-  if (pair.includes("XAU") || pair.includes("BCO") || pair.includes("WTICO") || pair.includes("XAG")) return price.toFixed(3);
+  if (pair.includes("NAS100") || pair.includes("JP225") || pair.includes("SPX") || pair.includes("UK100") || pair.includes("AU200")) return price.toFixed(1);
+  if (pair.includes("JPY")) return price.toFixed(3);
+  if (pair.includes("XAU") || pair.includes("BCO") || pair.includes("WTICO") || pair.includes("XAG")) return price.toFixed(2);
   return price.toFixed(5);
 }
 
@@ -3099,14 +3100,14 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           instrument, direction: sig.direction, score: sig.score,
-          price: freshMid.toFixed(5),
-          entry: entry.toFixed(5),
-          sl:    slPrice.toFixed(5),
-          tp1:   tp1Price.toFixed(5),
-          tp2:   tp2Price.toFixed(5),
-          tp3:   tp3Price.toFixed(5),
-          ema21: ema21v.toFixed(5),
-          ema50: ema50v.toFixed(5),
+          price: swingFmt(pair, freshMid),
+          entry: swingFmt(pair, entry),
+          sl:    swingFmt(pair, slPrice),
+          tp1:   swingFmt(pair, tp1Price),
+          tp2:   swingFmt(pair, tp2Price),
+          tp3:   swingFmt(pair, tp3Price),
+          ema21: swingFmt(pair, ema21v),
+          ema50: swingFmt(pair, ema50v),
           rsi:   sig.rsi?.toFixed(1) || "50",
           atr:   atr.toFixed(5),
           session,
