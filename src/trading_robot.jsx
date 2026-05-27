@@ -5741,8 +5741,33 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
           </div>
         )}
 
+        {/* Pair validation results */}
+        {xavierOpt.result?.validatedPairs && !xavierOpt.running && (
+          <div style={{ marginTop: 12, borderTop: "0.5px solid #21262d", paddingTop: 10 }}>
+            <div style={{ fontSize: 10, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Live Trading Eligibility</div>
+            {xavierOpt.result.validatedPairs.length > 0 && (
+              <div style={{ padding: "8px 10px", background: "rgba(63,185,80,0.06)", border: "1px solid #3fb95033", borderRadius: 6, marginBottom: 6 }}>
+                <div style={{ fontSize: 9, color: "#3fb950", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>✓ Validated for live trading</div>
+                <div style={{ fontSize: 10, color: "#8b949e", fontFamily: FONT_MONO, lineHeight: 1.7 }}>{xavierOpt.result.validatedPairs.join("  ·  ")}</div>
+              </div>
+            )}
+            {xavierOpt.result.blockedPairs?.length > 0 && (
+              <div style={{ padding: "8px 10px", background: "rgba(248,81,73,0.06)", border: "1px solid #f8514933", borderRadius: 6 }}>
+                <div style={{ fontSize: 9, color: "#f85149", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>✗ Blocked — insufficient edge</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  {xavierOpt.result.blockedPairs.map(({ pair, reason }) => (
+                    <div key={pair} style={{ fontSize: 9, color: "#484f58", fontFamily: FONT_MONO }}>
+                      <span style={{ color: "#8b949e" }}>{pair}</span><span style={{ color: "#30363d" }}> — </span>{reason}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {!xavierOpt.result && !xavierOpt.running && (
-          <div style={{ fontSize: 11, color: "#484f58", padding: "10px 0" }}>Click "Run Now" to test all 150 strategy/pair/session combinations and find this week's best setups. Takes ~10 minutes.</div>
+          <div style={{ fontSize: 11, color: "#484f58", padding: "10px 0" }}>Click "Run Now" to test all 400 strategy/pair/session combinations across 16 pairs and find this week's best setups. Takes ~15 minutes.</div>
         )}
       </div>
     </div>
@@ -7025,10 +7050,19 @@ async function runBtSimulation(closes, candles, strat, sessRange, pair) {
 function useAutonomousBacktest() {
   const OPT_KEY  = "xavier_optimization_results";
   const STRATS   = ["Mean Revert", "Trend Follow", "Breakout", "Momentum", "Range Scalp"];
-  const PAIRS    = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD"];
+  const PAIRS    = [
+    // Forex majors & crosses
+    "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "EUR/GBP", "NZD/USD",
+    // Metals
+    "XAU/USD", "XAG/USD",
+    // Energy
+    "BCO/USD", "WTICO/USD",
+    // Indices
+    "NAS100_USD", "JP225_USD", "UK100_GBP", "AU200_AUD", "SPX500_USD",
+  ];
   const SESSIONS = ["Tokyo", "London", "Prime", "NY", "Sydney"];
   const SESS_UTC = { Tokyo: { s: 0, e: 9 }, London: { s: 7, e: 16 }, Prime: { s: 13, e: 17 }, NY: { s: 17, e: 20 }, Sydney: { s: 22, e: 4 } };
-  const TOTAL    = STRATS.length * PAIRS.length * SESSIONS.length; // 150
+  const TOTAL    = STRATS.length * PAIRS.length * SESSIONS.length; // 400
 
   const [running,  setRunning]  = useState(false);
   const [progress, setProgress] = useState(0);
@@ -7042,7 +7076,7 @@ function useAutonomousBacktest() {
     if (runningRef.current) return;
     runningRef.current = true; cancelRef.current = false;
     setRunning(true); setProgress(0); setDone(0); setLabel("Starting optimization…");
-    const allCombos = []; let combosDone = 0;
+    const allCombos = []; const pairStats = {}; let combosDone = 0;
     for (const pair of PAIRS) {
       if (cancelRef.current) break;
       setLabel(`Fetching ${pair} (90d M5)…`);
@@ -7062,6 +7096,8 @@ function useAutonomousBacktest() {
           setLabel(`${pair} · ${strat} · ${sess}`);
           const res = await runBtSimulation(closes, candles, strat, SESS_UTC[sess], pair);
           combosDone++; setDone(combosDone); setProgress(Math.round(combosDone / TOTAL * 100));
+          if (res && (!pairStats[pair] || res.expectancyR > pairStats[pair].bestExpectancy))
+            pairStats[pair] = { bestExpectancy: res.expectancyR, bestTrades: res.trades, bestDD: res.maxDD };
           if (res && res.expectancyR >= 0 && res.trades >= 30 && res.maxDD <= 15) {
             const score = Math.max(0, res.expectancyR) * 60 + res.profitFactor * 20 + res.sharpe * 10 + (res.trades >= 30 ? 10 : 0);
             allCombos.push({ strategy: strat, pair, session: sess, score, expectancyR: res.expectancyR, winRate: res.winRate, profitFactor: res.profitFactor, sharpe: res.sharpe, trades: res.trades });
@@ -7080,7 +7116,19 @@ function useAutonomousBacktest() {
         }
       }
       const top3 = [...allCombos].sort((a, b) => b.score - a.score).slice(0, 3);
-      const newResult = { lastUpdated: Date.now(), totalCombinationsTested: combosDone, rules, top3 };
+      // Validate pairs: ≥0.30R expectancy + ≥30 trades + ≤15R drawdown
+      const validatedPairs = [];
+      const blockedPairs   = [];
+      for (const p of PAIRS) {
+        const s = pairStats[p];
+        if (s && s.bestExpectancy >= 0.30 && s.bestTrades >= 30 && s.bestDD <= 15) {
+          validatedPairs.push(p);
+        } else {
+          const reason = !s ? 'no data' : s.bestExpectancy < 0.30 ? `best ${s.bestExpectancy.toFixed(2)}R < 0.30R` : s.bestTrades < 30 ? `only ${s.bestTrades} trades` : `DD ${s.bestDD.toFixed(1)}R > 15R`;
+          blockedPairs.push({ pair: p, reason });
+        }
+      }
+      const newResult = { lastUpdated: Date.now(), totalCombinationsTested: combosDone, rules, top3, validatedPairs, blockedPairs };
       localStorage.setItem(OPT_KEY, JSON.stringify(newResult));
       setResult(newResult);
     }
