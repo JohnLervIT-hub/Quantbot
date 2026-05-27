@@ -329,6 +329,14 @@ ATR: ${p.atr || '?'} (${p.atrPips || '?'} pips)
 Stop Loss: ${p.sl || '?'} | Take Profit: ${p.tp || '?'}
 Signal reason: ${p.reason}${xavierBlock}${freshnessBlock}
 
+WEIGHTING RULE — M5 TRADES (apply this before any other check):
+Trend alignment carries 70% of your decision weight.
+- CONFIRM if price is above EMA50 for LONG, or below EMA50 for SHORT, and EMA9/EMA21 confirm direction.
+- Only REJECT on trend grounds if price is clearly on the WRONG side of EMA50.
+- Remaining 30%: spread (10%) + session timing (10%) + news risk (10%).
+- A clean trend alignment with score >= 65% should be CONFIRM unless a MAJOR risk factor exists.
+- Do NOT reject on minor concerns when the trend is clearly confirmed.
+
 Van Tharp Rules:
 - R:R must be >= 2.0
 - No trading during HIGH impact news
@@ -336,7 +344,7 @@ Van Tharp Rules:
 - Session must be GOOD or PRIME for this pair
 
 If Xavier's key risk directly references this instrument, treat it as an elevated risk factor.
-CONFIRM only if ALL conditions are safe. REJECT if ANY risk condition is violated.
+CONFIRM if trend alignment is clear (70% weight). REJECT only if a major risk condition is violated.
 
 Respond in this EXACT format:
 VERDICT: CONFIRM or REJECT
@@ -354,11 +362,14 @@ Trend regime: ${p.regime || 'UNKNOWN'}
 Momentum: ${p.momentum || '0'}%
 RSI: ${p.rsi}
 
-CONFIRM only if:
-- EMA structure confirms direction
-- Price is on correct side of EMA50
-- Momentum supports entry
-- Regime is not VOLATILE
+WEIGHTING RULE — M5 TRADES:
+Trend alignment carries 70% of your decision weight.
+- If price is above EMA50 for LONG (or below for SHORT) AND EMA9/EMA21 confirm direction → CONFIRM.
+- Only REJECT on trend grounds if price is clearly on the wrong side of EMA50.
+- A score >= 65% with clean trend alignment = CONFIRM unless regime is VOLATILE.
+- Do NOT reject on minor momentum concerns if EMA structure is clearly aligned.
+
+CONFIRM if EMA50 side and EMA9/EMA21 stack support the direction. REJECT only if price is against the trend or regime is VOLATILE.
 
 Respond in this EXACT format:
 VERDICT: CONFIRM or REJECT
@@ -386,7 +397,13 @@ Validations:
 - ATR stop properly sized: ${p.atrValid || 'YES'}
 - Position size correct: ${p.sizeValid || 'YES'}
 
-CONFIRM only if numbers support positive expectancy.
+WEIGHTING RULE — M5 TRADES:
+Trend alignment carries 70% of your decision weight. The math check is 30%.
+- If score >= 65% and R:R >= 2.0 → CONFIRM. These are the primary quantitative gates.
+- Do NOT reject when score and R:R are valid just because deviation or ATR fields show defaults.
+- Only REJECT if score < 65% OR R:R < 1.5 (hard math failure).
+
+CONFIRM if score >= 65% and R:R >= 2.0. REJECT only on hard math failure.
 
 Respond in this EXACT format:
 VERDICT: CONFIRM or REJECT
@@ -419,13 +436,14 @@ Market sentiment: ${p.sentiment || 'NEUTRAL'}
 Volatility state: ${p.regime || 'RANGING'}
 Change: ${p.change}%${xavierBlock}${retailBlock}${freshnessBlock}
 
-CONFIRM only if:
-- News sentiment supports ${p.direction}
-- Liquidity adequate for session
-- Spread within acceptable limits
-- No macro tail risk events
-- Xavier's key risk does not directly threaten this trade
-- Retail positioning is not heavily crowded AGAINST ${p.direction} (contrarian pressure)
+WEIGHTING RULE — M5 TRADES:
+Trend alignment carries 70% of your decision weight. Macro context is 30%.
+- If session is active (not AVOID) and news risk is LOW or NEUTRAL → CONFIRM on macro grounds.
+- Only REJECT on macro grounds if there is a HIGH-impact news event, extreme retail crowding, or a direct Xavier risk warning for this instrument.
+- Do NOT reject on minor sentiment concerns if session and spread conditions are acceptable.
+- A score >= 65% in an active session with no major news risk = CONFIRM from macro perspective.
+
+CONFIRM if session is active and no major macro risk exists. REJECT only on HIGH-impact news or severe crowding.
 
 Respond in this EXACT format:
 VERDICT: CONFIRM or REJECT
