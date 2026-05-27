@@ -37,14 +37,22 @@ const VALID_INSTRUMENTS = new Set([
 ]);
 
 // Format price with correct decimal precision per instrument type
-// JPY pairs: 3 decimals | XAU/indices: 2 decimals | all others: 5 decimals
+// JPY forex: 3dp | Metals (XAU/XAG): 2dp | Indices: 1dp | Energy (BCO/WTICO): 2dp | Default: 5dp
 const formatPrice = (price, instrument = '') => {
   const p = parseFloat(price);
   if (isNaN(p)) return String(price);
-  if (instrument.includes('JPY') || instrument.includes('JP225')) return p.toFixed(3);
-  if (instrument.includes('XAU') || instrument.includes('XAG') ||
-      instrument.includes('SPX') || instrument.includes('NAS') ||
-      instrument.includes('BCO') || instrument.includes('WTICO')) return p.toFixed(2);
+  // JPY forex pairs only (not JP225 index)
+  if (instrument.includes('JPY')) return p.toFixed(3);
+  // Metals
+  if (instrument.includes('XAU') || instrument.includes('XAG')) return p.toFixed(2);
+  // Indices — 1 decimal place
+  if (instrument.includes('NAS')  || instrument.includes('SPX') ||
+      instrument.includes('JP2')  || instrument.includes('UK1') ||
+      instrument.includes('AU2')  || instrument.includes('US30') ||
+      instrument.includes('DE3')) return p.toFixed(1);
+  // Energy
+  if (instrument.includes('BCO') || instrument.includes('WTICO')) return p.toFixed(2);
+  // Default forex
   return p.toFixed(5);
 };
 
@@ -109,7 +117,7 @@ app.post('/order', async (req, res) => {
   };
   console.log(`[ORDER] SL decision — atrVal=${atrVal} | entryPrice=${entryPrice} | slPrice=${slPrice}`);
   if (slPrice) {
-    order.stopLossOnFill = { price: slPrice.toFixed(5), timeInForce: 'GTC' };
+    order.stopLossOnFill = { price: formatPrice(slPrice, instrument), timeInForce: 'GTC' };
     console.log('[ORDER] stopLossOnFill:', JSON.stringify(order.stopLossOnFill));
   } else {
     console.log('[ORDER] stopLossOnFill SKIPPED — atr=' + atrVal + ' or price=' + entryPrice + ' is zero/missing');
@@ -120,7 +128,7 @@ app.post('/order', async (req, res) => {
     ? (direction === 'LONG' ? entryPrice + atrVal * 3 : entryPrice - atrVal * 3)
     : null;
   if (tpPrice) {
-    order.takeProfitOnFill = { price: tpPrice.toFixed(5), timeInForce: 'GTC' };
+    order.takeProfitOnFill = { price: formatPrice(tpPrice, instrument), timeInForce: 'GTC' };
     console.log('[ORDER] takeProfitOnFill (2R):', JSON.stringify(order.takeProfitOnFill));
   }
 
@@ -1635,13 +1643,13 @@ async function serverAutoTrade() {
     try {
       consensus = await runConsensus({
         instrument, direction: signal.direction, score: signal.score,
-        price:         price.toFixed(5),
+        price:         formatPrice(price, instrument),
         change:        '0',
         session,       strategy,
         atr:           atr.toFixed(5),
         atrPips,
-        sl:            sl.toFixed(5),
-        tp:            tp.toFixed(5),
+        sl:            formatPrice(sl, instrument),
+        tp:            formatPrice(tp, instrument),
         ema9:          ema9v.toFixed(5),
         ema21:         ema21v.toFixed(5),
         ema50side,
@@ -1673,8 +1681,8 @@ async function serverAutoTrade() {
         order: {
           type: 'MARKET', instrument, units: String(units),
           timeInForce: 'FOK', positionFill: 'DEFAULT',
-          stopLossOnFill:   { price: sl.toFixed(5), timeInForce: 'GTC' },
-          takeProfitOnFill: { price: tp.toFixed(5), timeInForce: 'GTC' },
+          stopLossOnFill:   { price: formatPrice(sl, instrument), timeInForce: 'GTC' },
+          takeProfitOnFill: { price: formatPrice(tp, instrument), timeInForce: 'GTC' },
         },
       };
       const r      = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify(orderPayload) });
