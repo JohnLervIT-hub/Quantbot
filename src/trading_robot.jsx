@@ -6994,15 +6994,21 @@ async function runBtSimulation(closes, candles, strat, sessRange, pair) {
   const trades = [];
   const total  = closes.length;
   const CHUNK  = 300;
+  // ── DEBUG counters ─────────────────────────────────────────────────────────
+  let _sigsScanned = 0, _sigsPassScore = 0, _sigsPassSess = 0;
+  console.log('[BACKTEST] threshold: 65 | sim start:', pair, strat, '| candles:', total, '| session UTC:', JSON.stringify(sessRange));
   let i = 20;
   while (i < total) {
     await new Promise(resolve => setTimeout(resolve, 0));
     const end = Math.min(i + CHUNK, total - 1);
     while (i <= end) {
       const sig = generateSignal(closes.slice(i - 20, i + 1), strat, pair);
+      _sigsScanned++;
       if (sig && sig.score >= 65 && sig.direction) {
+        _sigsPassScore++;
         const utcH = candles[i]?.time ? new Date(candles[i].time).getUTCHours() : 12;
         if (isInSessLocal(utcH, sessRange)) {
+          _sigsPassSess++;
           const atrBars = candles.slice(Math.max(i - 4, 0), i + 1);
           const atr = atrBars.reduce((s, c) => s + Math.abs(parseFloat(c.mid?.h ?? 0) - parseFloat(c.mid?.l ?? 0)), 0) / atrBars.length || closes[i] * 0.001;
           const entry = closes[i];
@@ -7030,6 +7036,7 @@ async function runBtSimulation(closes, candles, strat, sessRange, pair) {
       i++;
     }
   }
+  console.log(`[BACKTEST] ${pair} ${strat} | scanned:${_sigsScanned} score>=65:${_sigsPassScore} in-session:${_sigsPassSess} trades-resolved:${trades.length}`);
   if (trades.length < 10) return null;
   const wins     = trades.filter(t => t.win);
   const losses   = trades.filter(t => !t.win);
@@ -7086,8 +7093,16 @@ function useAutonomousBacktest() {
         const data = await r.json();
         if (!Array.isArray(data.candles) || data.candles.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
         candles = data.candles;
+        // ── DEBUG: candle fetch diagnostics ──────────────────────────────────
+        const _fDate = candles[0]?.time ? new Date(candles[0].time).toISOString().slice(0, 10) : '?';
+        const _lDate = candles[candles.length - 1]?.time ? new Date(candles[candles.length - 1].time).toISOString().slice(0, 10) : '?';
+        const _calDays = candles[0]?.time && candles[candles.length - 1]?.time
+          ? Math.round((new Date(candles[candles.length - 1].time) - new Date(candles[0].time)) / 86400000) : 0;
+        console.log('[BACKTEST] candles fetched:', candles.length, 'for', pair, '|', _calDays, 'calendar days |', _fDate, '→', _lDate);
       } catch { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
       const closes = candles.map(c => parseFloat(c.mid?.c ?? 0)).filter(v => v > 0 && !isNaN(v));
+      if (closes.length !== candles.length)
+        console.warn('[BACKTEST] INDEX MISMATCH', pair, '— candles:', candles.length, 'closes:', closes.length, '— candles[i] lookups will be offset');
       if (closes.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
       for (const strat of STRATS) {
         if (cancelRef.current) break;
