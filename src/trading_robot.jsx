@@ -7617,6 +7617,19 @@ export default function TradingRobot() {
           const change = history.length > 1
             ? ((history[history.length - 1] - history[0]) / history[0] * 100).toFixed(3)
             : "0.000";
+          // Compute context the prompt builders need — missing fields cause models to REJECT
+          const sess = getCurrentSession();
+          const ctxBars = history.slice(-21);
+          const ctxTr = ctxBars.slice(1).map((v, i) => Math.abs(v - ctxBars[i]));
+          const atr = ctxTr.length ? ctxTr.reduce((a, b) => a + b, 0) / ctxTr.length : 0;
+          const pip = PIP_SIZE[pair] || 0.0001;
+          const atrPips = atr / pip;
+          const sl = signal.direction === "LONG" ? price - atr * 1.5 : price + atr * 1.5;
+          const tp = signal.direction === "LONG" ? price + atr * 3.0 : price - atr * 3.0;
+          const ema9 = history.slice(-9).reduce((a, b) => a + b, 0) / 9;
+          const ema21v = history.slice(-21).reduce((a, b) => a + b, 0) / 21;
+          const ema50v = history.length >= 50 ? history.slice(-50).reduce((a, b) => a + b, 0) / 50 : ema21v;
+          const heat = (openTradesRef.current.length * 1.5).toFixed(1);
           const cr = await fetch(`${BRIDGE}/consensus`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -7629,6 +7642,19 @@ export default function TradingRobot() {
               rsi: signal.rsi,
               reason: signal.reason?.join(", ") ?? "",
               headline: "",
+              session: sess,
+              sessionQuality: (sess === "PRIME" || sess === "LONDON") ? "PRIME" : "GOOD",
+              strategy: strategyRef.current,
+              atr: atr.toFixed(5),
+              atrPips: atrPips.toFixed(1),
+              sl: sl.toFixed(5),
+              tp: tp.toFixed(5),
+              rr: "2.0",
+              ema9: ema9.toFixed(5),
+              ema21: ema21v.toFixed(5),
+              ema50side: price > ema50v ? "above" : "below",
+              regime: atrPips > 5 ? "VOLATILE" : atr > ema21v * 0.001 ? "TRENDING" : "RANGING",
+              heat,
             }),
           });
           const verdict = await cr.json();
@@ -7636,9 +7662,6 @@ export default function TradingRobot() {
 
           autoExecTimestamps.push(Date.now());
           const topReason = verdict.models?.find(m => m.verdict === "CONFIRM")?.reason ?? "Auto consensus";
-          const bars = history.slice(-6);
-          const trs = bars.slice(1).map((v, i) => Math.abs(v - bars[i]));
-          const atr = trs.length ? trs.reduce((a, b) => a + b, 0) / trs.length : 0;
           onTradeRef.current?.(pair, signal, price, { REASON: topReason, atr });
         } catch {}
       }
