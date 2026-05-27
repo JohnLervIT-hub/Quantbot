@@ -318,8 +318,10 @@ const autoTrades       = [];        // newest-first, capped at 100
 const paperTrades      = [];        // newest-first, capped at 100
 const m5History        = new Map(); // instrument → number[] (60 M5 closes)
 const lastM5Fetch      = new Map(); // instrument → ms timestamp
-const serverRejections = [];        // newest-first, capped at 50
-let   lastScanAt       = null;
+const serverRejections   = [];        // newest-first, capped at 50
+let   lastScanAt         = null;
+const swingAutoTrades    = [];        // newest-first, capped at 50
+const lastSwingConsensus = new Map(); // instrument → ms (4-hour cooldown per pair)
 
 
 // ─── XAVIER RULES ────────────────────────────────────────────────────────────
@@ -971,6 +973,11 @@ app.get('/auto-trades', (_req, res) => {
   res.json({ autoMode: process.env.AUTO_MODE_ENABLED === 'true', count: autoTrades.length, trades: autoTrades });
 });
 
+// ─── SWING AUTO TRADES ENDPOINT ──────────────────────────────────────────────
+app.get('/swing-auto-trades', (_req, res) => {
+  res.json({ count: swingAutoTrades.length, trades: swingAutoTrades });
+});
+
 // ─── PAPER TRADES ENDPOINT ────────────────────────────────────────────────────
 app.get('/paper-trades', (_req, res) => {
   res.json({ count: paperTrades.length, trades: paperTrades });
@@ -1296,6 +1303,295 @@ async function serverAutoTrade() {
   }
 }
 
+// ─── KILL SHOT PAIRS ─────────────────────────────────────────────────────────
+const KILL_SHOT_PAIRS = ['XAU_USD', 'GBP_USD', 'EUR_USD', 'USD_JPY', 'NAS100_USD', 'BCO_USD'];
+
+// ─── OANDA CANDLE FETCHER (any granularity) ───────────────────────────────────
+async function fetchOandaCandles(instrument, granularity, count) {
+  const r = await fetch(
+    `${BASE}/v3/instruments/${instrument}/candles?count=${count}&granularity=${granularity}&price=M`,
+    { headers: H }
+  );
+  const data = await r.json();
+  if (!Array.isArray(data.candles)) return [];
+  return data.candles
+    .filter(c => c.mid?.c && !c.incomplete)
+    .map(c => ({
+      o: parseFloat(c.mid.o),
+      h: parseFloat(c.mid.h),
+      l: parseFloat(c.mid.l),
+      c: parseFloat(c.mid.c),
+      time: c.time,
+    }))
+    .filter(c => c.c > 0);
+}
+
+// ─── H4 SWING SIGNAL GENERATOR ───────────────────────────────────────────────
+// Produces a Kill Shot setup if EMA50 bias + EMA21 pullback + RSI zone align.
+// Score must reach 75 to qualify. Weekly candles provide optional bonus (+10).
+function serverGenerateSwingSignal(h4Candles, weeklyCandles, instrument) {
+  if (h4Candles.length < 50) return null;
+
+  const closes = h4Candles.map(c => c.c);
+  const last   = closes[closes.length - 1];
+
+  // Simple EMA (window average — consistent with serverGenerateSignal approach)
+  const ema21 = closes.slice(-21).reduce((a, b) => a + b, 0) / 21;
+  const ema50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
+
+  // ATR(14) using true range over last 20 bars
+  const trArr = [];
+  for (let i = Math.max(1, h4Candles.length - 20); i < h4Candles.length; i++) {
+    trArr.push(Math.max(
+      h4Candles[i].h - h4Candles[i].l,
+      Math.abs(h4Candles[i].h - h4Candles[i - 1].c),
+      Math.abs(h4Candles[i].l - h4Candles[i - 1].c),
+    ));
+  }
+  const atr = trArr.slice(-14).reduce((a, b) => a + b, 0) / Math.min(14, trArr.length) || 0.0001;
+
+  // RSI(14)
+  const rsiCloses = closes.slice(-15);
+  let gains = 0, losses = 0;
+  for (let i = 1; i < rsiCloses.length; i++) {
+    const diff = rsiCloses[i] - rsiCloses[i - 1];
+    if (diff > 0) gains += diff; else losses -= diff;
+  }
+  const avgGain = gains / 14, avgLoss = losses / 14;
+  const rsi = avgLoss > 0 ? 100 - 100 / (1 + avgGain / avgLoss) : 100;
+
+  // ── Direction: EMA50 macro bias ───────────────────────────────────────────
+  let direction, score = 0;
+  const reasons = [];
+
+  if      (last > ema50) { direction = 'LONG';  score += 30; reasons.push('Above H4 EMA50'); }
+  else if (last < ema50) { direction = 'SHORT'; score += 30; reasons.push('Below H4 EMA50'); }
+  else return null;
+
+  // ── EMA21 pullback quality ───────────────────────────────────────────────
+  const distToEma21 = Math.abs(last - ema21);
+  if      (distToEma21 < atr * 1.0) { score += 30; reasons.push('At EMA21 value zone'); }
+  else if (distToEma21 < atr * 2.0) { score += 15; reasons.push('Near EMA21'); }
+
+  // ── EMA21 slope (trend continuation) ────────────────────────────────────
+  if (closes.length >= 26) {
+    const ema21Prev = closes.slice(-26, -5).reduce((a, b) => a + b, 0) / 21;
+    if (direction === 'LONG'  && ema21 > ema21Prev) { score += 10; reasons.push('EMA21 rising'); }
+    if (direction === 'SHORT' && ema21 < ema21Prev) { score += 10; reasons.push('EMA21 falling'); }
+  }
+
+  // ── RSI zone filter ──────────────────────────────────────────────────────
+  if (direction === 'LONG') {
+    if      (rsi >= 40 && rsi <= 60) { score += 20; reasons.push(`RSI ${rsi.toFixed(0)} pullback zone`); }
+    else if (rsi < 40)               { score += 10; reasons.push(`RSI ${rsi.toFixed(0)} oversold`); }
+  } else {
+    if      (rsi >= 40 && rsi <= 60) { score += 20; reasons.push(`RSI ${rsi.toFixed(0)} pullback zone`); }
+    else if (rsi > 60)               { score += 10; reasons.push(`RSI ${rsi.toFixed(0)} overbought`); }
+  }
+
+  // ── Weekly trend alignment (bonus, non-blocking) ─────────────────────────
+  if (weeklyCandles && weeklyCandles.length >= 5) {
+    const wCloses = weeklyCandles.map(c => c.c);
+    const wEma5   = wCloses.slice(-5).reduce((a, b) => a + b, 0) / 5;
+    const wLast   = wCloses[wCloses.length - 1];
+    if (direction === 'LONG'  && wLast > wEma5) { score += 10; reasons.push('Weekly trend aligned'); }
+    if (direction === 'SHORT' && wLast < wEma5) { score += 10; reasons.push('Weekly trend aligned'); }
+  }
+
+  score = Math.min(score, 100);
+  if (score < 75) return null;
+
+  // ── SL / TP levels (2 ATR risk, 1.5R / 2.5R / 4R targets) ───────────────
+  const riskDist = atr * 2.0;
+  const sl  = direction === 'LONG' ? last - riskDist : last + riskDist;
+  const tp1 = direction === 'LONG' ? last + riskDist * 1.5 : last - riskDist * 1.5;
+  const tp2 = direction === 'LONG' ? last + riskDist * 2.5 : last - riskDist * 2.5;
+  const tp3 = direction === 'LONG' ? last + riskDist * 4.0 : last - riskDist * 4.0;
+
+  return { direction, score, entry: last, sl, tp1, tp2, tp3, ema21, ema50, rsi, atr, reasons };
+}
+
+// ─── SERVER-SIDE SWING CONSENSUS (weighted: Claude MUST confirm + 1 other) ───
+async function runSwingConsensus(p) {
+  const settled = await Promise.allSettled([
+    askClaude(buildClaudeSwingPrompt(p),     SYS_CLAUDE_SWING),
+    askGPT(buildGPTSwingPrompt(p),           SYS_GPT_SWING),
+    askDeepSeek(buildDeepSeekSwingPrompt(p), SYS_DEEP_SWING),
+    askGemini(buildGeminiSwingPrompt(p),     SYS_GEM_SWING),
+  ]);
+  const NAMES = ['Claude Sonnet', 'GPT-4o', 'DeepSeek', 'Gemini 2.5 Flash'];
+  const models = settled.map((r, i) => {
+    if (r.status === 'fulfilled') return r.value;
+    const raw = r.reason?.message || 'Model unreachable';
+    return { name: NAMES[i], verdict: 'REJECT', reason: raw.slice(0, 80) };
+  });
+  const claudeConfirmed = models[0]?.verdict === 'CONFIRM';
+  const othersConfirmed = models.slice(1).filter(m => m.verdict === 'CONFIRM');
+  const passes          = claudeConfirmed && othersConfirmed.length >= 1;
+  const confirms        = models.filter(m => m.verdict === 'CONFIRM').length;
+  const voteLog = models.map(m => {
+    const tag  = MODEL_TAG[m.name] || m.name.toUpperCase();
+    const icon = m.verdict === 'CONFIRM' ? '✓' : '✗';
+    return `[${tag}] ${m.verdict} — ${m.reason} ${icon}`;
+  });
+  voteLog.push(passes
+    ? `Result: Claude + ${othersConfirmed[0]?.name?.split(' ')[0] || '?'} confirmed → KILL SHOT EXECUTE`
+    : !claudeConfirmed
+      ? 'Result: BLOCKED — Claude rejected'
+      : 'Result: BLOCKED — Claude confirmed, no supporting model');
+  return { passes, confirms, claudeConfirmed, models, voteLog };
+}
+
+// ─── SERVER-SIDE SWING AUTO TRADE ENGINE (Kill Shot — H4, 4-hour scan) ───────
+async function serverSwingAutoTrade() {
+  if (process.env.AUTO_MODE_ENABLED !== 'true') return;
+
+  const now = new Date();
+  const h   = now.getUTCHours();
+  const d   = now.getUTCDay();
+
+  // Weekend block (Saturday all day; Sunday before 22 UTC)
+  if (d === 6 || (d === 0 && h < 22)) return;
+
+  // Only scan London open → NY close: 8–20 UTC
+  if (h < 8 || h >= 20) return;
+
+  // Friday PM block: no new swings after 18 UTC Friday
+  if (d === 5 && h >= 18) return;
+
+  // Fetch current OANDA open trades
+  let openTrades = [];
+  try {
+    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
+    const data = await r.json();
+    openTrades = data.trades || [];
+  } catch (e) {
+    console.error('[swing-auto] open trades fetch failed:', e.message);
+    return;
+  }
+
+  // Hard cap: max 4 open trades (M5 + swing combined)
+  if (openTrades.length >= 4) {
+    console.log(`[swing-auto] ${openTrades.length} open trades — skip`);
+    return;
+  }
+
+  const session = getServerSession();
+  console.log(`[swing-auto] Scanning ${KILL_SHOT_PAIRS.length} Kill Shot pairs — ${session}`);
+
+  for (const instrument of KILL_SHOT_PAIRS) {
+    // 4-hour cooldown per pair (stamp before consensus to prevent parallel double-fire)
+    if (Date.now() - (lastSwingConsensus.get(instrument) || 0) < 4 * 60 * 60_000) continue;
+
+    try {
+      // Fetch H4 (100 bars) + weekly (10 bars) in parallel
+      const [h4Candles, weeklyCandles] = await Promise.all([
+        fetchOandaCandles(instrument, 'H4', 100),
+        fetchOandaCandles(instrument, 'W',   10),
+      ]);
+
+      if (h4Candles.length < 50) {
+        console.log(`[swing-auto] ${instrument} — insufficient H4 data (${h4Candles.length} bars)`);
+        continue;
+      }
+
+      const sig = serverGenerateSwingSignal(h4Candles, weeklyCandles, instrument);
+      if (!sig) {
+        console.log(`[swing-auto] ${instrument} — no Kill Shot setup`);
+        continue;
+      }
+      console.log(`[swing-auto] ${instrument} ${sig.direction} score:${sig.score}% — ${sig.reasons.join(', ')}`);
+
+      // Block if OANDA already has an open trade on this instrument
+      if (openTrades.some(t => t.instrument === instrument)) {
+        console.log(`[swing-auto] ${instrument} — already open on OANDA, skip`);
+        continue;
+      }
+      // Block if swing auto already tracking an open trade for this pair
+      if (swingAutoTrades.some(t => t.instrument === instrument && !t.closed)) {
+        console.log(`[swing-auto] ${instrument} — swing auto trade already tracked`);
+        continue;
+      }
+
+      // Stamp cooldown now (before async consensus)
+      lastSwingConsensus.set(instrument, Date.now());
+
+      const ts    = now.toISOString();
+      const price = sig.entry;
+      const consensusParams = {
+        instrument,
+        direction: sig.direction,
+        score:     sig.score,
+        entry:     formatPrice(price,     instrument),
+        price:     formatPrice(price,     instrument),
+        sl:        formatPrice(sig.sl,    instrument),
+        tp1:       formatPrice(sig.tp1,   instrument),
+        tp2:       formatPrice(sig.tp2,   instrument),
+        tp3:       formatPrice(sig.tp3,   instrument),
+        ema21:     formatPrice(sig.ema21, instrument),
+        ema50:     formatPrice(sig.ema50, instrument),
+        rsi:       sig.rsi.toFixed(1),
+        atr:       sig.atr.toFixed(instrument.includes('JPY') ? 3 : 5),
+        session,
+      };
+
+      console.log(`[swing-auto] ${instrument} — calling Kill Shot consensus`);
+      const consensus = await runSwingConsensus(consensusParams);
+      const resultLine = consensus.voteLog[consensus.voteLog.length - 1];
+      console.log(`[swing-auto] ${instrument} — ${consensus.confirms}/4 Claude:${consensus.claudeConfirmed ? '✓' : '✗'} — ${resultLine}`);
+
+      if (!consensus.passes) continue;
+
+      // ── Place swing order (500 units, SL + TP1) ───────────────────────────
+      const units = sig.direction === 'LONG' ? 500 : -500;
+      const order = {
+        type: 'MARKET', instrument, units: String(units),
+        timeInForce: 'FOK', positionFill: 'DEFAULT',
+        stopLossOnFill:   { price: formatPrice(sig.sl,  instrument), timeInForce: 'GTC' },
+        takeProfitOnFill: { price: formatPrice(sig.tp1, instrument), timeInForce: 'GTC' },
+      };
+      console.log('[swing-auto] ORDER PAYLOAD', JSON.stringify(order));
+
+      const or     = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify({ order }) });
+      const result = await or.json();
+
+      if (JSON.stringify(result).includes('MARKET_HALTED')) {
+        console.log(`[swing-auto] ${instrument} — PAPER logged (market halted)`);
+        continue;
+      }
+
+      if (result?.errorCode) {
+        console.error(`[swing-auto] ${instrument} — OANDA error: ${result.errorCode} — ${result.errorMessage || ''}`);
+        continue;
+      }
+
+      const fill    = result?.orderFillTransaction?.price ?? formatPrice(price, instrument);
+      const tradeId = result?.orderFillTransaction?.tradeOpened?.tradeID || null;
+
+      swingAutoTrades.unshift({
+        id: Date.now(), timestamp: ts, instrument,
+        direction: sig.direction, units, price: fill,
+        sl:  formatPrice(sig.sl,  instrument),
+        tp1: formatPrice(sig.tp1, instrument),
+        tp2: formatPrice(sig.tp2, instrument),
+        tp3: formatPrice(sig.tp3, instrument),
+        score: sig.score, session, reasons: sig.reasons,
+        confirms: consensus.confirms,
+        models:   consensus.models,
+        voteLog:  consensus.voteLog,
+        oandaTradeId: tradeId,
+        closed: false,
+      });
+      if (swingAutoTrades.length > 50) swingAutoTrades.pop();
+
+      console.log(`[KILL SHOT FIRED] ${instrument} ${sig.direction} @ ${fill} — score:${sig.score}% — ${consensus.confirms}/4 — ${session}`);
+
+    } catch (err) {
+      console.error(`[swing-auto] ${instrument} — error: ${err.message}`);
+    }
+  }
+}
+
 // ─── START ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
@@ -1306,3 +1602,7 @@ app.listen(PORT, '0.0.0.0', () => {
 
 setTimeout(() => serverAutoTrade().catch(e => console.error('[auto] Startup:', e.message)), 10_000);
 setInterval(() => serverAutoTrade().catch(e => console.error('[auto] Loop:', e.message)), 60_000);
+
+// Kill Shot swing scan — every 4 hours + 15s startup delay
+setTimeout(() => serverSwingAutoTrade().catch(e => console.error('[swing-auto] Startup:', e.message)), 15_000);
+setInterval(() => serverSwingAutoTrade().catch(e => console.error('[swing-auto] Loop:', e.message)), 4 * 60 * 60 * 1000);
