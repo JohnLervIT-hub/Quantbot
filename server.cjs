@@ -315,6 +315,9 @@ function buildClaudePrompt(p) {
 - Market sentiment: ${p.xavierSentiment || 'UNKNOWN'}
 - Key risk flagged: ${p.xavierKeyRisk || 'none'}${p.xavierBrief ? `\n- Context: ${p.xavierBrief}` : ''}`
     : '';
+  const freshnessBlock = (p.newsAgeMin !== undefined || p.xavierIntelAgeMin !== undefined)
+    ? `\nData freshness: News ${p.newsAgeMin ?? '?'} min old | Xavier intel ${p.xavierIntelAgeMin ?? '?'} min old`
+    : '';
   return `You are the Risk Guardian. Protect capital. Most likely to reject.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
@@ -324,7 +327,7 @@ Portfolio Heat: ${p.heat || '0'}R / 6R max
 News risk: ${p.newsRisk || 'LOW'}
 ATR: ${p.atr || '?'} (${p.atrPips || '?'} pips)
 Stop Loss: ${p.sl || '?'} | Take Profit: ${p.tp || '?'}
-Signal reason: ${p.reason}${xavierBlock}
+Signal reason: ${p.reason}${xavierBlock}${freshnessBlock}
 
 Van Tharp Rules:
 - R:R must be >= 2.0
@@ -397,6 +400,9 @@ function buildGeminiPrompt(p) {
 - Best opportunity: ${p.xavierBestPair || 'none'}
 - Key risk: ${p.xavierKeyRisk || 'none'}${p.xavierBrief ? `\n- Analysis: ${p.xavierBrief}` : ''}`
     : '';
+  const freshnessBlock = (p.newsAgeMin !== undefined || p.xavierIntelAgeMin !== undefined)
+    ? `\nData freshness: News ${p.newsAgeMin ?? '?'} min old | Xavier intel ${p.xavierIntelAgeMin ?? '?'} min old — factor staleness into your analysis`
+    : '';
   const retailBlock = p.retailSentiment
     ? `\nRetail positioning (OANDA position book — contrarian indicator):
 - ${p.retailSentiment.longPct}% retail LONG, ${p.retailSentiment.shortPct}% retail SHORT
@@ -411,7 +417,7 @@ Spread: ${p.spread || '?'} pips (limit: ${p.spreadLimit || '?'} pips)
 Correlated pairs: ${p.correlatedPairs || 'N/A'}
 Market sentiment: ${p.sentiment || 'NEUTRAL'}
 Volatility state: ${p.regime || 'RANGING'}
-Change: ${p.change}%${xavierBlock}${retailBlock}
+Change: ${p.change}%${xavierBlock}${retailBlock}${freshnessBlock}
 
 CONFIRM only if:
 - News sentiment supports ${p.direction}

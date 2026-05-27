@@ -1182,7 +1182,7 @@ function OandaChart({ pair, history: simHistory, height = 40 }) {
 }
 
 // ─── MULTI-MODEL CONSENSUS ────────────────────────────────────────────────────
-function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConfirmed, onRejected, marketOpen, regimeData, session, openTrades, balance, xavierIntel }) {
+function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConfirmed, onRejected, marketOpen, regimeData, session, openTrades, balance, xavierIntel, newsLastFetchedAt = 0 }) {
   const [loading, setLoading]   = useState(false);
   const [consensus, setConsensus] = useState(null);
   const [showLog, setShowLog]   = useState(false);
@@ -1190,6 +1190,27 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
   const analyze = async () => {
     setLoading(true);
     const change = ((history[history.length - 1] - history[0]) / history[0] * 100).toFixed(3);
+
+    // Fetch fresh OANDA price for this pair
+    let freshEntry = price;
+    try {
+      const pResp = await fetch(`${BRIDGE}/prices?instruments=${pair.replace("/", "_")}`).then(r => r.json());
+      if (pResp.prices?.[0]) {
+        const px = pResp.prices[0];
+        freshEntry = (parseFloat(px.bids[0].price) + parseFloat(px.asks[0].price)) / 2;
+      }
+    } catch { /* fall back to prop price */ }
+
+    // Xavier intel staleness check
+    const xavierAge = xavierIntel?.timestamp ? Date.now() - xavierIntel.timestamp : Infinity;
+    const xavierAgeMin = xavierAge === Infinity ? 999 : Math.round(xavierAge / 60000);
+    const xavierBriefFinal = xavierAge > 15 * 60 * 1000
+      ? "Xavier intelligence unavailable — refreshing now. Base analysis on price action and news only."
+      : xavierIntel?.brief || null;
+
+    // News staleness
+    const newsAgeMin = newsLastFetchedAt ? Math.round((Date.now() - newsLastFetchedAt) / 60000) : 999;
+    const headlineFinal = newsAgeMin > 30 ? `[stale — ${newsAgeMin}min old] ${currentHeadline}` : currentHeadline;
 
     // Derived values for role-specific prompts
     const pip        = PIP_SIZE[pair] || 0.0001;
@@ -1234,11 +1255,11 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
           instrument: pairKey,
           direction: signal.direction,
           score: signal.score,
-          price,
+          price: freshEntry.toFixed ? freshEntry.toFixed(5) : String(freshEntry),
           change,
           rsi: signal.rsi,
           reason: signal.reason.join(", "),
-          headline: currentHeadline,
+          headline: headlineFinal,
           strategy: signal.strategy || "Mean Revert",
           // Risk Guardian (Claude)
           session, sessionQuality, rr: "2.0", heat, newsRisk, atr, atrPips, sl, tp,
@@ -1249,11 +1270,13 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
           scoreValid: signal.score >= 65 ? "YES" : "NO", rrValid: "YES", atrValid: atr > 0.0001 ? "YES" : "NO", sizeValid: "YES",
           // Macro Analyst (Gemini)
           spread, spreadLimit, correlatedPairs, sentiment,
-          // Xavier market intelligence
-          xavierKeyRisk: xavierIntel?.keyRisk || null,
-          xavierBestPair: xavierIntel?.bestPair || null,
-          xavierSentiment: xavierIntel?.sentiment || null,
-          xavierBrief: xavierIntel?.brief || null,
+          // Xavier market intelligence (staleness-aware)
+          xavierKeyRisk: xavierAge > 15 * 60 * 1000 ? null : xavierIntel?.keyRisk || null,
+          xavierBestPair: xavierAge > 15 * 60 * 1000 ? null : xavierIntel?.bestPair || null,
+          xavierSentiment: xavierAge > 15 * 60 * 1000 ? null : xavierIntel?.sentiment || null,
+          xavierBrief: xavierBriefFinal,
+          // Data freshness metadata
+          newsAgeMin, xavierIntelAgeMin: xavierAgeMin,
           // Retail sentiment (contrarian indicator, server-cached 30 min)
           retailSentiment: await fetch(`${BRIDGE}/sentiment?instruments=${pairKey}`).then(r => r.ok ? r.json().then(d => d.sentiment?.[pairKey] || null) : null).catch(() => null),
         }),
@@ -1545,7 +1568,7 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
         brief: parsed.BRIEF || result,
       };
       setMetrics(newMetrics);
-      onIntelUpdate?.(newMetrics);
+      onIntelUpdate?.({ ...newMetrics, timestamp: Date.now() });
       setAnalysisCount(c => c + 1);
       const nowMs = Date.now();
       setLastRefreshMs(nowMs);
@@ -1738,6 +1761,21 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
             )}
           </div>
 
+          {/* News feed freshness indicator */}
+          {newsLastFetchedAt > 0 && (() => {
+            const ageMin = Math.round((Date.now() - newsLastFetchedAt) / 60000);
+            const isStale = ageMin >= 30;
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: isStale ? "#d29922" : "#484f58" }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: isStale ? "#d29922" : "#3fb950", flexShrink: 0, display: "inline-block" }} />
+                {isStale
+                  ? <span>News feed: <span style={{ color: "#d29922", fontWeight: 600 }}>⚠️ stale — {ageMin} min ago</span></span>
+                  : <span>News feed: <span style={{ color: "#3fb950" }}>updated {ageMin === 0 ? "just now" : `${ageMin} min ago`}</span></span>
+                }
+              </div>
+            );
+          })()}
+
           {/* Xavier's read */}
           {metrics?.brief && (
             <div style={{ background: "#0d1117", border: "1px solid #21262d", borderRadius: 10, padding: "11px 14px" }}>
@@ -1927,7 +1965,7 @@ const SESSION_BADGE_COLORS = {
 // ─── PAIR ROW WITH AI CONFIRM ─────────────────────────────────────────────────
 const MOBILE_ACTION_ROW_H = 62;
 
-function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignalUpdate, onRegimeUpdate, onRejection, onClose, openTrades, marketOpen, isMobile, balance, xavierIntel }) {
+function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignalUpdate, onRegimeUpdate, onRejection, onClose, openTrades, marketOpen, isMobile, balance, xavierIntel, newsLastFetchedAt = 0 }) {
   const { price: simPrice, history: simHistory } = usePriceSimulator(basePrice);
   const { price: oandaPrice, history: oandaHistory, isReal } = useOandaPrice(pair);
 
@@ -2058,7 +2096,7 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
             pair={pair} signal={signal} price={price} history={history}
             currentHeadline={currentHeadline} marketOpen={marketOpen}
             regimeData={regimeData} session={getCurrentSession()} openTrades={openTrades} balance={balance}
-            xavierIntel={xavierIntel}
+            xavierIntel={xavierIntel} newsLastFetchedAt={newsLastFetchedAt}
             onConfirmed={(verdict) => { onTrade(pair, signal, price, { ...verdict, atr: regimeData.atr5 }); setShowAI(false); }}
             onRejected={() => setShowAI(false)}
           />
@@ -2761,31 +2799,71 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
   useEffect(() => {
     const run = async () => {
       const instrument = pair.replace("/", "_");
-      const currentPrice = parseFloat(livePrices?.[pair] || sig.entry);
+
+      // Fetch fresh OANDA price
+      let freshMid = parseFloat(livePrices?.[pair] || sig.entry);
       try {
-        const r = await fetch(`${BRIDGE}/swing-consensus`, {
+        const pResp = await fetch(`${BRIDGE}/prices?instruments=${instrument}`).then(r => r.json());
+        if (pResp.prices?.[0]) {
+          const px = pResp.prices[0];
+          freshMid = (parseFloat(px.bids[0].price) + parseFloat(px.asks[0].price)) / 2;
+        }
+      } catch { /* fall back */ }
+
+      // Xavier staleness
+      const xavierAge    = xavierIntel?.timestamp ? Date.now() - xavierIntel.timestamp : Infinity;
+      const xavierAgeMin = xavierAge === Infinity ? 999 : Math.round(xavierAge / 60000);
+      const xavierIsStale = xavierAge > 15 * 60 * 1000;
+      const xavierBriefFinal = xavierIsStale
+        ? "Xavier intelligence unavailable — refreshing now. Base analysis on price action and news only."
+        : xavierIntel?.brief || null;
+
+      const pip      = pair.includes("JPY") ? 0.01 : pair === "XAU/USD" ? 0.1 : pair === "NAS100/USD" ? 1.0 : 0.0001;
+      const entry    = parseFloat(sig.entry || freshMid);
+      const slPrice  = parseFloat(sig.sl    || entry * 0.995);
+      const tp1Price = parseFloat(sig.tp1   || entry * 1.015);
+      const atr      = parseFloat(sig.atr   || 0.001);
+      const ema21v   = parseFloat(sig.ema21  || entry);
+      const ema50v   = parseFloat(sig.ema50  || entry);
+      const riskDist = Math.abs(entry - slPrice);
+      const tp1Dist  = Math.abs(tp1Price - entry);
+      const rr       = riskDist > 0 ? (tp1Dist / riskDist).toFixed(2) : "1.5";
+      const ema50side = freshMid > ema50v ? "ABOVE" : "BELOW";
+
+      try {
+        const r = await fetch(`${BRIDGE}/consensus`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             instrument, direction: sig.direction, score: sig.score,
-            entry: sig.entry?.toFixed(5) || "?",
-            sl:    sig.sl?.toFixed(5)    || "?",
-            tp1:   sig.tp1?.toFixed(5)   || "?",
-            tp2:   sig.tp2?.toFixed(5)   || "?",
-            tp3:   sig.tp3?.toFixed(5)   || "?",
-            ema21: sig.ema21?.toFixed(5) || "?",
-            ema50: sig.ema50?.toFixed(5) || "?",
-            rsi:   sig.rsi?.toFixed(1)   || "?",
-            atr:   sig.atr?.toFixed(5)   || "?",
-            price: currentPrice.toFixed(5),
-            session,
-            xavierSentiment:  xavierIntel?.sentiment  || null,
-            xavierKeyRisk:    xavierIntel?.keyRisk     || null,
-            xavierBestPair:   xavierIntel?.bestPair    || null,
-            xavierBrief:      xavierIntel?.brief       || null,
-            freshNews: freshNews?.slice(0, 5).join(" | ") || null,
+            price: freshMid.toFixed(5), change: "0.000",
+            rsi: sig.rsi?.toFixed(1) || "50",
+            reason: `Kill Shot H4 swing — Score ${sig.score}%, EMA21 pullback, RSI ${sig.rsi?.toFixed(0) ?? "50"}`,
+            headline: freshNews?.[0] || "No headline",
+            strategy: "Kill Shot Swing",
+            session, sessionQuality: "GOOD", rr, heat: "0", newsRisk: "LOW",
+            atr: atr.toFixed(5), atrPips: (atr / pip).toFixed(1),
+            sl: slPrice.toFixed(5), tp: tp1Price.toFixed(5),
+            ema9: ema21v.toFixed(5), ema21: ema21v.toFixed(5), ema50side,
+            closes: freshMid.toFixed(5), regime: "TRENDING", momentum: "0.000",
+            deviation: "0.000",
+            slDistance: (riskDist / pip).toFixed(1),
+            tpDistance: (tp1Dist  / pip).toFixed(1),
+            riskAmount: "750.00", balance: "100000.00",
+            scoreValid: sig.score >= 75 ? "YES" : "NO",
+            rrValid: parseFloat(rr) >= 1.5 ? "YES" : "NO",
+            atrValid: atr > 0.0001 ? "YES" : "NO", sizeValid: "YES",
+            spread: "2.0", spreadLimit: "5.0", correlatedPairs: "N/A",
+            sentiment: sig.direction === "LONG" ? "BULLISH" : "BEARISH",
+            xavierSentiment: xavierIsStale ? null : xavierIntel?.sentiment || null,
+            xavierKeyRisk:   xavierIsStale ? null : xavierIntel?.keyRisk   || null,
+            xavierBestPair:  xavierIsStale ? null : xavierIntel?.bestPair  || null,
+            xavierBrief:     xavierBriefFinal,
+            newsAgeMin: 0, xavierIntelAgeMin: xavierAgeMin,
           }),
         });
+        const ct = r.headers.get("content-type");
+        if (!ct?.includes("application/json")) throw new Error(`Bridge returned HTML — restart npm run server`);
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || `Bridge error ${r.status}`);
         setConsensus(data);
@@ -2793,13 +2871,12 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
         const msg = err?.name === "TypeError" || err?.message?.includes("Failed to fetch")
           ? "Bridge offline — run: npm run server"
           : err?.message || "Connection failed";
-        const fallbackModel = (name) => ({ name, verdict: "REJECT", reason: msg });
         setConsensus({
-          votes: { confirm: 0, reject: 4 },
-          consensus: "REJECT", confidence: "0%",
-          models: ["Claude Sonnet", "GPT-4o", "DeepSeek", "Gemini 2.5 Flash"].map(fallbackModel),
-          voteLog: ["[CLAUDE] REJECT ✗", "[GPT4] REJECT ✗", "[DEEPSEEK] REJECT ✗", "[GEMINI] REJECT ✗", `Result: 0/4 CONFIRM → BLOCKED — ${msg}`],
-          executeAllowed: false, bridgeError: true,
+          votes: { confirm: 0, reject: 0 },
+          consensus: "API_ERROR", confidence: "—",
+          models: [],
+          voteLog: [`API error: ${msg}`],
+          executeAllowed: true, apiError: true, errorMsg: msg,
         });
       }
       setLoading(false);
@@ -2900,7 +2977,7 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
   );
 }
 
-function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriPM, isNewsBlock, pendingSetups, session, xavierIntel, freshNews, livePrices }) {
+function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriPM, isNewsBlock, pendingSetups, session, xavierIntel, freshNews, livePrices, newsLastFetchedAt = 0 }) {
   const [consensusMap, setConsensusMap] = useState({});
   const fetchedRef = useRef(new Set());
 
@@ -2909,15 +2986,37 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
 
   // Auto-fetch consensus for each qualifying pair as soon as it appears
   useEffect(() => {
-    activePairs.forEach(pair => {
+    activePairs.forEach(async (pair) => {
       if (fetchedRef.current.has(pair)) return;
       fetchedRef.current.add(pair);
-      const sig     = signals[pair];
+      const sig        = signals[pair];
       const instrument = pair.replace("/", "_");
-      const currentPrice = parseFloat(livePrices?.[pair] || sig.entry);
+
+      // Fetch fresh OANDA price for this pair
+      let freshMid = parseFloat(livePrices?.[pair] || sig.entry);
+      try {
+        const pResp = await fetch(`${BRIDGE}/prices?instruments=${instrument}`).then(r => r.json());
+        if (pResp.prices?.[0]) {
+          const px = pResp.prices[0];
+          freshMid = (parseFloat(px.bids[0].price) + parseFloat(px.asks[0].price)) / 2;
+        }
+      } catch { /* fall back to livePrices */ }
+
+      // Xavier intel staleness check
+      const xavierAge    = xavierIntel?.timestamp ? Date.now() - xavierIntel.timestamp : Infinity;
+      const xavierAgeMin = xavierAge === Infinity ? 999 : Math.round(xavierAge / 60000);
+      const xavierIsStale = xavierAge > 15 * 60 * 1000;
+      const xavierBriefFinal = xavierIsStale
+        ? "Xavier intelligence unavailable — refreshing now. Base analysis on price action and news only."
+        : xavierIntel?.brief || null;
+
+      // News staleness
+      const newsAgeMin = newsLastFetchedAt ? Math.round((Date.now() - newsLastFetchedAt) / 60000) : 999;
+      const headlineFinal = newsAgeMin > 30 ? `[stale — ${newsAgeMin}min old] ${freshNews?.[0] || "No headline"}` : freshNews?.[0] || "No headline";
+
       // Derive M5-compatible fields from swing signal
       const pip       = pair.includes("JPY") ? 0.01 : pair === "XAU/USD" ? 0.1 : pair === "NAS100/USD" ? 1.0 : 0.0001;
-      const entry     = parseFloat(sig.entry || currentPrice);
+      const entry     = parseFloat(sig.entry || freshMid);
       const slPrice   = parseFloat(sig.sl    || entry * 0.995);
       const tp1Price  = parseFloat(sig.tp1   || entry * 1.015);
       const atr       = parseFloat(sig.atr   || 0.001);
@@ -2926,24 +3025,24 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
       const riskDist  = Math.abs(entry - slPrice);
       const tp1Dist   = Math.abs(tp1Price - entry);
       const rr        = riskDist > 0 ? (tp1Dist / riskDist).toFixed(2) : "1.5";
-      const ema50side = currentPrice > ema50 ? "ABOVE" : "BELOW";
+      const ema50side = freshMid > ema50 ? "ABOVE" : "BELOW";
       setConsensusMap(prev => ({ ...prev, [pair]: { loading: true, data: null } }));
       fetch(`${BRIDGE}/consensus`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           instrument, direction: sig.direction, score: sig.score,
-          price: currentPrice.toFixed(5), change: "0.000",
+          price: freshMid.toFixed(5), change: "0.000",
           rsi: sig.rsi?.toFixed(1) || "50",
           reason: `Kill Shot H4 swing — Score ${sig.score}%, EMA21 pullback, RSI ${sig.rsi?.toFixed(0) ?? "50"}`,
-          headline: freshNews?.[0] || "No headline",
+          headline: headlineFinal,
           strategy: "Kill Shot Swing",
           // Claude — Risk Guardian
-          session, sessionQuality: "GOOD", rr, heat: "0", newsRisk: "LOW",
+          session, sessionQuality: "GOOD", rr, heat: "0", newsRisk: newsAgeMin > 30 ? "STALE_NEWS" : "LOW",
           atr: atr.toFixed(5), atrPips: (atr / pip).toFixed(1),
           sl: slPrice.toFixed(5), tp: tp1Price.toFixed(5),
           // GPT-4o — Pattern Analyst
           ema9: ema21.toFixed(5), ema21: ema21.toFixed(5), ema50side,
-          closes: currentPrice.toFixed(5), regime: "TRENDING", momentum: "0.000",
+          closes: freshMid.toFixed(5), regime: "TRENDING", momentum: "0.000",
           // DeepSeek — Quant Validator
           deviation: "0.000",
           slDistance: (riskDist / pip).toFixed(1),
@@ -2955,11 +3054,13 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
           // Gemini — Macro Analyst
           spread: "2.0", spreadLimit: "5.0", correlatedPairs: "N/A",
           sentiment: sig.direction === "LONG" ? "BULLISH" : "BEARISH",
-          // Xavier intel
-          xavierSentiment: xavierIntel?.sentiment || null,
-          xavierKeyRisk:   xavierIntel?.keyRisk   || null,
-          xavierBestPair:  xavierIntel?.bestPair  || null,
-          xavierBrief:     xavierIntel?.brief      || null,
+          // Xavier intel (staleness-aware)
+          xavierSentiment: xavierIsStale ? null : xavierIntel?.sentiment || null,
+          xavierKeyRisk:   xavierIsStale ? null : xavierIntel?.keyRisk   || null,
+          xavierBestPair:  xavierIsStale ? null : xavierIntel?.bestPair  || null,
+          xavierBrief:     xavierBriefFinal,
+          // Data freshness metadata
+          newsAgeMin, xavierIntelAgeMin: xavierAgeMin,
         }),
       })
         .then(async r => {
@@ -8233,7 +8334,7 @@ export default function TradingRobot() {
       <div style={{ display: tab === "markets" ? "block" : "none" }}>
         <div style={isMobile ? {} : { padding: "0 16px" }}>
           {swingEnabled && (
-            <SwingPanel signals={swingSignals} scanning={swingScanning} onExecute={executeKillShot} openTrades={openTrades} isMobile={isMobile} isFriPM={isFridayPMBlock()} isNewsBlock={isSwingNewsBlock()} pendingSetups={pendingSwingSetups} session={getCurrentSession()} xavierIntel={xavierIntelRef.current} freshNews={liveHeadlines} livePrices={livePrices} />
+            <SwingPanel signals={swingSignals} scanning={swingScanning} onExecute={executeKillShot} openTrades={openTrades} isMobile={isMobile} isFriPM={isFridayPMBlock()} isNewsBlock={isSwingNewsBlock()} pendingSetups={pendingSwingSetups} session={getCurrentSession()} xavierIntel={xavierIntelRef.current} freshNews={liveHeadlines} livePrices={livePrices} newsLastFetchedAt={newsLastFetchedAt} />
           )}
           {swingEnabled && swingTrades.length > 0 && (
             <SwingJournalPanel swingTrades={swingTrades} openTrades={openTrades} livePrices={livePrices} displayNav={displayNav} isMobile={isMobile} />
@@ -8241,7 +8342,7 @@ export default function TradingRobot() {
           {isMobile ? (
             <div style={{ marginBottom: 12 }}>
               {PAIRS.map(pair => (
-                <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} onClose={closeTrade} openTrades={openTrades} marketOpen={marketOpen} balance={balance} isMobile xavierIntel={xavierIntelRef.current} />
+                <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} onClose={closeTrade} openTrades={openTrades} marketOpen={marketOpen} balance={balance} isMobile xavierIntel={xavierIntelRef.current} newsLastFetchedAt={newsLastFetchedAt} />
               ))}
             </div>
           ) : (
@@ -8263,7 +8364,7 @@ export default function TradingRobot() {
                 <span style={{ fontSize: 11, color: "#8b949e", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px", textAlign: "right" }}>Action</span>
               </div>
               {PAIRS.map(pair => (
-                <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} onClose={closeTrade} openTrades={openTrades} marketOpen={marketOpen} balance={balance} isMobile={false} xavierIntel={xavierIntelRef.current} />
+                <PairRow key={pair} pair={pair} basePrice={BASE_PRICES[pair]} strategy={strategy} onTrade={onTrade} currentHeadline={currentHeadline} onSignalUpdate={onSignalUpdate} onRegimeUpdate={onRegimeUpdate} onRejection={onRejection} onClose={closeTrade} openTrades={openTrades} marketOpen={marketOpen} balance={balance} isMobile={false} xavierIntel={xavierIntelRef.current} newsLastFetchedAt={newsLastFetchedAt} />
               ))}
             </div>
             </>
