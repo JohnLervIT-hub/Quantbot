@@ -27,17 +27,17 @@ These functions/sections are battle-tested and must never be modified:
 ### Rule 1 — Session/Strategy Map
 ```
 XAVIER_RULES = {
-  TOKYO:  { strategy: "Mean Revert",  pairs: ["USD/JPY","AUD/USD"],                      minScore: 70 },
-  SYDNEY: { strategy: "Breakout",     pairs: ["AUD/USD","NZD/USD"],                      minScore: 70 },
-  LONDON: { strategy: "Trend Follow", pairs: ["EUR/USD","GBP/USD","XAU/USD"],             minScore: 70 },
-  PRIME:  { strategy: "Trend Follow", pairs: ["EUR/USD","GBP/USD","USD/JPY","XAU/USD"],   minScore: 70 },
-  NY:     { strategy: "Momentum",     pairs: ["EUR/USD","USD/CAD","USD/JPY"],             minScore: 70 },
+  TOKYO:  { strategy: "Mean Revert",  pairs: ["USD/JPY","AUD/USD"],                      minScore: 65 },
+  SYDNEY: { strategy: "Breakout",     pairs: ["AUD/USD","NZD/USD"],                      minScore: 65 },
+  LONDON: { strategy: "Trend Follow", pairs: ["EUR/USD","GBP/USD","XAU/USD"],             minScore: 65 },
+  PRIME:  { strategy: "Trend Follow", pairs: ["EUR/USD","GBP/USD","USD/JPY","XAU/USD"],   minScore: 65 },
+  NY:     { strategy: "Momentum",     pairs: ["EUR/USD","USD/CAD","USD/JPY"],             minScore: 65 },
   AVOID:  { strategy: null,           pairs: [],                                          minScore: 999 },
 }
 ```
 
-### Rule 2 — Signal Threshold: 70%
-- runGatekeepers() blocks any signal with score < 70
+### Rule 2 — Signal Threshold: 65%
+- runGatekeepers() blocks any signal with score < 65
 
 ### Rule 3 — Max 2 Open Trades
 - runGatekeepers() rejects if openTrades.length >= 2
@@ -52,7 +52,7 @@ XAVIER_RULES = {
 - 1.5% risk per trade
 - Units: 1000 LONG, -1000 SHORT
 - Circuit breaker at 4R heat (was 6R)
-- Signal threshold: 70% (was 65%)
+- Signal threshold: 65%
 - Consensus: 3/4 models required
 
 ### SAFE TO MODIFY

@@ -543,13 +543,13 @@ function runGatekeepers(history, signal, openTrades, pair, strategy = "") {
     return { passed: false, rejections };
   }
 
-  // 1. Score ≥ 70
-  if (signal.score < 70) {
+  // 1. Score ≥ 65
+  if (signal.score < 65) {
     rejections.push({
       condition: "Score threshold",
       actual: `${signal.score}%`,
-      threshold: "70%",
-      reason: `Only ${signal.score}% confidence — I need 70% before I'll touch this.`,
+      threshold: "65%",
+      reason: `Only ${signal.score}% confidence — I need 65%`,
     });
   }
 
@@ -2285,7 +2285,7 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
                   </div>
                   <div style={{ fontSize: 10, color: "#484f58", marginBottom: 5, fontFamily: FONT_MONO }}>{signal.strategy || "Mean Revert"}</div>
                   <div style={{ height: 3, background: "#21262d", borderRadius: 2, overflow: "hidden", marginBottom: 8 }}>
-                    <div style={{ height: "100%", width: `${signal.score}%`, background: signal.score >= 75 ? "#3fb950" : signal.score >= 70 ? "#d29922" : "#f85149", borderRadius: 2 }} />
+                    <div style={{ height: "100%", width: `${signal.score}%`, background: signal.score >= 75 ? "#3fb950" : signal.score >= 65 ? "#d29922" : "#f85149", borderRadius: 2 }} />
                   </div>
                   {signal.reason?.slice(0, 3).map((r, i) => (
                     <div key={i} style={{ fontSize: 10, color: "#8b949e", marginBottom: 2 }}>· {r}</div>
@@ -2314,7 +2314,7 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
                 <div style={{ background: "#0d1117", padding: "12px 14px" }}>
                   <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Execution</div>
                   {[
-                    { label: "Score ≥ 70%", ok: signal.score >= 70 },
+                    { label: "Score ≥ 65%", ok: signal.score >= 65 },
                     { label: "R:R ≥ 2.0",   ok: true },
                     { label: "Session OK",   ok: chartSessionOk },
                     { label: "Spread OK",    ok: chartSpreadOk },
@@ -8009,8 +8009,8 @@ export default function TradingRobot() {
   const onSignalUpdate = useCallback((pair, data) => {
     if (data?.signal) {
       signalDataRef.current[pair] = { ...data, timestamp: Date.now() };
-      // Sound + toast for signals ≥ 70%, throttled 5 min per pair
-      if (data.signal.score >= 70) {
+      // Sound + toast for signals ≥ 65%, throttled 5 min per pair
+      if (data.signal.score >= 65) {
         const lastSnd = lastSignalSoundRef.current[pair] || 0;
         if (Date.now() - lastSnd > 300_000) {
           lastSignalSoundRef.current[pair] = Date.now();
