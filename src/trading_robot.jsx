@@ -1459,7 +1459,7 @@ function IntelCard({ label, value, sub, color = "#8b949e", bgColor, borderColor,
   );
 }
 
-function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balance, currentHeadline, isMobile, session = "AVOID", strategy = "Mean Revert", openTrades = [], signalMap = {}, onIntelUpdate }) {
+function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balance, currentHeadline, isMobile, session = "AVOID", strategy = "Mean Revert", openTrades = [], signalMap = {}, onIntelUpdate, swingSignals = {}, swingTrades = [], swingEnabled = false }) {
   const [briefLoading, setBriefLoading] = useState(false);
   const [metrics, setMetrics] = useState(() => { try { return JSON.parse(localStorage.getItem("xavier_intel")) || null; } catch { return null; } });
   const [question, setQuestion] = useState("");
@@ -1499,7 +1499,28 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
   const buildSystemPrompt = (freshPrices) => {
     const priceSource = freshPrices || prices;
     const liveContext = `LIVE OANDA PRICES RIGHT NOW (as of ${new Date().toISOString()}):\n${Object.entries(priceSource).map(([pair, price]) => `${pair}: ${parseFloat(price).toFixed(priceDecimals(pair))}`).join("\n")}\nThese are real-time prices fetched directly from OANDA. Use these in all your analysis. Ignore any cached or training-data prices.`;
-    return `You are Xavier, a seasoned forex prop trader based in Calgary. Session: ${session}. Strategy: ${strategy}. Portfolio heat: ${heat}R. Open trades: ${openCount}. Active signals: ${signalPairs}. Current headline: "${currentHeadline}". Talk like a human — direct, confident, occasionally dry. Contractions always. No bullet points, no corporate phrasing. Max 80 words.\n\n${liveContext}`;
+
+    let swingBlock = "";
+    if (swingEnabled) {
+      const setups = Object.entries(swingSignals)
+        .filter(([, s]) => s && s.score >= 75)
+        .map(([pair, s]) => `${pair}: ${s.direction} ${s.score}% — READY — Entry: ${swingFmt(pair, s.entry)} SL: ${swingFmt(pair, s.sl)} TP1: ${swingFmt(pair, s.tp1)}`);
+
+      const activeSwings = swingTrades
+        .filter(t => !t.closed)
+        .map(t => {
+          const daysHeld = Math.floor((Date.now() - t.openedAt) / 86400000);
+          const currentPrice = parseFloat(priceSource[t.pair] || t.entry);
+          const slDist = Math.abs(t.entry - t.sl);
+          const pnlDist = t.direction === "LONG" ? currentPrice - t.entry : t.entry - currentPrice;
+          const currentR = slDist > 0 ? (pnlDist / slDist).toFixed(1) : "0.0";
+          return `${t.pair} ${t.direction} — opened ${daysHeld}d ago — current R: ${currentR}R`;
+        });
+
+      swingBlock = `\n\nKILL SHOT SWING SETUPS:\n${setups.length > 0 ? setups.join("\n") : "No qualifying setups right now."}\n\nACTIVE SWING TRADES:\n${activeSwings.length > 0 ? activeSwings.join("\n") : "No open swing trades."}\n\nYou are aware of both M5 intraday trades AND H4 Kill Shot swing trades. When discussing setups, reference Kill Shot opportunities and active swing positions. These are high-conviction multi-day trades targeting 3–5R.`;
+    }
+
+    return `You are Xavier, a seasoned forex prop trader based in Calgary. Session: ${session}. Strategy: ${strategy}. Portfolio heat: ${heat}R. Open trades: ${openCount}. Active signals: ${signalPairs}. Current headline: "${currentHeadline}". Talk like a human — direct, confident, occasionally dry. Contractions always. No bullet points, no corporate phrasing. Max 80 words.\n\n${liveContext}${swingBlock}`;
   };
 
   const runAnalysis = async () => {
@@ -7961,7 +7982,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "ai" ? "block" : "none" }}>
-        <AIAnalystTab isVisible={tab === "ai"} headlines={liveHeadlines} newsLastFetchedAt={newsLastFetchedAt} prices={livePrices} trades={trades} balance={balance} currentHeadline={currentHeadline} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} signalMap={signalMap} onIntelUpdate={(intel) => { xavierIntelRef.current = intel; }} />
+        <AIAnalystTab isVisible={tab === "ai"} headlines={liveHeadlines} newsLastFetchedAt={newsLastFetchedAt} prices={livePrices} trades={trades} balance={balance} currentHeadline={currentHeadline} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} signalMap={signalMap} onIntelUpdate={(intel) => { xavierIntelRef.current = intel; }} swingSignals={swingSignals} swingTrades={swingTrades} swingEnabled={swingEnabled} />
       </div>
 
       <div style={{ display: tab === "knowledge" ? "block" : "none", padding: "0 16px", paddingBottom: 16 }}>
