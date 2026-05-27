@@ -2026,9 +2026,10 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
   const nextSession    = (() => {
     const nowM = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
     const defs = [
-      { name: "London",   startH: 7,  color: "#8B5CF6" },
-      { name: "New York", startH: 13, color: "#1D9E75" },
-      { name: "Tokyo",    startH: 0,  color: "#F97316" },
+      { name: "Tokyo",    startH: 4,  color: "#F97316" },
+      { name: "London",   startH: 8,  color: "#8B5CF6" },
+      { name: "Prime",    startH: 13, color: "#3fb950" },
+      { name: "New York", startH: 17, color: "#1D9E75" },
       { name: "Sydney",   startH: 22, color: "#0EA5E9" },
     ];
     let best = null, minD = Infinity;
