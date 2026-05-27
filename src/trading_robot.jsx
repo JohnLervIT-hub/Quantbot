@@ -2897,9 +2897,12 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
     run();
   }, []); // eslint-disable-line
 
-  const confirms = consensus?.votes?.confirm ?? 0;
-  const total    = consensus?.models?.length ?? 4;
-  const accent   = confirms >= 3 ? "#F97316" : confirms === 2 ? "#d29922" : "#f85149";
+  const confirms       = consensus?.votes?.confirm ?? 0;
+  const total          = consensus?.models?.length ?? 4;
+  const executeAllowed = consensus?.executeAllowed ?? false;
+  const claudeOk       = consensus?.claudeConfirmed ?? (consensus?.models?.[0]?.verdict === "CONFIRM");
+  const otherOk        = consensus?.models?.slice(1).filter(m => m.verdict === "CONFIRM") ?? [];
+  const accent         = executeAllowed ? "#F97316" : claudeOk ? "#d29922" : "#f85149";
   const MODEL_PLACEHOLDERS = ["Claude Sonnet", "GPT-4o", "DeepSeek", "Gemini 2.5 Flash"];
 
   return (
@@ -2909,9 +2912,11 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
         <div style={{ fontSize: 11, fontWeight: 700, color: accent, letterSpacing: "0.04em" }}>
           {loading
             ? "⚔️ KILL SHOT CONSENSUS — consulting models…"
-            : confirms >= 3
-              ? `⚔️ ${confirms}/${total} CONFIRM — Kill Shot cleared`
-              : `⚔️ ${confirms}/${total} — BLOCKED`}
+            : executeAllowed
+              ? `⚔️ Kill Shot cleared — Claude + ${otherOk[0]?.name?.split(" ")[0] ?? "1 model"} confirmed`
+              : !claudeOk
+                ? "⚔️ BLOCKED — Claude rejected"
+                : "⚔️ BLOCKED — Claude confirmed, need 1 supporting model"}
         </div>
         {!loading && consensus && (
           <span style={{ fontSize: 10, fontWeight: 600, color: accent }}>{consensus.confidence}</span>
@@ -3126,7 +3131,9 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
         const cs = consensusMap[pair]; // { loading, data }
         const confirms = cs?.data?.votes?.confirm ?? 0;
         const executeAllowed = cs?.data?.executeAllowed ?? false;
-        const resultColor = confirms >= 3 ? "#3fb950" : confirms === 2 ? "#d29922" : "#f85149";
+        const csClaudeOk = cs?.data?.claudeConfirmed ?? (cs?.data?.models?.[0]?.verdict === "CONFIRM");
+        const csOtherOk  = cs?.data?.models?.slice(1).filter(m => m.verdict === "CONFIRM") ?? [];
+        const resultColor = executeAllowed ? "#3fb950" : csClaudeOk ? "#d29922" : "#f85149";
 
         return (
           <div key={pair} style={{ padding: "12px 14px", borderBottom: "1px solid #21262d" }}>
@@ -3200,7 +3207,11 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
                     );
                   })}
                   <div style={{ borderTop: "1px solid #21262d", marginTop: 7, paddingTop: 6, fontSize: 10, fontWeight: 700, color: resultColor, letterSpacing: "0.03em" }}>
-                    Result: {confirms}/4 — {executeAllowed ? "EXECUTING" : "BLOCKED"}
+                    {executeAllowed
+                      ? `Result: ${confirms}/4 — EXECUTING (Claude + ${csOtherOk[0]?.name?.split(" ")[0] ?? "1 model"} confirmed)`
+                      : !csClaudeOk
+                        ? "Result: BLOCKED — Claude rejected"
+                        : "Result: BLOCKED — Claude confirmed, need 1 supporting model"}
                   </div>
                 </>
               ) : !cs ? (
@@ -7965,7 +7976,7 @@ export default function TradingRobot() {
             }),
           });
           const cd = await cr.json();
-          if (!cd.executeAllowed || (cd.votes?.confirm ?? 0) < 3) continue; // retry next poll
+          if (!cd.executeAllowed) continue; // retry next poll
         } catch { continue; } // consensus unreachable — don't fire
         try {
           const r = await fetch(`${BRIDGE}/swing/order`, {

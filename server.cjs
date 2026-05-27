@@ -894,18 +894,28 @@ app.post('/swing-consensus', async (req, res) => {
       return { name: NAMES[i], verdict: 'REJECT', reason };
     });
     const confirms = models.filter(m => m.verdict === 'CONFIRM').length;
+    // Weighted rule: Claude MUST confirm AND at least 1 other model confirms
+    const claudeConfirmed = models[0]?.verdict === 'CONFIRM';
+    const otherConfirmed  = models.slice(1).filter(m => m.verdict === 'CONFIRM');
+    const executeAllowed  = claudeConfirmed && otherConfirmed.length >= 1;
     const voteLog = models.map(m => {
       const tag  = MODEL_TAG[m.name] || m.name.toUpperCase();
       const icon = m.verdict === 'CONFIRM' ? '✓' : '✗';
       return `[${tag}] ${m.verdict} — ${m.reason} ${icon}`;
     });
-    voteLog.push(`Result: ${confirms}/4 CONFIRM → ${confirms >= 3 ? 'KILL SHOT EXECUTE' : 'BLOCKED'}`);
+    const resultLine = executeAllowed
+      ? `Result: Claude + ${otherConfirmed[0].name.split(' ')[0]} confirmed → KILL SHOT EXECUTE`
+      : !claudeConfirmed
+        ? `Result: BLOCKED — Claude rejected`
+        : `Result: BLOCKED — Claude confirmed but no supporting model`;
+    voteLog.push(resultLine);
     res.json({
       votes: { confirm: confirms, reject: models.length - confirms },
-      consensus: confirms >= 3 ? 'CONFIRM' : 'REJECT',
+      consensus: executeAllowed ? 'CONFIRM' : 'REJECT',
       confidence: `${Math.round((confirms / models.length) * 100)}%`,
       models, voteLog,
-      executeAllowed: confirms >= 3,
+      executeAllowed,
+      claudeConfirmed,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
