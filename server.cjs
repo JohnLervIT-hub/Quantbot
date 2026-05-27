@@ -324,16 +324,38 @@ const XAVIER_RULES = {
   AVOID:  { strategy: null,           pairs: [],                                           minScore: 999 },
 };
 
-// Validated pairs for M5 server auto-execution — DO NOT ADD unvalidated pairs
+// Validated forex pairs for M5 auto-execution — XAG/BCO/WTICO permanently removed
 const SERVER_PAIRS = new Set([
   'EUR_USD', 'GBP_USD', 'USD_JPY',
   'AUD_USD', 'USD_CAD', 'XAU_USD',
+  'EUR_GBP', 'NZD_USD',
 ]);
 
+// Index pairs — home session only, 75%+ score required (tighter spreads, higher conviction)
+const INDEX_PAIRS = new Set([
+  'SPX500_USD', 'NAS100_USD',  // NY only
+  'JP225_USD',                  // Tokyo only
+  'UK100_GBP',                  // London only
+  'AU200_AUD',                  // Sydney only
+]);
+
+const INDEX_HOME_SESSION = {
+  SPX500_USD: 'NY',     NAS100_USD: 'NY',
+  JP225_USD:  'TOKYO',
+  UK100_GBP:  'LONDON',
+  AU200_AUD:  'SYDNEY',
+};
+
+function isHomeSession(pair, session) {
+  return INDEX_HOME_SESSION[pair] === session;
+}
+
 const SERVER_PIP_SIZE = {
-  EUR_USD: 0.0001, GBP_USD: 0.0001, USD_JPY: 0.01,
-  AUD_USD: 0.0001, USD_CAD: 0.0001, NZD_USD: 0.0001,
-  XAU_USD: 0.01,   SPX500_USD: 0.1,
+  EUR_USD: 0.0001, GBP_USD: 0.0001, USD_JPY:    0.01,
+  AUD_USD: 0.0001, USD_CAD: 0.0001, NZD_USD:  0.0001,
+  EUR_GBP: 0.0001, XAU_USD: 0.01,
+  SPX500_USD: 1.0, NAS100_USD: 1.0, JP225_USD:   1.0,
+  UK100_GBP:  1.0, AU200_AUD:  1.0,
 };
 
 // ─── SHARED LLM HELPERS ──────────────────────────────────────────────────────
@@ -1163,7 +1185,9 @@ async function serverAutoTrade() {
   }
 
   const { strategy } = rule;
-  const pairs = rule.pairs.filter(p => SERVER_PAIRS.has(p));
+  const forexPairs = rule.pairs.filter(p => SERVER_PAIRS.has(p));
+  const indexPairs = [...INDEX_PAIRS].filter(p => isHomeSession(p, session));
+  const pairs      = [...forexPairs, ...indexPairs];
   if (pairs.length === 0) return;
   const ts = new Date().toISOString();
 
@@ -1207,6 +1231,9 @@ async function serverAutoTrade() {
       console.log(`[auto] ${instrument} — no ${strategy} signal`);
       continue;
     }
+
+    // Indices: enforce 75% score threshold (higher conviction required)
+    if (INDEX_PAIRS.has(instrument) && signal.score < 75) continue;
 
     console.log(`[auto] ${instrument} ${signal.direction} ${signal.score}% — ${strategy} — gatekeeping`);
 
