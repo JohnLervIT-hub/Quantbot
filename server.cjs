@@ -528,11 +528,14 @@ function buildGeminiSwingPrompt(p) {
   const retailBlock = p.retailSentiment
     ? `\nRetail positioning (OANDA — contrarian): ${p.retailSentiment.longPct}% LONG / ${p.retailSentiment.shortPct}% SHORT — institutional read: ${p.retailSentiment.contrarian}`
     : '';
+  const freshnessBlock = (p.newsAgeMin !== undefined || p.xavierIntelAgeMin !== undefined)
+    ? `\nData freshness: News ${p.newsAgeMin ?? '?'} min old | Xavier intel ${p.xavierIntelAgeMin ?? '?'} min old — factor staleness into your analysis`
+    : '';
   return `You are evaluating macro conditions for a multi-day swing trade.
 
 Trade: ${p.instrument} ${p.direction}
 Hold period: up to 5 days | Session: ${p.session || 'UNKNOWN'}
-H4 Score: ${p.score}%${xavierBlock}${newsBlock}${retailBlock}
+H4 Score: ${p.score}%${xavierBlock}${newsBlock}${retailBlock}${freshnessBlock}
 
 Evaluate:
 1. Are macro conditions favorable for ${p.direction} on ${p.instrument} over 5 days?

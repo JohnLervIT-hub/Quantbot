@@ -2818,48 +2818,38 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
         ? "Xavier intelligence unavailable — refreshing now. Base analysis on price action and news only."
         : xavierIntel?.brief || null;
 
-      const pip      = pair.includes("JPY") ? 0.01 : pair === "XAU/USD" ? 0.1 : pair === "NAS100/USD" ? 1.0 : 0.0001;
       const entry    = parseFloat(sig.entry || freshMid);
       const slPrice  = parseFloat(sig.sl    || entry * 0.995);
       const tp1Price = parseFloat(sig.tp1   || entry * 1.015);
+      const tp2Price = parseFloat(sig.tp2   || entry * 1.030);
+      const tp3Price = parseFloat(sig.tp3   || entry * 1.050);
       const atr      = parseFloat(sig.atr   || 0.001);
       const ema21v   = parseFloat(sig.ema21  || entry);
       const ema50v   = parseFloat(sig.ema50  || entry);
-      const riskDist = Math.abs(entry - slPrice);
-      const tp1Dist  = Math.abs(tp1Price - entry);
-      const rr       = riskDist > 0 ? (tp1Dist / riskDist).toFixed(2) : "1.5";
-      const ema50side = freshMid > ema50v ? "ABOVE" : "BELOW";
 
       try {
-        const r = await fetch(`${BRIDGE}/consensus`, {
+        const r = await fetch(`${BRIDGE}/swing-consensus`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             instrument, direction: sig.direction, score: sig.score,
-            price: freshMid.toFixed(5), change: "0.000",
-            rsi: sig.rsi?.toFixed(1) || "50",
-            reason: `Kill Shot H4 swing — Score ${sig.score}%, EMA21 pullback, RSI ${sig.rsi?.toFixed(0) ?? "50"}`,
-            headline: freshNews?.[0] || "No headline",
-            strategy: "Kill Shot Swing",
-            session, sessionQuality: "GOOD", rr, heat: "0", newsRisk: "LOW",
-            atr: atr.toFixed(5), atrPips: (atr / pip).toFixed(1),
-            sl: slPrice.toFixed(5), tp: tp1Price.toFixed(5),
-            ema9: ema21v.toFixed(5), ema21: ema21v.toFixed(5), ema50side,
-            closes: freshMid.toFixed(5), regime: "TRENDING", momentum: "0.000",
-            deviation: "0.000",
-            slDistance: (riskDist / pip).toFixed(1),
-            tpDistance: (tp1Dist  / pip).toFixed(1),
-            riskAmount: "750.00", balance: "100000.00",
-            scoreValid: sig.score >= 75 ? "YES" : "NO",
-            rrValid: parseFloat(rr) >= 1.5 ? "YES" : "NO",
-            atrValid: atr > 0.0001 ? "YES" : "NO", sizeValid: "YES",
-            spread: "2.0", spreadLimit: "5.0", correlatedPairs: "N/A",
-            sentiment: sig.direction === "LONG" ? "BULLISH" : "BEARISH",
+            price: freshMid.toFixed(5),
+            entry: entry.toFixed(5),
+            sl:    slPrice.toFixed(5),
+            tp1:   tp1Price.toFixed(5),
+            tp2:   tp2Price.toFixed(5),
+            tp3:   tp3Price.toFixed(5),
+            ema21: ema21v.toFixed(5),
+            ema50: ema50v.toFixed(5),
+            rsi:   sig.rsi?.toFixed(1) || "50",
+            atr:   atr.toFixed(5),
+            session,
+            freshNews: freshNews?.slice(0, 5).join(" | ") || null,
             xavierSentiment: xavierIsStale ? null : xavierIntel?.sentiment || null,
             xavierKeyRisk:   xavierIsStale ? null : xavierIntel?.keyRisk   || null,
             xavierBestPair:  xavierIsStale ? null : xavierIntel?.bestPair  || null,
             xavierBrief:     xavierBriefFinal,
-            newsAgeMin: 0, xavierIntelAgeMin: xavierAgeMin,
+            newsAgeMin, xavierIntelAgeMin: xavierAgeMin,
           }),
         });
         const ct = r.headers.get("content-type");
@@ -3012,48 +3002,36 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
 
       // News staleness
       const newsAgeMin = newsLastFetchedAt ? Math.round((Date.now() - newsLastFetchedAt) / 60000) : 999;
-      const headlineFinal = newsAgeMin > 30 ? `[stale — ${newsAgeMin}min old] ${freshNews?.[0] || "No headline"}` : freshNews?.[0] || "No headline";
 
-      // Derive M5-compatible fields from swing signal
-      const pip       = pair.includes("JPY") ? 0.01 : pair === "XAU/USD" ? 0.1 : pair === "NAS100/USD" ? 1.0 : 0.0001;
-      const entry     = parseFloat(sig.entry || freshMid);
-      const slPrice   = parseFloat(sig.sl    || entry * 0.995);
-      const tp1Price  = parseFloat(sig.tp1   || entry * 1.015);
-      const atr       = parseFloat(sig.atr   || 0.001);
-      const ema21     = parseFloat(sig.ema21  || entry);
-      const ema50     = parseFloat(sig.ema50  || entry);
-      const riskDist  = Math.abs(entry - slPrice);
-      const tp1Dist   = Math.abs(tp1Price - entry);
-      const rr        = riskDist > 0 ? (tp1Dist / riskDist).toFixed(2) : "1.5";
-      const ema50side = freshMid > ema50 ? "ABOVE" : "BELOW";
+      // Swing signal fields
+      const entry    = parseFloat(sig.entry || freshMid);
+      const slPrice  = parseFloat(sig.sl    || entry * 0.995);
+      const tp1Price = parseFloat(sig.tp1   || entry * 1.015);
+      const tp2Price = parseFloat(sig.tp2   || entry * 1.030);
+      const tp3Price = parseFloat(sig.tp3   || entry * 1.050);
+      const atr      = parseFloat(sig.atr   || 0.001);
+      const ema21v   = parseFloat(sig.ema21  || entry);
+      const ema50v   = parseFloat(sig.ema50  || entry);
+      const freshNewsStr = newsAgeMin > 30
+        ? `[stale — ${newsAgeMin}min old] ${freshNews?.slice(0, 3).join(" | ") || "No headlines"}`
+        : freshNews?.slice(0, 5).join(" | ") || null;
       setConsensusMap(prev => ({ ...prev, [pair]: { loading: true, data: null } }));
-      fetch(`${BRIDGE}/consensus`, {
+      fetch(`${BRIDGE}/swing-consensus`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           instrument, direction: sig.direction, score: sig.score,
-          price: freshMid.toFixed(5), change: "0.000",
-          rsi: sig.rsi?.toFixed(1) || "50",
-          reason: `Kill Shot H4 swing — Score ${sig.score}%, EMA21 pullback, RSI ${sig.rsi?.toFixed(0) ?? "50"}`,
-          headline: headlineFinal,
-          strategy: "Kill Shot Swing",
-          // Claude — Risk Guardian
-          session, sessionQuality: "GOOD", rr, heat: "0", newsRisk: newsAgeMin > 30 ? "STALE_NEWS" : "LOW",
-          atr: atr.toFixed(5), atrPips: (atr / pip).toFixed(1),
-          sl: slPrice.toFixed(5), tp: tp1Price.toFixed(5),
-          // GPT-4o — Pattern Analyst
-          ema9: ema21.toFixed(5), ema21: ema21.toFixed(5), ema50side,
-          closes: freshMid.toFixed(5), regime: "TRENDING", momentum: "0.000",
-          // DeepSeek — Quant Validator
-          deviation: "0.000",
-          slDistance: (riskDist / pip).toFixed(1),
-          tpDistance: (tp1Dist  / pip).toFixed(1),
-          riskAmount: "750.00", balance: "100000.00",
-          scoreValid: sig.score >= 75 ? "YES" : "NO",
-          rrValid: parseFloat(rr) >= 1.5 ? "YES" : "NO",
-          atrValid: atr > 0.0001 ? "YES" : "NO", sizeValid: "YES",
-          // Gemini — Macro Analyst
-          spread: "2.0", spreadLimit: "5.0", correlatedPairs: "N/A",
-          sentiment: sig.direction === "LONG" ? "BULLISH" : "BEARISH",
+          price: freshMid.toFixed(5),
+          entry: entry.toFixed(5),
+          sl:    slPrice.toFixed(5),
+          tp1:   tp1Price.toFixed(5),
+          tp2:   tp2Price.toFixed(5),
+          tp3:   tp3Price.toFixed(5),
+          ema21: ema21v.toFixed(5),
+          ema50: ema50v.toFixed(5),
+          rsi:   sig.rsi?.toFixed(1) || "50",
+          atr:   atr.toFixed(5),
+          session,
+          freshNews: freshNewsStr,
           // Xavier intel (staleness-aware)
           xavierSentiment: xavierIsStale ? null : xavierIntel?.sentiment || null,
           xavierKeyRisk:   xavierIsStale ? null : xavierIntel?.keyRisk   || null,
