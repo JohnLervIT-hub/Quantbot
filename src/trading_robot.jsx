@@ -5756,12 +5756,39 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
             {Object.entries(xavierOpt.result.rules).map(([sess, rule]) => {
               const STRAT_COLOR = { "Mean Revert": "#1D9E75", "Trend Follow": "#58a6ff", "Breakout": "#F97316", "Momentum": "#8B5CF6", "Range Scalp": "#d29922" };
               const col = STRAT_COLOR[rule.strategy] || "#8b949e";
+              const pairs = rule.pairsDetail || rule.pairs?.map(p => ({ pair: p, trades: null, winRate: null, expectancyR: rule.expectancy })) || [];
               return (
-                <div key={sess} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "0.5px solid #161b22" }}>
-                  <span style={{ fontSize: 9, color: "#484f58", fontFamily: FONT_MONO, minWidth: 56, textTransform: "uppercase" }}>{sess}</span>
-                  <span style={{ fontSize: 10, color: col, fontWeight: 600, minWidth: 90 }}>{rule.strategy}</span>
-                  <span style={{ fontSize: 9, color: "#8b949e", flex: 1 }}>{rule.pairs?.join(", ")}</span>
-                  <span style={{ fontSize: 10, fontFamily: FONT_MONO, color: rule.expectancy >= 0 ? "#3fb950" : "#f85149" }}>{rule.expectancy >= 0 ? "+" : ""}{rule.expectancy}R</span>
+                <div key={sess} style={{ marginBottom: 10, paddingBottom: 10, borderBottom: "0.5px solid #161b22" }}>
+                  {/* Session header */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+                    <span style={{ fontSize: 9, color: "#484f58", fontFamily: FONT_MONO, minWidth: 56, textTransform: "uppercase", letterSpacing: "0.06em" }}>{sess}</span>
+                    <span style={{ fontSize: 10, color: col, fontWeight: 700 }}>{rule.strategy}</span>
+                    <span style={{ fontSize: 10, fontFamily: FONT_MONO, color: rule.expectancy >= 0 ? "#3fb950" : "#f85149", fontWeight: 600, marginLeft: "auto" }}>
+                      {rule.expectancy >= 0 ? "+" : ""}{rule.expectancy}R
+                    </span>
+                  </div>
+                  {/* Per-pair rows */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    {pairs.map(pd => (
+                      <div key={pd.pair} style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 56 }}>
+                        <span style={{ fontSize: 9, color: "#8b949e", fontFamily: FONT_MONO, minWidth: 70 }}>{pd.pair}</span>
+                        {pd.expectancyR !== null && (
+                          <span style={{ fontSize: 9, fontFamily: FONT_MONO, fontWeight: 600, color: pd.expectancyR >= 0.30 ? "#3fb950" : pd.expectancyR >= 0 ? "#d29922" : "#f85149" }}>
+                            {pd.expectancyR >= 0 ? "+" : ""}{pd.expectancyR.toFixed(2)}R
+                          </span>
+                        )}
+                        {pd.trades !== null && (
+                          <span style={{ fontSize: 9, color: "#484f58" }}>{pd.trades} trades</span>
+                        )}
+                        {pd.winRate !== null && (
+                          <span style={{ fontSize: 9, color: "#484f58" }}>{pd.winRate.toFixed(0)}% WR</span>
+                        )}
+                        {pd.trades !== null && pd.trades < 50 && (
+                          <span style={{ fontSize: 8, color: "#d29922", fontWeight: 600 }}>⚠ low sample</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               );
             })}
@@ -7123,7 +7150,7 @@ function useAutonomousBacktest() {
     if (runningRef.current) return;
     runningRef.current = true; cancelRef.current = false;
     setRunning(true); setProgress(0); setDone(0); setLabel("Starting optimization…");
-    const allCombos = []; const pairStats = {}; const candleCounts = {}; let combosDone = 0;
+    const allCombos = []; const rawResults = []; const pairStats = {}; const candleCounts = {}; let combosDone = 0;
     for (const pair of PAIRS) {
       if (cancelRef.current) break;
       setLabel(`Fetching ${pair} (90d M15)…`);
@@ -7152,6 +7179,16 @@ function useAutonomousBacktest() {
           setLabel(`${pair} · ${strat} · ${sess}`);
           const res = await runBtSimulation(closes, candles, strat, SESS_UTC[sess], pair);
           combosDone++; setDone(combosDone); setProgress(Math.round(combosDone / TOTAL * 100));
+          // Save every combo result (raw) — nulls recorded as 0/null for auditability
+          rawResults.push({
+            pair, strategy: strat, session: sess,
+            trades:       res?.trades       ?? 0,
+            winRate:      res?.winRate      ?? null,
+            expectancyR:  res?.expectancyR  ?? null,
+            profitFactor: res?.profitFactor ?? null,
+            maxDD:        res?.maxDD        ?? null,
+            sharpe:       res?.sharpe       ?? null,
+          });
           // Track best metrics independently across all combos for this pair
           if (res) {
             if (!pairStats[pair]) {
@@ -7175,8 +7212,17 @@ function useAutonomousBacktest() {
         const sessR = allCombos.filter(c => c.session === sess).sort((a, b) => b.score - a.score);
         if (sessR.length > 0) {
           const best = sessR[0];
-          const bestPairs = sessR.filter(c => c.strategy === best.strategy).slice(0, 3).map(c => c.pair);
-          rules[sess.toUpperCase()] = { strategy: best.strategy, pairs: bestPairs, expectancy: parseFloat(best.expectancyR.toFixed(2)), score: Math.round(best.score) };
+          const bestPairsDetail = sessR
+            .filter(c => c.strategy === best.strategy)
+            .slice(0, 3)
+            .map(c => ({ pair: c.pair, trades: c.trades, winRate: parseFloat(c.winRate.toFixed(1)), expectancyR: parseFloat(c.expectancyR.toFixed(2)) }));
+          rules[sess.toUpperCase()] = {
+            strategy: best.strategy,
+            pairs: bestPairsDetail.map(p => p.pair),
+            pairsDetail: bestPairsDetail,
+            expectancy: parseFloat(best.expectancyR.toFixed(2)),
+            score: Math.round(best.score),
+          };
         }
       }
       const top3 = [...allCombos].sort((a, b) => b.score - a.score).slice(0, 3);
@@ -7194,6 +7240,7 @@ function useAutonomousBacktest() {
       }
       const newResult = { lastUpdated: Date.now(), totalCombinationsTested: combosDone, rules, top3, validatedPairs, blockedPairs, candleCounts };
       localStorage.setItem(OPT_KEY, JSON.stringify(newResult));
+      localStorage.setItem('xavier_backtest_raw', JSON.stringify(rawResults));
       setResult(newResult);
     }
     setLabel(""); setRunning(false); setProgress(cancelRef.current ? 0 : 100);
