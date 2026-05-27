@@ -4329,13 +4329,45 @@ function AICoachTab({ trades, closedTrades = [], isMobile, session = "AVOID", st
   const [expandedFund, setExpandedFund] = useState(null);
   const [expandedTime, setExpandedTime] = useState(null);
 
-  const heat      = (openTrades.length * 1.5).toFixed(1);
+  const heat = (openTrades.length * 1.5).toFixed(1);
+
+  // ── Performance metrics — real OANDA closed trades + xavier_memory ──────────
+  const perfData = useMemo(() => {
+    // Primary: closedTrades prop (live from OANDA polling)
+    // Backup:  qb_closed_trades in localStorage (survives page refresh)
+    let stored = [];
+    try { stored = JSON.parse(localStorage.getItem('qb_closed_trades') || '[]'); } catch {}
+    const effective = closedTrades.length > 0 ? closedTrades : stored;
+
+    // Xavier memory — adds trades from before this session (e.g. seeded history)
+    let memTrades = [];
+    try { memTrades = JSON.parse(localStorage.getItem('xavier_memory') || '{"trades":[]}').trades || []; } catch {}
+    const closedIds = new Set(effective.map(t => String(t.oandaId || t.id)));
+    const extra = memTrades.filter(t => !closedIds.has(String(t.id)));
+
+    const all = [...effective, ...extra];
+    if (all.length === 0) return { total: 0, wins: 0, winRate: "0.0", avgR: "0.00", bestR: null, worstR: null };
+
+    const wins    = all.filter(t => (t.realizedPL != null ? t.realizedPL : t.outcome === 'WIN' ? 1 : -1) > 0).length;
+    const rVals   = all.map(t => t.rMultiple).filter(r => r != null && !isNaN(r));
+    const avgR    = rVals.length > 0 ? (rVals.reduce((s, r) => s + r, 0) / rVals.length).toFixed(2) : "0.00";
+    const bestR   = rVals.length > 0 ? Math.max(...rVals).toFixed(2) : null;
+    const worstR  = rVals.length > 0 ? Math.min(...rVals).toFixed(2) : null;
+    return {
+      total:   all.length,
+      wins,
+      winRate: ((wins / all.length) * 100).toFixed(1),
+      avgR,
+      bestR,
+      worstR,
+    };
+  }, [closedTrades]);
+
+  // Legacy session metrics (used for coaching context + journal only)
   const totalTrades = trades.length;
-  const wins      = trades.filter(t => (t.pnl || 0) > 0).length;
-  const winRate   = totalTrades > 0 ? Math.round(wins / totalTrades * 100) : 0;
-  const avgR      = totalTrades > 0
-    ? (trades.reduce((s, t) => s + ((t.pnl || 0) > 0 ? Math.abs(t.pnl) / 1.5 : -(Math.abs(t.pnl) / 1.5)), 0) / totalTrades).toFixed(2)
-    : "0.00";
+  const wins        = trades.filter(t => (t.pnl || 0) > 0).length;
+  const winRate     = perfData.winRate;
+  const avgR        = perfData.avgR;
 
   const xavierContext = (() => {
     if (totalTrades === 0) {
@@ -4378,23 +4410,43 @@ function AICoachTab({ trades, closedTrades = [], isMobile, session = "AVOID", st
   return (
     <div style={{ padding: isMobile ? "0 12px" : "0 16px", display: "flex", flexDirection: "column", gap: 18 }}>
 
-      {/* ── SECTION 1: Session Snapshot ── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-        {[
-          { label: "Trades Today", value: totalTrades, suffix: "", color: "#e6edf3", tip: "Number of times Xavier bought or sold a currency pair this session. Each trade risks 1.5% of the account." },
-          { label: "Win Rate",     value: winRate,     suffix: "%", color: winRate >= 50 ? "#3fb950" : winRate > 0 ? "#d29922" : "#8b949e", tip: "Percentage of trades that made money. A 50% win rate is healthy — the edge comes from making more on winners than losers, not from winning every trade." },
-          { label: "Avg R-Multiple", value: avgR,      suffix: "R", color: parseFloat(avgR) > 0 ? "#3fb950" : parseFloat(avgR) < 0 ? "#f85149" : "#8b949e", tip: "Profit measured in units of risk. +1R = made back what you risked. +2R = made double. Xavier targets +0.583R per trade on average across all positions." },
-        ].map(({ label, value, suffix, color, tip }) => (
-          <CoachTooltip key={label} text={tip}>
-            <div style={{ background: "#0d1117", border: "1px solid #21262d", borderRadius: 10, padding: "13px 14px", width: "100%", cursor: "default" }}>
-              <div style={{ fontSize: 22, fontWeight: 700, color, fontFamily: FONT_MONO, lineHeight: 1 }}>
-                {value}<span style={{ fontSize: 12, marginLeft: 2 }}>{suffix}</span>
+      {/* ── SECTION 1: Performance Metrics (real closed OANDA trades) ── */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+          {[
+            { label: "Closed Trades", value: perfData.total, suffix: "", color: "#e6edf3", tip: "Total completed trades recorded from OANDA and Xavier memory. Includes all sessions, not just today." },
+            { label: "Win Rate",      value: winRate,         suffix: "%", color: parseFloat(winRate) >= 50 ? "#3fb950" : parseFloat(winRate) > 0 ? "#d29922" : "#8b949e", tip: "Percentage of closed trades that made money. A 50% win rate is healthy — the edge comes from making more on winners than losers, not from winning every trade." },
+            { label: "Avg R-Multiple", value: avgR,           suffix: "R", color: parseFloat(avgR) > 0 ? "#3fb950" : parseFloat(avgR) < 0 ? "#f85149" : "#8b949e", tip: "Profit measured in units of risk. +1R = made back what you risked. +2R = made double. Calculated from real OANDA realizedPL." },
+          ].map(({ label, value, suffix, color, tip }) => (
+            <CoachTooltip key={label} text={tip}>
+              <div style={{ background: "#0d1117", border: "1px solid #21262d", borderRadius: 10, padding: "13px 14px", width: "100%", cursor: "default" }}>
+                <div style={{ fontSize: 22, fontWeight: 700, color, fontFamily: FONT_MONO, lineHeight: 1 }}>
+                  {value}<span style={{ fontSize: 12, marginLeft: 2 }}>{suffix}</span>
+                </div>
+                <div style={{ fontSize: 11, color: "#8b949e", marginTop: 5 }}>{label}</div>
+                <div style={{ fontSize: 9, color: "#484f58", marginTop: 3, lineHeight: 1.4 }}>Hover for explanation</div>
               </div>
-              <div style={{ fontSize: 11, color: "#8b949e", marginTop: 5 }}>{label}</div>
-              <div style={{ fontSize: 9, color: "#484f58", marginTop: 3, lineHeight: 1.4 }}>Hover for explanation</div>
+            </CoachTooltip>
+          ))}
+        </div>
+
+        {/* Best / Worst R row */}
+        {(perfData.bestR !== null || perfData.worstR !== null) && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div style={{ background: "#0d1117", border: "1px solid #21262d", borderRadius: 10, padding: "10px 14px" }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: "#3fb950", fontFamily: FONT_MONO, lineHeight: 1 }}>
+                {perfData.bestR !== null ? `+${perfData.bestR}` : "—"}<span style={{ fontSize: 11, marginLeft: 2 }}>R</span>
+              </div>
+              <div style={{ fontSize: 11, color: "#8b949e", marginTop: 4 }}>Best Trade</div>
             </div>
-          </CoachTooltip>
-        ))}
+            <div style={{ background: "#0d1117", border: "1px solid #21262d", borderRadius: 10, padding: "10px 14px" }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: parseFloat(perfData.worstR) < 0 ? "#f85149" : "#8b949e", fontFamily: FONT_MONO, lineHeight: 1 }}>
+                {perfData.worstR !== null ? perfData.worstR : "—"}<span style={{ fontSize: 11, marginLeft: 2 }}>R</span>
+              </div>
+              <div style={{ fontSize: 11, color: "#8b949e", marginTop: 4 }}>Worst Trade</div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── SECTION 2: Trade Review + Coaching ── */}
