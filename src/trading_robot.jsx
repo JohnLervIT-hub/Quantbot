@@ -2531,8 +2531,11 @@ function TradeManagementLog({ alerts, onDismiss, isMobile }) {
 }
 
 // ─── SOUND ENGINE ─────────────────────────────────────────────────────────────
+let audioCtxReady = false;
+document.addEventListener('click', () => { audioCtxReady = true; }, { once: true });
+
 function playSound(type, enabled) {
-  if (!enabled) return;
+  if (!enabled || !audioCtxReady) return;
   try {
     const ctx  = new (window.AudioContext || window.webkitAudioContext)();
     const osc  = ctx.createOscillator();
@@ -5424,7 +5427,7 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
           24-Hour Session Map <span style={{ fontSize: 10, color: "#484f58", fontWeight: 400 }}>Calgary / MDT</span>
         </div>
         <div style={{ position: "relative", height: 44, background: "#0d1117", borderRadius: 6, overflow: "hidden", marginBottom: 8 }}>
-          {MDT_SESSIONS.map(s => {
+          {MDT_SESSIONS.map((s, i) => {
             const x1 = (s.start / 24) * 100;
             const x2 = (Math.min(s.end, 24) / 24) * 100;
             const w = x2 - x1;
@@ -5432,7 +5435,7 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
             const isSelected = sessionPopup === s.name;
             return (
               <div
-                key={s.name}
+                key={`session-${s.name}-${i}`}
                 onClick={() => setSessionPopup(isSelected ? null : s.name)}
                 style={{ position: "absolute", left: `${x1}%`, width: `${w}%`, top: 0, height: "100%", background: s.color + (isSelected ? "44" : "28"), borderLeft: `2px solid ${s.color}${isSelected ? "ff" : "77"}`, cursor: "pointer", transition: "background 0.15s" }}
               >

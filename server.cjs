@@ -138,32 +138,22 @@ app.post('/order', async (req, res) => {
 // ─── SWING ORDER — 500 units, explicit SL/TP1 prices ─────────────────────────
 app.post('/swing/order', async (req, res) => {
   const { instrument, units, slPrice, tp1Price } = req.body;
-  console.log('[SWING ORDER RECEIVED]', req.body);
-  console.log('[SWING ORDER FORMATTED]', {
-    sl:  formatPrice(slPrice,  instrument),
-    tp1: formatPrice(tp1Price, instrument),
-  });
   if (!instrument || !units) return res.status(400).json({ error: 'instrument and units required' });
   const direction = Number(units) >= 0 ? 'LONG' : 'SHORT';
-  console.log(`POST /swing/order — ${instrument} ${direction} ${Math.abs(Number(units))} units (SWING)`);
+  console.log(`POST /swing/order — ${instrument} ${direction} ${Math.abs(Number(units))} units`);
   const order = {
     type: 'MARKET', instrument, units: String(units),
     timeInForce: 'FOK', positionFill: 'DEFAULT',
   };
-  if (slPrice) {
-    order.stopLossOnFill = { price: formatPrice(slPrice, instrument), timeInForce: 'GTC' };
-    console.log('[SWING] SL:', order.stopLossOnFill.price);
-  }
-  if (tp1Price) {
-    order.takeProfitOnFill = { price: formatPrice(tp1Price, instrument), timeInForce: 'GTC' };
-    console.log('[SWING] TP1:', order.takeProfitOnFill.price);
-  }
+  if (slPrice)  order.stopLossOnFill   = { price: formatPrice(slPrice,  instrument), timeInForce: 'GTC' };
+  if (tp1Price) order.takeProfitOnFill = { price: formatPrice(tp1Price, instrument), timeInForce: 'GTC' };
   try {
     const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify({ order }) });
     const data = await r.json();
-    console.log('[SWING OANDA]', r.status, JSON.stringify(data).slice(0, 200));
+    if (!r.ok) console.error('[SWING ORDER] OANDA error:', r.status, JSON.stringify(data).slice(0, 200));
     res.json(data);
   } catch (e) {
+    console.error('[SWING ORDER] fetch error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -1479,13 +1469,9 @@ async function serverSwingAutoTrade() {
   }
 
   // Hard cap: max 4 open trades (M5 + swing combined)
-  if (openTrades.length >= 4) {
-    console.log(`[swing-auto] ${openTrades.length} open trades — skip`);
-    return;
-  }
+  if (openTrades.length >= 4) return;
 
   const session = getServerSession();
-  console.log(`[swing-auto] Scanning ${KILL_SHOT_PAIRS.length} Kill Shot pairs — ${session}`);
 
   for (const instrument of KILL_SHOT_PAIRS) {
     // 4-hour cooldown per pair (stamp before consensus to prevent parallel double-fire)
@@ -1498,28 +1484,15 @@ async function serverSwingAutoTrade() {
         fetchOandaCandles(instrument, 'W',   10),
       ]);
 
-      if (h4Candles.length < 50) {
-        console.log(`[swing-auto] ${instrument} — insufficient H4 data (${h4Candles.length} bars)`);
-        continue;
-      }
+      if (h4Candles.length < 50) continue;
 
       const sig = serverGenerateSwingSignal(h4Candles, weeklyCandles, instrument);
-      if (!sig) {
-        console.log(`[swing-auto] ${instrument} — no Kill Shot setup`);
-        continue;
-      }
-      console.log(`[swing-auto] ${instrument} ${sig.direction} score:${sig.score}% — ${sig.reasons.join(', ')}`);
+      if (!sig) continue;
 
       // Block if OANDA already has an open trade on this instrument
-      if (openTrades.some(t => t.instrument === instrument)) {
-        console.log(`[swing-auto] ${instrument} — already open on OANDA, skip`);
-        continue;
-      }
+      if (openTrades.some(t => t.instrument === instrument)) continue;
       // Block if swing auto already tracking an open trade for this pair
-      if (swingAutoTrades.some(t => t.instrument === instrument && !t.closed)) {
-        console.log(`[swing-auto] ${instrument} — swing auto trade already tracked`);
-        continue;
-      }
+      if (swingAutoTrades.some(t => t.instrument === instrument && !t.closed)) continue;
 
       // Stamp cooldown now (before async consensus)
       lastSwingConsensus.set(instrument, Date.now());
@@ -1543,11 +1516,7 @@ async function serverSwingAutoTrade() {
         session,
       };
 
-      console.log(`[swing-auto] ${instrument} — calling Kill Shot consensus`);
       const consensus = await runSwingConsensus(consensusParams);
-      const resultLine = consensus.voteLog[consensus.voteLog.length - 1];
-      console.log(`[swing-auto] ${instrument} — ${consensus.confirms}/4 Claude:${consensus.claudeConfirmed ? '✓' : '✗'} — ${resultLine}`);
-
       if (!consensus.passes) continue;
 
       // ── Place swing order (500 units, SL + TP1) ───────────────────────────
@@ -1558,15 +1527,11 @@ async function serverSwingAutoTrade() {
         stopLossOnFill:   { price: formatPrice(sig.sl,  instrument), timeInForce: 'GTC' },
         takeProfitOnFill: { price: formatPrice(sig.tp1, instrument), timeInForce: 'GTC' },
       };
-      console.log('[swing-auto] ORDER PAYLOAD', JSON.stringify(order));
 
       const or     = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify({ order }) });
       const result = await or.json();
 
-      if (JSON.stringify(result).includes('MARKET_HALTED')) {
-        console.log(`[swing-auto] ${instrument} — PAPER logged (market halted)`);
-        continue;
-      }
+      if (JSON.stringify(result).includes('MARKET_HALTED')) continue;
 
       if (result?.errorCode) {
         console.error(`[swing-auto] ${instrument} — OANDA error: ${result.errorCode} — ${result.errorMessage || ''}`);
