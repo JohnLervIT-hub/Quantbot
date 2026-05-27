@@ -2901,9 +2901,55 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
 }
 
 function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriPM, isNewsBlock, pendingSetups, session, xavierIntel, freshNews, livePrices }) {
-  const [consensusPair, setConsensusPair] = useState(null);
+  const [consensusMap, setConsensusMap] = useState({});
+  const fetchedRef = useRef(new Set());
+
   const activePairs = KILL_SHOT_PAIRS.filter(p => signals[p]?.score >= 75);
   const watchPairs  = KILL_SHOT_PAIRS.filter(p => !signals[p] || signals[p].score < 75);
+
+  // Auto-fetch consensus for each qualifying pair as soon as it appears
+  useEffect(() => {
+    activePairs.forEach(pair => {
+      if (fetchedRef.current.has(pair)) return;
+      fetchedRef.current.add(pair);
+      const sig = signals[pair];
+      const instrument = pair.replace("/", "_");
+      const currentPrice = parseFloat(livePrices?.[pair] || sig.entry);
+      setConsensusMap(prev => ({ ...prev, [pair]: { loading: true, data: null } }));
+      fetch(`${BRIDGE}/swing-consensus`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instrument, direction: sig.direction, score: sig.score,
+          entry: sig.entry?.toFixed(5) || "?", sl: sig.sl?.toFixed(5) || "?",
+          tp1: sig.tp1?.toFixed(5) || "?", tp2: sig.tp2?.toFixed(5) || "?", tp3: sig.tp3?.toFixed(5) || "?",
+          ema21: sig.ema21?.toFixed(5) || "?", ema50: sig.ema50?.toFixed(5) || "?",
+          rsi: sig.rsi?.toFixed(1) || "?", atr: sig.atr?.toFixed(5) || "?",
+          price: currentPrice.toFixed(5), session,
+          xavierSentiment: xavierIntel?.sentiment || null, xavierKeyRisk: xavierIntel?.keyRisk || null,
+          xavierBestPair: xavierIntel?.bestPair || null, xavierBrief: xavierIntel?.brief || null,
+          freshNews: freshNews?.slice(0, 5).join(" | ") || null,
+        }),
+      })
+        .then(r => r.json())
+        .then(data => setConsensusMap(prev => ({ ...prev, [pair]: { loading: false, data } })))
+        .catch(err => {
+          fetchedRef.current.delete(pair); // allow retry on next qualifying
+          const msg = err?.message || "Bridge offline — run: npm run server";
+          setConsensusMap(prev => ({
+            ...prev,
+            [pair]: {
+              loading: false,
+              data: {
+                executeAllowed: false, votes: { confirm: 0, reject: 4 },
+                models: ["Claude Sonnet", "GPT-4o", "DeepSeek", "Gemini 2.5 Flash"].map(n => ({ name: n, verdict: "REJECT", reason: msg })),
+                error: msg,
+              },
+            },
+          }));
+        });
+    });
+  }, [activePairs.join(",")]); // eslint-disable-line
+
   return (
     <div style={{ margin: isMobile ? "0 0 16px" : "0 16px 16px", background: "#161b22", border: "1px solid #F9731640", borderRadius: 12, overflow: "hidden" }}>
       {/* Header */}
@@ -2940,8 +2986,14 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
         const canExec = canExecuteSwing(pair) && !isFriPM && !isNewsBlock;
         const isPending = !!pendingSetups?.[pair];
         const labelColor = sig.label === "PERFECT" ? "#3fb950" : "#F97316";
+        const cs = consensusMap[pair]; // { loading, data }
+        const confirms = cs?.data?.votes?.confirm ?? 0;
+        const executeAllowed = cs?.data?.executeAllowed ?? false;
+        const resultColor = confirms >= 3 ? "#3fb950" : confirms === 2 ? "#d29922" : "#f85149";
+
         return (
           <div key={pair} style={{ padding: "12px 14px", borderBottom: "1px solid #21262d" }}>
+            {/* Pair header */}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: "#e6edf3", fontFamily: FONT_MONO }}>{pair}</span>
@@ -2951,41 +3003,91 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
               </div>
               <span style={{ fontSize: 13, fontWeight: 800, color: labelColor, fontFamily: FONT_MONO }}>{sig.score}%</span>
             </div>
+
+            {/* Tech summary */}
             <div style={{ fontSize: 10, color: "#8b949e", marginBottom: 6, lineHeight: 1.5 }}>
               EMA21 pullback · {sig.breakdown?.weekly > 0 ? "Weekly trend aligned" : "Weekly bias weak"} · RSI {sig.rsi?.toFixed(0) ?? "—"}
             </div>
+
+            {/* Levels */}
             <div style={{ display: "flex", gap: 12, fontSize: 10, color: "#484f58", fontFamily: FONT_MONO, marginBottom: 8 }}>
               <span>Entry <span style={{ color: "#e6edf3" }}>{swingFmt(pair, sig.entry)}</span></span>
               <span>SL <span style={{ color: "#f85149" }}>{swingFmt(pair, sig.sl)}</span></span>
               <span>TP1 <span style={{ color: "#3fb950" }}>{swingFmt(pair, sig.tp1)}</span></span>
               <span>TP2 <span style={{ color: "#3fb950" }}>{swingFmt(pair, sig.tp2)}</span></span>
             </div>
+
+            {/* Timing message */}
             {!canExec && !isAlreadyOpen && (
               <div style={{ marginBottom: 6, fontSize: 10, color: "#8b949e", fontStyle: "italic" }}>
                 {isFriPM ? "⚠ Blocked — weekend gap risk" : isNewsBlock ? "⚠ Blocked — HIGH event nearby" : `DETECTED — ${nextSwingWindow(pair)}`}
               </div>
             )}
+
+            {/* ── AI CONSENSUS — always shown inline ── */}
+            <div style={{ marginTop: 8, background: "#0d1117", borderRadius: 7, border: "1px solid #21262d", padding: "10px 12px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: cs?.loading || !cs ? 0 : 8 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: "#8b949e", letterSpacing: "0.06em" }}>AI CONSENSUS</span>
+                {cs?.data && !cs.loading && (
+                  <span style={{ fontSize: 10, fontWeight: 700, color: resultColor }}>{confirms}/4 — {executeAllowed ? "EXECUTING" : "BLOCKED"}</span>
+                )}
+              </div>
+
+              {cs?.loading ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, paddingTop: 5 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#F97316", animation: "pulse 1.2s ease-in-out infinite" }} />
+                  <span style={{ fontSize: 10, color: "#484f58" }}>Consulting 4 models…</span>
+                </div>
+              ) : cs?.data?.models ? (
+                <>
+                  {cs.data.models.map((model, i) => {
+                    const isC = model.verdict === "CONFIRM";
+                    const mc = isC ? "#3fb950" : "#f85149";
+                    const shortName = model.name === "Claude Sonnet" ? "Claude"
+                      : model.name === "Gemini 2.5 Flash" ? "Gemini"
+                      : model.name;
+                    return (
+                      <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 6, marginBottom: i < cs.data.models.length - 1 ? 5 : 0 }}>
+                        <span style={{ width: 62, fontSize: 10, color: "#8b949e", flexShrink: 0 }}>{shortName}:</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: mc, flexShrink: 0, minWidth: 80 }}>{isC ? "✅ CONFIRM" : "❌ REJECT"}</span>
+                        <span style={{ fontSize: 10, color: "#484f58", lineHeight: 1.4 }}>— {model.reason}</span>
+                      </div>
+                    );
+                  })}
+                  <div style={{ borderTop: "1px solid #21262d", marginTop: 7, paddingTop: 6, fontSize: 10, fontWeight: 700, color: resultColor, letterSpacing: "0.03em" }}>
+                    Result: {confirms}/4 — {executeAllowed ? "EXECUTING" : "BLOCKED"}
+                  </div>
+                </>
+              ) : !cs ? (
+                <div style={{ fontSize: 10, color: "#484f58", paddingTop: 5 }}>Signal qualifying — consensus pending…</div>
+              ) : (
+                <div style={{ fontSize: 10, color: "#f85149", paddingTop: 5 }}>{cs.data?.error || "Consensus error"}</div>
+              )}
+            </div>
+
             <XavierKillShotNote score={sig.score} pair={pair} direction={sig.direction} />
-            {consensusPair === pair ? (
-              <SwingConsensusPanel
-                pair={pair} sig={sig} session={session}
-                xavierIntel={xavierIntel} freshNews={freshNews} livePrices={livePrices}
-                onExecute={onExecute} onCancel={() => setConsensusPair(null)}
-              />
-            ) : (
-              <button
-                onClick={() => canExec && !isAlreadyOpen && setConsensusPair(pair)}
-                disabled={isAlreadyOpen || !canExec}
-                style={{ marginTop: 8, width: "100%", padding: "7px 0", borderRadius: 6, fontFamily: "inherit", letterSpacing: "0.04em", transition: "all 0.15s", fontSize: 11, fontWeight: 700,
-                  border: `1px solid ${isAlreadyOpen ? "#30363d" : canExec ? "#F97316" : "#30363d"}`,
-                  background: isAlreadyOpen ? "#161b22" : canExec ? "#F9731618" : "#161b22",
-                  color: isAlreadyOpen ? "#484f58" : canExec ? "#F97316" : "#484f58",
-                  cursor: isAlreadyOpen || !canExec ? "default" : "pointer",
-                }}
-              >
-                {isAlreadyOpen ? "Already Open" : canExec ? "⚔️ Execute Kill Shot" : isPending ? `⏳ Auto-executes at ${nextSwingWindow(pair).split(" in ")[0]}` : `⏳ ${nextSwingWindow(pair)}`}
-              </button>
-            )}
+
+            {/* Execute button — gated by consensus */}
+            <button
+              onClick={() => canExec && !isAlreadyOpen && executeAllowed && onExecute(pair, sig)}
+              disabled={isAlreadyOpen || !canExec || !executeAllowed || !!cs?.loading}
+              style={{
+                marginTop: 8, width: "100%", padding: "7px 0", borderRadius: 6,
+                fontFamily: "inherit", letterSpacing: "0.04em", transition: "all 0.15s",
+                fontSize: 11, fontWeight: 700,
+                border: `1px solid ${isAlreadyOpen || !executeAllowed ? "#30363d" : canExec ? "#F97316" : "#30363d"}`,
+                background: isAlreadyOpen || !executeAllowed ? "#161b22" : canExec ? "#F9731618" : "#161b22",
+                color: isAlreadyOpen || !executeAllowed ? "#484f58" : canExec ? "#F97316" : "#484f58",
+                cursor: (isAlreadyOpen || !canExec || !executeAllowed || cs?.loading) ? "default" : "pointer",
+              }}
+            >
+              {isAlreadyOpen ? "Already Open"
+                : cs?.loading ? "⏳ Running consensus…"
+                : !cs?.data ? "⏳ Awaiting consensus…"
+                : !executeAllowed ? "❌ Blocked by committee"
+                : !canExec ? (isPending ? `⏳ ${nextSwingWindow(pair).split(" in ")[0]}` : `⏳ ${nextSwingWindow(pair)}`)
+                : "⚔️ Execute Kill Shot"}
+            </button>
           </div>
         );
       })}
