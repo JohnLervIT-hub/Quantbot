@@ -514,7 +514,7 @@ function calcRegime(history) {
   const bullTrend = ema9 > ema21 && ema21 > ema50;
   const bearTrend = ema9 < ema21 && ema21 < ema50;
   const isTrending = (bullTrend || bearTrend) && Math.abs(ema9 - ema50) / ema50 > 0.001;
-  const isVolatile = atr20 > 0 && atr5 > atr20 * 2;
+  const isVolatile = atr20 > 0 && atr5 > atr20 * 2.5;
   const regime = isVolatile ? "VOLATILE" : isTrending ? "TRENDING" : "RANGING";
   return { regime, ema9, ema21, ema50, atr5, atr20, bullTrend };
 }
