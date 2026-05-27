@@ -151,11 +151,11 @@ app.post('/swing/order', async (req, res) => {
     timeInForce: 'FOK', positionFill: 'DEFAULT',
   };
   if (slPrice) {
-    order.stopLossOnFill = { price: parseFloat(slPrice).toFixed(5), timeInForce: 'GTC' };
+    order.stopLossOnFill = { price: formatPrice(slPrice, instrument), timeInForce: 'GTC' };
     console.log('[SWING] SL:', order.stopLossOnFill.price);
   }
   if (tp1Price) {
-    order.takeProfitOnFill = { price: parseFloat(tp1Price).toFixed(5), timeInForce: 'GTC' };
+    order.takeProfitOnFill = { price: formatPrice(tp1Price, instrument), timeInForce: 'GTC' };
     console.log('[SWING] TP1:', order.takeProfitOnFill.price);
   }
   try {
