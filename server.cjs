@@ -1737,6 +1737,20 @@ async function fetchOandaCandles(instrument, granularity, count) {
     .filter(c => c.c > 0);
 }
 
+// Fetch live mid price from OANDA pricing endpoint
+async function fetchLivePrice(instrument) {
+  try {
+    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/pricing?instruments=${instrument}`, { headers: H });
+    const data = await r.json();
+    const px   = data.prices?.[0];
+    if (!px) return null;
+    return (parseFloat(px.bids[0].price) + parseFloat(px.asks[0].price)) / 2;
+  } catch (e) {
+    console.error(`[fetchLivePrice] ${instrument} failed: ${e.message}`);
+    return null;
+  }
+}
+
 // ─── H4 SWING SIGNAL GENERATOR ───────────────────────────────────────────────
 // Produces a Kill Shot setup if EMA50 bias + EMA21 pullback + RSI zone align.
 // Score must reach 75 to qualify. Weekly candles provide optional bonus (+10).
@@ -1910,18 +1924,33 @@ async function serverSwingAutoTrade() {
       // Stamp cooldown now (before async consensus)
       lastSwingConsensus.set(instrument, Date.now());
 
+      // Fix 1: Fetch live price — H4 last close can be hours stale
+      const livePrice = await fetchLivePrice(instrument);
+      if (!livePrice) {
+        console.error(`[swing-auto] ${instrument} — live price fetch failed, skipping`);
+        continue;
+      }
+      console.log(`[swing-auto] ${instrument} — H4 last: ${sig.entry} | live mid: ${livePrice}`);
+
+      // Rebuild SL/TP from live entry + H4 ATR (same risk distance)
+      const riskDist = sig.atr * 2.0;
+      const liveEntry = livePrice;
+      const liveSl    = sig.direction === 'LONG' ? liveEntry - riskDist : liveEntry + riskDist;
+      const liveTp1   = sig.direction === 'LONG' ? liveEntry + riskDist * 1.5 : liveEntry - riskDist * 1.5;
+      const liveTp2   = sig.direction === 'LONG' ? liveEntry + riskDist * 2.5 : liveEntry - riskDist * 2.5;
+      const liveTp3   = sig.direction === 'LONG' ? liveEntry + riskDist * 4.0 : liveEntry - riskDist * 4.0;
+
       const ts    = now.toISOString();
-      const price = sig.entry;
       const consensusParams = {
         instrument,
         direction: sig.direction,
         score:     sig.score,
-        entry:     formatPrice(price,     instrument),
-        price:     formatPrice(price,     instrument),
-        sl:        formatPrice(sig.sl,    instrument),
-        tp1:       formatPrice(sig.tp1,   instrument),
-        tp2:       formatPrice(sig.tp2,   instrument),
-        tp3:       formatPrice(sig.tp3,   instrument),
+        entry:     formatPrice(liveEntry, instrument),
+        price:     formatPrice(liveEntry, instrument),
+        sl:        formatPrice(liveSl,    instrument),
+        tp1:       formatPrice(liveTp1,   instrument),
+        tp2:       formatPrice(liveTp2,   instrument),
+        tp3:       formatPrice(liveTp3,   instrument),
         ema21:     formatPrice(sig.ema21, instrument),
         ema50:     formatPrice(sig.ema50, instrument),
         rsi:       sig.rsi.toFixed(1),
@@ -1932,35 +1961,55 @@ async function serverSwingAutoTrade() {
       const consensus = await runSwingConsensus(consensusParams);
       if (!consensus.passes) continue;
 
-      // ── Place swing order (500 units, SL + TP1) ───────────────────────────
+      // ── Place swing order (500 units, SL + TP1 from live price) ─────────────
       const units = sig.direction === 'LONG' ? 500 : -500;
       const order = {
         type: 'MARKET', instrument, units: String(units),
         timeInForce: 'FOK', positionFill: 'DEFAULT',
-        stopLossOnFill:   { price: formatPrice(sig.sl,  instrument), timeInForce: 'GTC' },
-        takeProfitOnFill: { price: formatPrice(sig.tp1, instrument), timeInForce: 'GTC' },
+        stopLossOnFill:   { price: formatPrice(liveSl,   instrument), timeInForce: 'GTC' },
+        takeProfitOnFill: { price: formatPrice(liveTp1,  instrument), timeInForce: 'GTC' },
       };
+      console.log(`[KILL SHOT] ${instrument} order payload: entry~${formatPrice(liveEntry, instrument)} SL:${formatPrice(liveSl, instrument)} TP1:${formatPrice(liveTp1, instrument)}`);
 
-      const or     = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify({ order }) });
-      const result = await or.json();
-
-      if (JSON.stringify(result).includes('MARKET_HALTED')) continue;
-
-      if (result?.errorCode) {
-        console.error(`[swing-auto] ${instrument} — OANDA error: ${result.errorCode} — ${result.errorMessage || ''}`);
+      let result;
+      try {
+        const or = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify({ order }) });
+        result   = await or.json();
+      } catch (fetchErr) {
+        console.error(`[KILL SHOT ERROR] ${instrument} — fetch failed: ${fetchErr.message}`);
         continue;
       }
 
-      const fill    = result?.orderFillTransaction?.price ?? formatPrice(price, instrument);
-      const tradeId = result?.orderFillTransaction?.tradeOpened?.tradeID || null;
+      if (JSON.stringify(result).includes('MARKET_HALTED')) {
+        console.log(`[KILL SHOT] ${instrument} — market halted, skipping`);
+        continue;
+      }
+
+      // Fix 2: Proper OANDA rejection logging
+      if (result.orderRejectTransaction) {
+        console.error(`[KILL SHOT REJECTED] ${instrument} — ${result.orderRejectTransaction.rejectReason}`);
+        continue;
+      }
+      if (result.errorCode) {
+        console.error(`[KILL SHOT ERROR] ${instrument} — ${result.errorCode}: ${result.errorMessage || ''}`);
+        continue;
+      }
+      if (!result.orderFillTransaction) {
+        console.error(`[KILL SHOT ERROR] ${instrument} — unexpected response: ${JSON.stringify(result).slice(0, 300)}`);
+        continue;
+      }
+
+      const fill    = result.orderFillTransaction.price;
+      const tradeId = result.orderFillTransaction.tradeOpened?.tradeID || null;
+      console.log(`[KILL SHOT SUCCESS] ${instrument} — tradeID: ${tradeId} @ ${fill}`);
 
       swingAutoTrades.unshift({
         id: Date.now(), timestamp: ts, instrument,
         direction: sig.direction, units, price: fill,
-        sl:  formatPrice(sig.sl,  instrument),
-        tp1: formatPrice(sig.tp1, instrument),
-        tp2: formatPrice(sig.tp2, instrument),
-        tp3: formatPrice(sig.tp3, instrument),
+        sl:  formatPrice(liveSl,  instrument),
+        tp1: formatPrice(liveTp1, instrument),
+        tp2: formatPrice(liveTp2, instrument),
+        tp3: formatPrice(liveTp3, instrument),
         score: sig.score, session, reasons: sig.reasons,
         confirms: consensus.confirms,
         models:   consensus.models,
