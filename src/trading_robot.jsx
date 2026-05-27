@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, memo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
 import { motion, AnimatePresence, animate } from "framer-motion";
 import XavierOnboarding from "./XavierOnboarding";
 import { createChart, CandlestickSeries, LineSeries } from "lightweight-charts";
