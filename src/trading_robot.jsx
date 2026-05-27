@@ -126,17 +126,7 @@ const TABLE_COLS = "110px 110px 180px 100px 110px 100px";
 const TABLE_GAP  = 0;
 const TABLE_PAD  = "10px 16px";
 
-const LIVE_HEADLINES = [
-  "Fed signals potential rate pause amid cooling inflation data",
-  "EUR/USD breaks key resistance at 1.0890 on ECB hawkish tone",
-  "Gold surges on geopolitical risk premium — safe haven demand rises",
-  "NFP report beats expectations: +285K jobs added in April",
-  "USD weakness continues as DXY tests 102.30 — dollar bears in control",
-  "BOJ intervenes as USD/JPY tests 158.00 — yen defense operation",
-  "Oil holds gains amid OPEC+ supply cut extension announcement",
-  "GBP/USD rallies on strong UK retail sales data beat",
-  "AUD/USD supported by RBA hawkish minutes — rate cut delayed",
-];
+const LIVE_HEADLINES = []; // populated by live news fetch in TradingRobot
 
 // ─── WEEKLY EVENTS ────────────────────────────────────────────────────────────
 const WEEKLY_EVENTS = [
@@ -1469,7 +1459,7 @@ function IntelCard({ label, value, sub, color = "#8b949e", bgColor, borderColor,
   );
 }
 
-function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isMobile, session = "AVOID", strategy = "Mean Revert", openTrades = [], signalMap = {}, onIntelUpdate }) {
+function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balance, currentHeadline, isMobile, session = "AVOID", strategy = "Mean Revert", openTrades = [], signalMap = {}, onIntelUpdate }) {
   const [briefLoading, setBriefLoading] = useState(false);
   const [metrics, setMetrics] = useState(() => { try { return JSON.parse(localStorage.getItem("xavier_intel")) || null; } catch { return null; } });
   const [question, setQuestion] = useState("");
@@ -1567,9 +1557,13 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
       }
     } catch { /* fall back to props prices */ }
     const snap = Object.entries(freshPrices || prices).map(([p, v]) => `${p}: ${v}`).join(", ");
+    const freshNews = Date.now() - newsLastFetchedAt < 30 * 60 * 1000 ? headlines : [];
+    const newsCtx = freshNews.length > 0
+      ? `Headlines: ${freshNews.slice(0, 3).join(" | ")}`
+      : "No recent news available — base analysis on price action only.";
     try {
       const result = await callClaude(
-        `Market context: ${snap}\nHeadlines: ${headlines.slice(0, 3).join(" | ")}\n\nTrader question: ${text}`,
+        `Market context: ${snap}\n${newsCtx}\n\nTrader question: ${text}`,
         buildSystemPrompt(freshPrices),
         400
       );
@@ -2901,11 +2895,7 @@ function SwingJournalPanel({ swingTrades, openTrades, livePrices, displayNav, is
 
 // ─── NEWS TICKER ──────────────────────────────────────────────────────────────
 const TICKER_ITEMS = [
-  { source: "Bloomberg", headline: "BOJ intervenes as USD/JPY tests 158.00" },
-  { source: "DailyFX", headline: "EUR/USD breaks key resistance at 1.0890" },
-  { source: "Reuters", headline: "Gold surges on geopolitical risk premium" },
-  { source: "CNBC", headline: "NFP beats expectations +285K jobs" },
-  { source: "MarketBeat", headline: "USD weakness continues as DXY tests 102.30" },
+  { source: "LIVE", headline: "Loading latest news..." },
 ];
 
 const NEWS_SOURCE_STYLES = {
@@ -2955,12 +2945,14 @@ function TickerTrack({ items }) {
   );
 }
 
-function NewsTicker({ onHeadlineChange }) {
+function NewsTicker({ onHeadlineChange, onItemsChange }) {
   const [tickerItems, setTickerItems] = useState(TICKER_ITEMS);
-  const itemsRef    = useRef(TICKER_ITEMS);
-  const idxRef      = useRef(0);
-  const onChangeRef = useRef(onHeadlineChange);
+  const itemsRef      = useRef(TICKER_ITEMS);
+  const idxRef        = useRef(0);
+  const onChangeRef   = useRef(onHeadlineChange);
+  const onItemsRef    = useRef(onItemsChange);
   onChangeRef.current = onHeadlineChange;
+  onItemsRef.current  = onItemsChange;
 
   useEffect(() => {
     // Start rotation immediately with fallback items
@@ -2993,6 +2985,7 @@ function NewsTicker({ onHeadlineChange }) {
         idxRef.current   = 0;
         setTickerItems(interleaved);
         onChangeRef.current(interleaved[0].headline);
+        onItemsRef.current?.(interleaved.map(i => i.headline), Date.now());
       } catch { /* keep fallback items on network error */ }
     };
 
@@ -6820,7 +6813,9 @@ export default function TradingRobot() {
   }, []);
 
   const [tab, setTab] = useState("markets");
-  const [currentHeadline, setCurrentHeadline] = useState(LIVE_HEADLINES[0]);
+  const [currentHeadline, setCurrentHeadline] = useState("Loading latest news...");
+  const [liveHeadlines, setLiveHeadlines] = useState([]);
+  const [newsLastFetchedAt, setNewsLastFetchedAt] = useState(0);
   const [livePrices, setLivePrices] = useState(BASE_PRICES);
   const [signalHeaderFlash, setSignalHeaderFlash] = useState(false);
   const [signalMap, setSignalMap] = useState({});
@@ -7817,7 +7812,7 @@ export default function TradingRobot() {
         </div>
       )}
 
-      <NewsTicker onHeadlineChange={setCurrentHeadline} />
+      <NewsTicker onHeadlineChange={setCurrentHeadline} onItemsChange={(items, ts) => { setLiveHeadlines(items); setNewsLastFetchedAt(ts); }} />
 
       {!marketOpen && (
         <div style={{ background: "#2d2000", color: "#d29922", borderBottom: "1px solid #9e6a03", padding: "6px 16px", fontSize: 11, textAlign: "center", whiteSpace: isMobile ? "nowrap" : "normal", overflow: isMobile ? "hidden" : "visible", textOverflow: isMobile ? "ellipsis" : "clip" }}>
@@ -7966,11 +7961,11 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "ai" ? "block" : "none" }}>
-        <AIAnalystTab isVisible={tab === "ai"} headlines={LIVE_HEADLINES} prices={livePrices} trades={trades} balance={balance} currentHeadline={currentHeadline} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} signalMap={signalMap} onIntelUpdate={(intel) => { xavierIntelRef.current = intel; }} />
+        <AIAnalystTab isVisible={tab === "ai"} headlines={liveHeadlines} newsLastFetchedAt={newsLastFetchedAt} prices={livePrices} trades={trades} balance={balance} currentHeadline={currentHeadline} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} signalMap={signalMap} onIntelUpdate={(intel) => { xavierIntelRef.current = intel; }} />
       </div>
 
       <div style={{ display: tab === "knowledge" ? "block" : "none", padding: "0 16px", paddingBottom: 16 }}>
-        <KnowledgePanel isVisible={tab === "knowledge"} activeRule={activeRule} session={getCurrentSession()} openTrades={openTrades} balance={balance} prices={livePrices} headlines={LIVE_HEADLINES} isMobile={isMobile} />
+        <KnowledgePanel isVisible={tab === "knowledge"} activeRule={activeRule} session={getCurrentSession()} openTrades={openTrades} balance={balance} prices={livePrices} headlines={liveHeadlines} isMobile={isMobile} />
       </div>
 
       <div style={{ display: tab === "risk" ? "block" : "none" }}>
