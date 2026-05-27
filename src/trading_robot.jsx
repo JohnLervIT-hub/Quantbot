@@ -375,7 +375,19 @@ function generateSignal(history, strategy, pair) {
       direction = dir;
       reason.push(`${(dev * 100).toFixed(2)}% deviation`);
     }
-  
+    // Spike recovery bonus — post-spike reversion is the cleanest Mean Revert setup.
+    // Price overshoots during spike, ATR expanding. When ATR starts normalizing,
+    // the snapback is sharper and more predictable.
+    if (direction) {
+      const tr20sr   = recent.slice(1).map((p, i) => Math.abs(p - recent[i]));
+      const atr20sr  = tr20sr.reduce((a, b) => a + b, 0) / tr20sr.length || 0.00001;
+      const atr5now  = tr20sr.slice(-5).reduce((a, b) => a + b, 0) / 5;
+      const atr5prev = tr20sr.slice(-10, -5).reduce((a, b) => a + b, 0) / 5;
+      if (atr5prev > atr20sr * 2.0 && atr5now < atr5prev * 0.85 && dev > 0.0015) {
+        score += 10;
+        reason.push("Post-spike reversion");
+      }
+    }
   } else if (strategy === "Breakout") {
     // Base 45: price at range boundary
     const high = Math.max(...recent), low = Math.min(...recent), range = high - low;
@@ -2023,6 +2035,18 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
   const openTrade      = openTrades?.find(t => t.instrument === chartPairKey);
   const chartRiskAmt   = ((balance || 100) * 0.015).toFixed(2);
   const sessStyle      = SESSION_BADGE_COLORS[chartSession] || SESSION_BADGE_COLORS.AVOID;
+  // Volatility normalizing countdown — visible when spike is settling
+  const volNormMins = (() => {
+    if (history.length < 21) return null;
+    const bars = history.slice(-21);
+    const tr   = bars.slice(1).map((v, i) => Math.abs(v - bars[i]));
+    const atr20v  = tr.reduce((a, b) => a + b, 0) / tr.length || 0.00001;
+    const atr5now  = tr.slice(-5).reduce((a, b) => a + b, 0) / 5;
+    const atr5prev = tr.slice(-10, -5).reduce((a, b) => a + b, 0) / 5;
+    if (atr5prev <= atr20v * 2.0 || atr5now >= atr5prev * 0.85) return null;
+    const hotBars = tr.slice(-5).filter(v => v > atr20v * 1.5).length;
+    return hotBars * 5; // each hot bar takes ~5 min to roll out of 5-bar ATR
+  })();
   const nextSession    = (() => {
     const nowM = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
     const defs = [
@@ -2220,6 +2244,16 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
           )}
         </div>
       </div>
+
+      {/* ── Volatility normalizing banner ── */}
+      {volNormMins !== null && (
+        <div style={{ padding: "3px 14px", background: "#0d1117", borderBottom: "1px solid #21262d", display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#d29922", flexShrink: 0, display: "inline-block" }} />
+          <span style={{ fontSize: 10, color: "#d29922", fontFamily: FONT_MONO }}>
+            Volatility normalizing — est. clear in {volNormMins > 0 ? `${volNormMins}m` : "<5m"}
+          </span>
+        </div>
+      )}
 
       {/* ── Expandable candlestick chart panel ── */}
       <AnimatePresence>
