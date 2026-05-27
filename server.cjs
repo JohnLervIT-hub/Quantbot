@@ -1327,6 +1327,33 @@ async function getM5History(instrument) {
   }
 }
 
+// OHLC candle cache for trend confirmation (open + close per bar)
+const m5OhlcCache    = new Map(); // instrument → [{open, close}]
+const lastM5OhlcFetch = new Map(); // instrument → ms timestamp
+
+async function getM5Candles(instrument) {
+  const cached = m5OhlcCache.get(instrument);
+  const age    = Date.now() - (lastM5OhlcFetch.get(instrument) || 0);
+  if (cached && cached.length >= 20 && age < 4 * 60_000) return cached;
+  try {
+    const r    = await fetch(`${BASE}/v3/instruments/${instrument}/candles?count=60&granularity=M5&price=M`, { headers: H });
+    const data = await r.json();
+    if (!Array.isArray(data.candles)) return cached || [];
+    const candles = data.candles
+      .filter(c => c.mid?.o && c.mid?.c)
+      .map(c => ({ open: parseFloat(c.mid.o), close: parseFloat(c.mid.c) }))
+      .filter(c => c.open > 0 && c.close > 0);
+    if (candles.length >= 5) {
+      m5OhlcCache.set(instrument, candles);
+      lastM5OhlcFetch.set(instrument, Date.now());
+      return candles;
+    }
+    return cached || [];
+  } catch {
+    return cached || [];
+  }
+}
+
 function serverGenerateSignal(history, strategy, instrument) {
   if (history.length < 20) return null;
   const recent = history.slice(-20);
@@ -1410,6 +1437,48 @@ function serverGenerateSignal(history, strategy, instrument) {
   score = Math.min(score, 100);
   if (score < 65) return null;
   return { direction, score, reason, rsi: parseFloat(rsi.toFixed(1)) };
+}
+
+// ─── TREND CONFIRMATION (USER EXPLICIT OVERRIDE) ─────────────────────────────
+// Runs before consensus. Requires 2/3 checks to pass:
+//   1. Last 3 M5 candles close in signal direction (bullish/bearish bodies)
+//   2. Price moved > 0.1% over last 10 bars (not flat)
+//   3. EMA9 pulling away from EMA21 by > 0.02%
+function calcEMAFromArr(arr, period) {
+  if (arr.length < period) return arr.reduce((a, b) => a + b, 0) / arr.length;
+  const k   = 2 / (period + 1);
+  let   ema = arr.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < arr.length; i++) ema = arr[i] * k + ema * (1 - k);
+  return ema;
+}
+
+function confirmTrend(candles, direction) {
+  if (candles.length < 10) return false;
+  const len    = candles.length;
+  const last3  = candles.slice(len - 3, len);
+  const last10 = candles.slice(len - 10, len);
+
+  // Check 1 — last 3 candles have bodies in signal direction
+  const last3Confirm = direction === 'LONG'
+    ? last3.every(c => c.close > c.open)
+    : last3.every(c => c.close < c.open);
+
+  // Check 2 — price is moving (not flat) over last 10 bars
+  const priceChange = Math.abs(last10[last10.length - 1].close - last10[0].close) / last10[0].close;
+  const isMoving    = priceChange > 0.001;
+
+  // Check 3 — true EMA9 separating from EMA21
+  const closes        = candles.map(c => c.close);
+  const ema9          = calcEMAFromArr(closes, 9);
+  const ema21         = calcEMAFromArr(closes, 21);
+  const emaSeparating = direction === 'LONG'
+    ? ema9 > ema21 * 1.0002
+    : ema9 < ema21 * 0.9998;
+
+  const confirmCount = [last3Confirm, isMoving, emaSeparating].filter(Boolean).length;
+  const passed       = confirmCount >= 2;
+  console.log(`[TREND] ${direction} | last3:${last3Confirm} moving:${isMoving}(${(priceChange * 100).toFixed(3)}%) emaSep:${emaSeparating} → ${passed ? 'CONFIRMED ✓' : 'WAIT'} (${confirmCount}/3)`);
+  return passed;
 }
 
 function serverRunGatekeepers(history, signal, openTrades, _instrument, strategy) {
@@ -1531,6 +1600,20 @@ async function serverAutoTrade() {
       if (serverRejections.length > 50) serverRejections.pop();
       continue;
     }
+
+    // Trend confirmation — 2/3 checks required before consensus
+    const m5Candles = await getM5Candles(instrument);
+    const trendOk   = confirmTrend(
+      [...m5Candles, { open: price, close: price }],
+      signal.direction,
+    );
+    if (!trendOk) {
+      console.log(`[TREND WAIT] ${instrument} — signal ${signal.score}% detected but trend not confirmed yet. Waiting for momentum to develop.`);
+      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Trend Not Confirmed', actual: '< 2/3 checks (last3 candles, price moving, EMA separating)', threshold: '2/3 required' }] });
+      if (serverRejections.length > 50) serverRejections.pop();
+      continue;
+    }
+    console.log(`[TREND CONFIRMED] ${instrument} ${signal.direction} — trend active, proceeding to consensus`);
 
     lastConsensus.set(instrument, Date.now());
 
