@@ -25,16 +25,21 @@ These functions/sections are battle-tested and must never be modified:
 ## XAVIER'S STRICT RULEBOOK (active — do not soften or override)
 
 ### Rule 1 — Session/Strategy Map
+USER EXPLICIT OVERRIDE applied 2026-05-27 — backtest-validated combinations.
 ```
 XAVIER_RULES = {
-  TOKYO:  { strategy: "Mean Revert",  pairs: ["USD/JPY","AUD/USD"],                      minScore: 65 },
-  SYDNEY: { strategy: "Breakout",     pairs: ["AUD/USD","NZD/USD"],                      minScore: 65 },
-  LONDON: { strategy: "Trend Follow", pairs: ["EUR/USD","GBP/USD","XAU/USD"],             minScore: 65 },
-  PRIME:  { strategy: "Trend Follow", pairs: ["EUR/USD","GBP/USD","USD/JPY","XAU/USD"],   minScore: 65 },
-  NY:     { strategy: "Momentum",     pairs: ["EUR/USD","USD/CAD","USD/JPY"],             minScore: 65 },
+  TOKYO:  { strategy: "Trend Follow", pairs: ["NZD/USD","UK100_GBP","EUR/USD"],           minScore: 65 },
+  LONDON: { strategy: "Momentum",     pairs: ["XAG/USD","UK100_GBP","GBP/USD"],           minScore: 65 },
+  PRIME:  { strategy: "Mean Revert",  pairs: ["NZD/USD","AU200_AUD","GBP/USD"],           minScore: 65 },
+  NY:     { strategy: "Mean Revert",  pairs: ["AU200_AUD","XAU/USD","SPX500_USD"],        minScore: 65 },
+  SYDNEY: { strategy: "Trend Follow", pairs: ["NAS100_USD","XAG/USD","NZD/USD"],          minScore: 65 },
   AVOID:  { strategy: null,           pairs: [],                                          minScore: 999 },
 }
 ```
+
+SERVER_PAIRS allowlist (auto-execution):
+NZD_USD, UK100_GBP, XAG_USD, AU200_AUD, NAS100_USD, SPX500_USD,
+XAU_USD, GBP_USD, EUR_USD, USD_JPY, AUD_USD, USD_CAD
 
 ### Rule 2 — Signal Threshold: 65%
 - runGatekeepers() blocks any signal with score < 65

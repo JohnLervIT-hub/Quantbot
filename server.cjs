@@ -315,20 +315,22 @@ const lastSwingConsensus = new Map(); // instrument → ms (4-hour cooldown per 
 
 
 // ─── XAVIER RULES ────────────────────────────────────────────────────────────
+// USER EXPLICIT OVERRIDE — backtest-validated combinations (2026-05-27)
 const XAVIER_RULES = {
-  TOKYO:  { strategy: 'Mean Revert',  pairs: ['USD_JPY', 'AUD_USD'],                       minScore: 65 },
-  SYDNEY: { strategy: 'Breakout',     pairs: ['AUD_USD', 'NZD_USD'],                       minScore: 65 },
-  LONDON: { strategy: 'Trend Follow', pairs: ['EUR_USD', 'GBP_USD', 'XAU_USD'],            minScore: 65 },
-  PRIME:  { strategy: 'Trend Follow', pairs: ['EUR_USD', 'GBP_USD', 'USD_JPY', 'XAU_USD'], minScore: 65 },
-  NY:     { strategy: 'Momentum',     pairs: ['EUR_USD', 'USD_CAD', 'USD_JPY'],            minScore: 65 },
+  TOKYO:  { strategy: 'Trend Follow', pairs: ['NZD_USD', 'UK100_GBP', 'EUR_USD'],          minScore: 65 },
+  LONDON: { strategy: 'Momentum',     pairs: ['XAG_USD', 'UK100_GBP', 'GBP_USD'],          minScore: 65 },
+  PRIME:  { strategy: 'Mean Revert',  pairs: ['NZD_USD', 'AU200_AUD', 'GBP_USD'],          minScore: 65 },
+  NY:     { strategy: 'Mean Revert',  pairs: ['AU200_AUD', 'XAU_USD', 'SPX500_USD'],       minScore: 65 },
+  SYDNEY: { strategy: 'Trend Follow', pairs: ['NAS100_USD', 'XAG_USD', 'NZD_USD'],         minScore: 65 },
   AVOID:  { strategy: null,           pairs: [],                                           minScore: 999 },
 };
 
-// Validated forex pairs for M5 auto-execution — XAG/BCO/WTICO permanently removed
+// Validated pairs for auto-execution — backtest-verified 2026-05-27
 const SERVER_PAIRS = new Set([
-  'EUR_USD', 'GBP_USD', 'USD_JPY',
-  'AUD_USD', 'USD_CAD', 'XAU_USD',
-  'EUR_GBP', 'NZD_USD',
+  'NZD_USD', 'UK100_GBP', 'XAG_USD',
+  'AU200_AUD', 'NAS100_USD', 'SPX500_USD',
+  'XAU_USD', 'GBP_USD', 'EUR_USD',
+  'USD_JPY', 'AUD_USD', 'USD_CAD',
 ]);
 
 // Index pairs — home session only, 75%+ score required (tighter spreads, higher conviction)
@@ -353,7 +355,7 @@ function isHomeSession(pair, session) {
 const SERVER_PIP_SIZE = {
   EUR_USD: 0.0001, GBP_USD: 0.0001, USD_JPY:    0.01,
   AUD_USD: 0.0001, USD_CAD: 0.0001, NZD_USD:  0.0001,
-  EUR_GBP: 0.0001, XAU_USD: 0.01,
+  EUR_GBP: 0.0001, XAU_USD: 0.01,   XAG_USD:   0.01,
   SPX500_USD: 1.0, NAS100_USD: 1.0, JP225_USD:   1.0,
   UK100_GBP:  1.0, AU200_AUD:  1.0,
 };
