@@ -8013,9 +8013,11 @@ export default function TradingRobot() {
           if (!cd.executeAllowed) continue; // retry next poll
         } catch { continue; } // consensus unreachable — don't fire
         try {
+          const orderPayload = { instrument: sym, units, slPrice: currentSig.sl, tp1Price: currentSig.tp1 };
+          console.log('[SWING ORDER PAYLOAD]', JSON.stringify(orderPayload, null, 2));
           const r = await fetch(`${BRIDGE}/swing/order`, {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ instrument: sym, units, slPrice: currentSig.sl, tp1Price: currentSig.tp1 }),
+            body: JSON.stringify(orderPayload),
           });
           const data = await r.json();
           const fp = data?.orderFillTransaction?.price;
@@ -8061,10 +8063,12 @@ export default function TradingRobot() {
     if (!window.confirm(`⚔️ Execute Kill Shot: ${pair} ${sig.direction} @ ${swingFmt(pair, sig.entry)}?\nScore: ${sig.score}% · SL: ${swingFmt(pair, sig.sl)} · TP1: ${swingFmt(pair, sig.tp1)}`)) return;
     const units = sig.direction === "LONG" ? 500 : -500;
     try {
+      const orderPayload = { instrument: sym, units, slPrice: sig.sl, tp1Price: sig.tp1 };
+      console.log('[SWING ORDER PAYLOAD]', JSON.stringify(orderPayload, null, 2));
       const r = await fetch(`${BRIDGE}/swing/order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ instrument: sym, units, slPrice: sig.sl, tp1Price: sig.tp1 }),
+        body: JSON.stringify(orderPayload),
       });
       const data = await r.json();
       const fp = data?.orderFillTransaction?.price;

@@ -36,6 +36,18 @@ const VALID_INSTRUMENTS = new Set([
   'NAS100_USD', 'JP225_USD', 'UK100_GBP', 'AU200_AUD',
 ]);
 
+// Format price with correct decimal precision per instrument type
+// JPY pairs: 3 decimals | XAU/indices: 2 decimals | all others: 5 decimals
+const formatPrice = (price, instrument = '') => {
+  const p = parseFloat(price);
+  if (isNaN(p)) return String(price);
+  if (instrument.includes('JPY') || instrument.includes('JP225')) return p.toFixed(3);
+  if (instrument.includes('XAU') || instrument.includes('XAG') ||
+      instrument.includes('SPX') || instrument.includes('NAS') ||
+      instrument.includes('BCO') || instrument.includes('WTICO')) return p.toFixed(2);
+  return p.toFixed(5);
+};
+
 app.get('/prices', async (req, res) => {
   const instruments = req.query.instruments || 'EUR_USD,GBP_USD,USD_JPY';
   const requested = instruments.split(',').map(s => s.trim());
@@ -126,6 +138,11 @@ app.post('/order', async (req, res) => {
 // ─── SWING ORDER — 500 units, explicit SL/TP1 prices ─────────────────────────
 app.post('/swing/order', async (req, res) => {
   const { instrument, units, slPrice, tp1Price } = req.body;
+  console.log('[SWING ORDER RECEIVED]', req.body);
+  console.log('[SWING ORDER FORMATTED]', {
+    sl:  formatPrice(slPrice,  instrument),
+    tp1: formatPrice(tp1Price, instrument),
+  });
   if (!instrument || !units) return res.status(400).json({ error: 'instrument and units required' });
   const direction = Number(units) >= 0 ? 'LONG' : 'SHORT';
   console.log(`POST /swing/order — ${instrument} ${direction} ${Math.abs(Number(units))} units (SWING)`);
