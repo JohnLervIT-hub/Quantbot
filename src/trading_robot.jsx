@@ -1506,8 +1506,9 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
     if (metrics) localStorage.setItem("xavier_intel", JSON.stringify(metrics));
   }, [metrics]);
 
-  const buildSystemPrompt = () => {
-    const liveContext = `Current live prices from OANDA (as of ${new Date().toISOString()}):\n${Object.entries(prices).map(([pair, price]) => `${pair}: ${parseFloat(price).toFixed(priceDecimals(pair))}`).join("\n")}`;
+  const buildSystemPrompt = (freshPrices) => {
+    const priceSource = freshPrices || prices;
+    const liveContext = `LIVE OANDA PRICES RIGHT NOW (as of ${new Date().toISOString()}):\n${Object.entries(priceSource).map(([pair, price]) => `${pair}: ${parseFloat(price).toFixed(priceDecimals(pair))}`).join("\n")}\nThese are real-time prices fetched directly from OANDA. Use these in all your analysis. Ignore any cached or training-data prices.`;
     return `You are Xavier, a seasoned forex prop trader based in Calgary. Session: ${session}. Strategy: ${strategy}. Portfolio heat: ${heat}R. Open trades: ${openCount}. Active signals: ${signalPairs}. Current headline: "${currentHeadline}". Talk like a human — direct, confident, occasionally dry. Contractions always. No bullet points, no corporate phrasing. Max 80 words.\n\n${liveContext}`;
   };
 
@@ -1553,11 +1554,23 @@ function AIAnalystTab({ headlines, prices, trades, balance, currentHeadline, isM
     const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     setChatHistory(h => [...h, { role: "user", text, ts }]);
     setChatLoading(true);
-    const snap = Object.entries(prices).map(([p, v]) => `${p}: ${v}`).join(", ");
+    let freshPrices = null;
+    try {
+      const priceResp = await fetch(`${BRIDGE}/prices?instruments=EUR_USD,GBP_USD,USD_JPY,XAU_USD,AUD_USD,NZD_USD,USD_CAD`).then(r => r.json());
+      if (priceResp.prices) {
+        freshPrices = {};
+        priceResp.prices.forEach(p => {
+          const pair = p.instrument.replace("_", "/");
+          const mid = (parseFloat(p.bids[0].price) + parseFloat(p.asks[0].price)) / 2;
+          freshPrices[pair] = mid.toFixed(priceDecimals(pair));
+        });
+      }
+    } catch { /* fall back to props prices */ }
+    const snap = Object.entries(freshPrices || prices).map(([p, v]) => `${p}: ${v}`).join(", ");
     try {
       const result = await callClaude(
         `Market context: ${snap}\nHeadlines: ${headlines.slice(0, 3).join(" | ")}\n\nTrader question: ${text}`,
-        buildSystemPrompt(),
+        buildSystemPrompt(freshPrices),
         400
       );
       setChatHistory(h => [...h, { role: "ai", text: result, ts: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
