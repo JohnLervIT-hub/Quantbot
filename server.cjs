@@ -355,7 +355,7 @@ const TRAIL_SETTINGS = {
 // M5 backtest-validated combinations — updated 2026-05-27
 const XAVIER_RULES = {
   TOKYO:  { strategy: 'Mean Revert', pairs: ['EUR_GBP', 'EUR_USD', 'AUD_USD'],    minScore: 65 },
-  LONDON: { strategy: 'Mean Revert', pairs: ['USD_CAD', 'NZD_USD', 'GBP_USD'],    minScore: 65 },
+  LONDON: { strategy: 'Momentum',    pairs: ['XAG_USD', 'GBP_USD', 'EUR_USD'],    minScore: 65 },
   PRIME:  { strategy: 'Breakout',    pairs: ['EUR_GBP', 'USD_CAD', 'XAU_USD'],    minScore: 65 },
   NY:     { strategy: 'Mean Revert', pairs: ['USD_CAD', 'AU200_AUD', 'NZD_USD'],  minScore: 65 },
   SYDNEY: { strategy: 'Mean Revert', pairs: ['GBP_USD', 'NZD_USD', 'AUD_USD'],   minScore: 65 },
@@ -405,6 +405,19 @@ const INDEX_HOME_SESSION = {
 function isHomeSession(pair, session) {
   return INDEX_HOME_SESSION[pair] === session;
 }
+
+// Allowed sessions per instrument — prevents cross-session misfires (e.g. NAS100 in London)
+const INSTRUMENT_HOME_SESSIONS = {
+  NAS100_USD: ['NY', 'SYDNEY'],
+  JP225_USD:  ['TOKYO'],
+  UK100_GBP:  ['LONDON', 'PRIME'],
+  AU200_AUD:  ['SYDNEY', 'TOKYO'],
+  SPX500_USD: ['NY'],
+  XAG_USD:    ['LONDON', 'PRIME', 'NY'],
+  BCO_USD:    ['LONDON', 'PRIME', 'NY'],
+  WTICO_USD:  ['NY', 'PRIME'],
+  XAU_USD:    ['LONDON', 'PRIME', 'NY', 'SYDNEY'],
+};
 
 const SERVER_PIP_SIZE = {
   EUR_USD: 0.0001, GBP_USD: 0.0001, USD_JPY:    0.01,
@@ -2158,6 +2171,13 @@ async function serverSwingAutoTrade() {
   const session = getServerSession();
 
   for (const instrument of KILL_SHOT_PAIRS) {
+    // Session gate — block instruments that don't belong in this session
+    const allowedSessions = INSTRUMENT_HOME_SESSIONS[instrument];
+    if (allowedSessions && !allowedSessions.includes(session)) {
+      console.log(`[SESSION BLOCK] ${instrument} — not active in ${session}`);
+      continue;
+    }
+
     // 4-hour cooldown per pair (stamp before consensus to prevent parallel double-fire)
     if (Date.now() - (lastSwingConsensus.get(instrument) || 0) < 4 * 60 * 60_000) continue;
 
