@@ -328,6 +328,10 @@ let   economicEvents       = [];        // high-impact events this week
 let   dailyStats           = { date: '', trades: 0, winners: 0, losers: 0, totalPnl: 0, bestTrade: '', _bestPnl: -Infinity };
 let   lastDailySummaryDate = '';
 
+// Post-close cooldown — blocks re-entry for 15 min after any close on same instrument
+const postCloseCooldown       = new Map(); // instrument → ms timestamp of last close
+const POST_CLOSE_COOLDOWN_MS  = 15 * 60 * 1000; // 15 minutes
+
 
 // ─── XAVIER RULES ────────────────────────────────────────────────────────────
 // USER EXPLICIT OVERRIDE — backtest-validated combinations (2026-05-27)
@@ -1265,6 +1269,9 @@ async function manageOpenTrades() {
               `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n` +
               `Today: ${dailyStats.winners}W/${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`
             );
+            // Post-close cooldown — lock this instrument for 15 minutes
+            postCloseCooldown.set(instr, Date.now());
+            console.log(`[COOLDOWN] ${instr} — locked for 15 min after close (PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)})`);
           }
         } catch (e) {
           console.error('[mgmt] Closed trade fetch failed:', e.message);
@@ -1638,7 +1645,16 @@ async function serverAutoTrade() {
   }
 
   for (const instrument of pairs) {
-    if (Date.now() - (lastConsensus.get(instrument) || 0) < 5 * 60_000) continue;
+    // Consensus cooldown — 15 minutes between signal attempts per pair
+    if (Date.now() - (lastConsensus.get(instrument) || 0) < 15 * 60_000) continue;
+
+    // Post-close cooldown — 15 minutes after any close on this instrument
+    const lastClose = postCloseCooldown.get(instrument);
+    if (lastClose && Date.now() - lastClose < POST_CLOSE_COOLDOWN_MS) {
+      const minsLeft = Math.ceil((POST_CLOSE_COOLDOWN_MS - (Date.now() - lastClose)) / 60000);
+      console.log(`[COOLDOWN] ${instrument} — ${minsLeft} min remaining before re-entry allowed`);
+      continue;
+    }
 
     // Cross-system pair lock — one position per instrument across M5 + swing
     if (openTrades.some(t => t.instrument === instrument)) {
@@ -1762,6 +1778,15 @@ async function serverAutoTrade() {
 
     const units = signal.direction === 'LONG' ? 1000 : -1000;
     try {
+      // SL sanity check — wrong-side SL causes STOP_LOSS_ON_FILL_LOSS rejection
+      const slSane = signal.direction === 'LONG' ? sl < price : sl > price;
+      const tpSane = signal.direction === 'LONG' ? tp > price : tp < price;
+      if (!slSane || !tpSane) {
+        console.error(`[auto] ${instrument} — SL/TP sanity FAILED: dir=${signal.direction} price=${formatPrice(price, instrument)} sl=${formatPrice(sl, instrument)} tp=${formatPrice(tp, instrument)} — ABORTING order`);
+        serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'SL/TP Sanity', actual: `sl=${formatPrice(sl, instrument)} tp=${formatPrice(tp, instrument)}`, threshold: `LONG: sl<price<tp | SHORT: sl>price>tp` }] });
+        if (serverRejections.length > 50) serverRejections.pop();
+        continue;
+      }
       const orderPayload = {
         order: {
           type: 'MARKET', instrument, units: String(units),
@@ -1989,6 +2014,14 @@ async function serverSwingAutoTrade() {
     // 4-hour cooldown per pair (stamp before consensus to prevent parallel double-fire)
     if (Date.now() - (lastSwingConsensus.get(instrument) || 0) < 4 * 60 * 60_000) continue;
 
+    // Post-close cooldown — skip if instrument closed within last 15 minutes
+    const lastClose = postCloseCooldown.get(instrument);
+    if (lastClose && Date.now() - lastClose < POST_CLOSE_COOLDOWN_MS) {
+      const minsLeft = Math.ceil((POST_CLOSE_COOLDOWN_MS - (Date.now() - lastClose)) / 60000);
+      console.log(`[COOLDOWN] ${instrument} swing — ${minsLeft} min remaining before re-entry allowed`);
+      continue;
+    }
+
     try {
       // Fetch H4 (100 bars) + weekly (10 bars) in parallel
       const [h4Candles, weeklyCandles] = await Promise.all([
@@ -2050,6 +2083,14 @@ async function serverSwingAutoTrade() {
 
       const consensus = await runSwingConsensus(consensusParams);
       if (!consensus.passes) continue;
+
+      // ── SL sanity check before swing order ──────────────────────────────────
+      const slSane = sig.direction === 'LONG' ? liveSl < liveEntry : liveSl > liveEntry;
+      const tpSane = sig.direction === 'LONG' ? liveTp1 > liveEntry : liveTp1 < liveEntry;
+      if (!slSane || !tpSane) {
+        console.error(`[KILL SHOT] ${instrument} — SL/TP sanity FAILED: dir=${sig.direction} entry=${formatPrice(liveEntry, instrument)} sl=${formatPrice(liveSl, instrument)} tp1=${formatPrice(liveTp1, instrument)} — ABORTING`);
+        continue;
+      }
 
       // ── Place swing order (500 units, SL + TP1 from live price) ─────────────
       const units = sig.direction === 'LONG' ? 500 : -500;
