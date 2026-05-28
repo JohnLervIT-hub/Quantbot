@@ -2720,6 +2720,8 @@ function ToastContainer({ toasts, onDismiss }) {
 
 // ─── KILL SHOT — SWING ENGINE ─────────────────────────────────────────────────
 const KILL_SHOT_PAIRS = ["XAU/USD", "GBP/USD", "EUR/USD", "USD/JPY", "NAS100/USD", "BCO/USD"];
+// Phase 2/3 instruments — show in panel but flag as not yet validated for auto-execution
+const PHASE2_PAIRS = new Set(["NAS100/USD", "BCO/USD"]);
 
 // Allowed sessions per instrument — forex entries omitted (always visible)
 const INSTRUMENT_HOME_SESSIONS = {
@@ -3245,6 +3247,7 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
         const isAlreadyOpen = openTrades?.some(t => t.instrument?.replace("_", "/") === pair);
         const canExec = canExecuteSwing(pair) && !isFriPM && !isNewsBlock;
         const isPending = !!pendingSetups?.[pair];
+        const isPhase2 = PHASE2_PAIRS.has(pair);
         const labelColor = sig.label === "PERFECT" ? "#3fb950" : "#F97316";
         const cs = consensusMap[pair]; // { loading, data }
         const confirms = cs?.data?.votes?.confirm ?? 0;
@@ -3261,7 +3264,8 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
                 <span style={{ fontSize: 12, fontWeight: 700, color: "#e6edf3", fontFamily: FONT_MONO }}>{pair}</span>
                 <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: sig.direction === "LONG" ? "#3fb95022" : "#f8514922", color: sig.direction === "LONG" ? "#3fb950" : "#f85149", border: `1px solid ${sig.direction === "LONG" ? "#3fb95055" : "#f8514955"}`, fontWeight: 700 }}>{sig.direction}</span>
                 <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: labelColor + "22", color: labelColor, border: `1px solid ${labelColor}44`, fontWeight: 700 }}>{sig.label}</span>
-                {isPending && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "#58a6ff22", color: "#58a6ff", border: "1px solid #58a6ff44", fontWeight: 700 }}>QUEUED</span>}
+                {isPending  && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "#58a6ff22", color: "#58a6ff", border: "1px solid #58a6ff44", fontWeight: 700 }}>QUEUED</span>}
+                {isPhase2  && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "#d2992222", color: "#d29922", border: "1px solid #d2992244", fontWeight: 700 }}>PHASE 2</span>}
               </div>
               <span style={{ fontSize: 13, fontWeight: 800, color: labelColor, fontFamily: FONT_MONO }}>{sig.score}%</span>
             </div>
@@ -3343,8 +3347,8 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
 
             {/* Execute button — gated by consensus */}
             <button
-              onClick={() => canExec && !isAlreadyOpen && executeAllowed && onExecute(pair, sig)}
-              disabled={isAlreadyOpen || !canExec || !executeAllowed || !!cs?.loading}
+              onClick={() => canExec && !isAlreadyOpen && executeAllowed && !isPhase2 && onExecute(pair, sig)}
+              disabled={isAlreadyOpen || !canExec || !executeAllowed || !!cs?.loading || isPhase2}
               style={{
                 marginTop: 8, width: "100%", padding: "7px 0", borderRadius: 6,
                 fontFamily: "inherit", letterSpacing: "0.04em", transition: "all 0.15s",
@@ -3359,6 +3363,7 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
                 : cs?.loading ? "⏳ Running consensus…"
                 : !cs?.data ? "⏳ Awaiting consensus…"
                 : !executeAllowed ? "❌ Blocked by committee"
+                : isPhase2 ? "⚠️ Phase 2 — not yet validated for auto"
                 : !canExec ? (isPending ? `⏳ ${nextSwingWindow(pair).split(" in ")[0]}` : `⏳ ${nextSwingWindow(pair)}`)
                 : "⚔️ Execute Kill Shot"}
             </button>

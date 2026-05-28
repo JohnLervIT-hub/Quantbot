@@ -401,6 +401,35 @@ const INDEX_PAIRS = new Set([
   'AU200_AUD',                  // Sydney only
 ]);
 
+// Margin rates by asset class — used for pre-order margin check
+const MARGIN_RATE = {
+  EUR_USD: 0.02, GBP_USD: 0.02, USD_JPY: 0.02, AUD_USD: 0.02,
+  USD_CAD: 0.02, NZD_USD: 0.02, EUR_GBP: 0.02,
+  XAU_USD: 0.05, XAG_USD: 0.05, BCO_USD: 0.05, WTICO_USD: 0.05,
+  NAS100_USD: 0.05, JP225_USD: 0.05, SPX500_USD: 0.05, UK100_GBP: 0.05, AU200_AUD: 0.05,
+};
+
+async function getMarginAvailable() {
+  try {
+    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/summary`, { headers: H });
+    const data = await r.json();
+    return parseFloat(data.account?.marginAvailable ?? 0);
+  } catch {
+    return Infinity; // can't fetch — don't block the trade
+  }
+}
+
+async function checkMargin(instrument, units, price) {
+  const rate      = MARGIN_RATE[instrument] ?? 0.05;
+  const required  = Math.abs(units) * price * rate;
+  const available = await getMarginAvailable();
+  const ok        = required <= available * 0.80; // keep 20% buffer
+  if (!ok) {
+    console.log(`[MARGIN BLOCK] ${instrument} — need $${required.toFixed(2)}, have $${(available * 0.80).toFixed(2)} (80% of $${available.toFixed(2)} available)`);
+  }
+  return ok;
+}
+
 // High-threshold pairs — 75% signal score required (volatile, wider spreads, needs higher conviction)
 const HIGH_THRESHOLD_PAIRS = new Set([
   'XAG_USD', 'BCO_USD', 'WTICO_USD',           // Commodities — volatile
@@ -1995,6 +2024,10 @@ async function serverAutoTrade() {
     }
 
     const units = signal.direction === 'LONG' ? 1000 : -1000;
+
+    // Pre-flight margin check — prevents INSUFFICIENT_MARGIN rejections
+    if (!(await checkMargin(instrument, units, price))) continue;
+
     try {
       // SL sanity check — wrong-side SL causes STOP_LOSS_ON_FILL_LOSS rejection
       const orderPayload = {
@@ -2322,8 +2355,11 @@ async function serverSwingAutoTrade() {
         continue;
       }
 
-      // ── Place swing order (500 units, SL + TP1 from live price) ─────────────
+      // ── Pre-flight margin check ──────────────────────────────────────────────
       const units = sig.direction === 'LONG' ? 500 : -500;
+      if (!(await checkMargin(instrument, units, liveEntry))) continue;
+
+      // ── Place swing order (500 units, SL + TP1 from live price) ─────────────
       const order = {
         type: 'MARKET', instrument, units: String(units),
         timeInForce: 'FOK', positionFill: 'DEFAULT',
