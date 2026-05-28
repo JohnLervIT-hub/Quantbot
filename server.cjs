@@ -1033,6 +1033,72 @@ app.get('/auto-status', (_req, res) => {
   });
 });
 
+// ─── TRANSACTION AUDIT ────────────────────────────────────────────────────────
+app.get('/audit', async (req, res) => {
+  try {
+    const count = Math.min(parseInt(req.query.count || '200', 10), 500);
+    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/transactions?count=${count}`, { headers: H });
+    const data = await r.json();
+    const txns = data.transactions || [];
+
+    let tradesOpened = 0, tradesClosed = 0, slMods = 0, tpHits = 0, rejections = 0;
+    let netPnl = 0;
+    let biggestWin  = { pair: null, amount: 0 };
+    let biggestLoss = { pair: null, amount: 0 };
+
+    // type frequency map for full visibility
+    const typeCounts = {};
+
+    for (const t of txns) {
+      typeCounts[t.type] = (typeCounts[t.type] || 0) + 1;
+
+      if (t.type === 'ORDER_FILL')           tradesOpened++;
+      if (t.type === 'TRADE_CLOSE')          tradesClosed++;
+      if (t.type === 'STOP_LOSS_ORDER')      slMods++;
+      if (t.type === 'TAKE_PROFIT_ORDER')    tpHits++;
+      if (t.type === 'MARKET_ORDER_REJECT' ||
+          t.type === 'ORDER_CANCEL')         rejections++;
+
+      if (t.pl) {
+        const pl = parseFloat(t.pl);
+        if (!isNaN(pl)) {
+          netPnl += pl;
+          if (pl > biggestWin.amount)  biggestWin  = { pair: t.instrument || null, amount: pl };
+          if (pl < biggestLoss.amount) biggestLoss = { pair: t.instrument || null, amount: pl };
+        }
+      }
+    }
+
+    // recent 50 transactions for inspection (newest first)
+    const recent = txns.slice().reverse().slice(0, 50).map(t => ({
+      id:         t.id,
+      type:       t.type,
+      time:       t.time,
+      instrument: t.instrument || null,
+      units:      t.units      || null,
+      price:      t.price      || null,
+      pl:         t.pl         || null,
+      reason:     t.reason     || t.rejectReason || null,
+    }));
+
+    res.json({
+      totalTransactions: txns.length,
+      tradesOpened,
+      tradesClosed,
+      slModifications: slMods,
+      tpHits,
+      rejections,
+      netPnl:     parseFloat(netPnl.toFixed(2)),
+      biggestWin,
+      biggestLoss,
+      typeCounts,
+      recent,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── TELEGRAM NOTIFICATIONS ───────────────────────────────────────────────────
 // Setup: Add these two env vars to Railway (Settings → Variables):
 //   TELEGRAM_BOT_TOKEN   — get from @BotFather: /newbot → copy token
