@@ -1887,11 +1887,38 @@ async function serverAutoTrade() {
     const tr        = bars.slice(1).map((v, i) => Math.abs(v - bars[i]));
     const atr       = tr.reduce((a, b) => a + b, 0) / tr.length || 0.00001;
     const pip       = SERVER_PIP_SIZE[instrument] || 0.0001;
-    const atrPips   = (atr / pip).toFixed(1);
     const slMult    = ATR_SL_MULTIPLIER[instrument] ?? 1.5;
     const tpMult    = ATR_TP_MULTIPLIER[instrument] ?? 3.0;
-    const sl        = signal.direction === 'LONG' ? price - atr * slMult : price + atr * slMult;
-    const tp        = signal.direction === 'LONG' ? price + atr * tpMult : price - atr * tpMult;
+
+    // Minimum stop distance — prevents hair-trigger SL on low-ATR candles
+    const MIN_STOP_PIPS = {
+      EUR_USD: 0.0010, GBP_USD: 0.0012, USD_JPY: 0.10,
+      AUD_USD: 0.0010, NZD_USD: 0.0010, USD_CAD: 0.0010,
+      EUR_GBP: 0.0008, XAU_USD: 1.50,
+    };
+    const minStop      = MIN_STOP_PIPS[instrument] ?? 0.0010;
+    const rawSlDist    = atr * slMult;
+    const actualSlDist = Math.max(rawSlDist, minStop);
+    const atrPips      = (actualSlDist / pip).toFixed(1);
+
+    const sl = signal.direction === 'LONG' ? price - actualSlDist : price + actualSlDist;
+    const tp = signal.direction === 'LONG' ? price + atr * tpMult : price - atr * tpMult;
+
+    console.log(`[SL CHECK] ${instrument} dir:${signal.direction} entry:${formatPrice(price, instrument)} sl:${formatPrice(sl, instrument)} dist:${actualSlDist.toFixed(5)} atr:${atr.toFixed(5)} mult:${slMult} minStop:${minStop} ${rawSlDist < minStop ? '⚠ MIN ENFORCED' : '✓ ATR'}`);
+
+    // Hard side check before anything else — wrong-side SL caught early
+    if (signal.direction === 'LONG' && sl >= price) {
+      console.error(`[SL ERROR] ${instrument} LONG stop ${formatPrice(sl, instrument)} is AT or ABOVE entry ${formatPrice(price, instrument)} — aborting`);
+      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'SL Side Error', actual: `LONG sl=${formatPrice(sl, instrument)} >= entry`, threshold: 'sl must be below entry' }] });
+      if (serverRejections.length > 50) serverRejections.pop();
+      continue;
+    }
+    if (signal.direction === 'SHORT' && sl <= price) {
+      console.error(`[SL ERROR] ${instrument} SHORT stop ${formatPrice(sl, instrument)} is AT or BELOW entry ${formatPrice(price, instrument)} — aborting`);
+      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'SL Side Error', actual: `SHORT sl=${formatPrice(sl, instrument)} <= entry`, threshold: 'sl must be above entry' }] });
+      if (serverRejections.length > 50) serverRejections.pop();
+      continue;
+    }
     const ema9v     = liveHistory.slice(-9).reduce((a, b) => a + b, 0) / 9;
     const ema21v    = liveHistory.slice(-21).reduce((a, b) => a + b, 0) / 21;
     const ema50v    = liveHistory.length >= 50 ? liveHistory.slice(-50).reduce((a, b) => a + b, 0) / 50 : ema21v;
@@ -1952,14 +1979,6 @@ async function serverAutoTrade() {
     const units = signal.direction === 'LONG' ? 1000 : -1000;
     try {
       // SL sanity check — wrong-side SL causes STOP_LOSS_ON_FILL_LOSS rejection
-      const slSane = signal.direction === 'LONG' ? sl < price : sl > price;
-      const tpSane = signal.direction === 'LONG' ? tp > price : tp < price;
-      if (!slSane || !tpSane) {
-        console.error(`[auto] ${instrument} — SL/TP sanity FAILED: dir=${signal.direction} price=${formatPrice(price, instrument)} sl=${formatPrice(sl, instrument)} tp=${formatPrice(tp, instrument)} — ABORTING order`);
-        serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'SL/TP Sanity', actual: `sl=${formatPrice(sl, instrument)} tp=${formatPrice(tp, instrument)}`, threshold: `LONG: sl<price<tp | SHORT: sl>price>tp` }] });
-        if (serverRejections.length > 50) serverRejections.pop();
-        continue;
-      }
       const orderPayload = {
         order: {
           type: 'MARKET', instrument, units: String(units),
