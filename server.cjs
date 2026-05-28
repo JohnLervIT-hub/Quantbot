@@ -365,12 +365,19 @@ app.get('/discord-debug', async (_req, res) => {
   const channelId = process.env.DISCORD_CHANNEL_ID;
   if (!botToken || !channelId) return res.json({ error: 'DISCORD_BOT_TOKEN or DISCORD_CHANNEL_ID missing' });
   try {
-    const r = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages?limit=5`,
-      { headers: { 'Authorization': `Bot ${botToken}` } }
-    );
-    const data = await r.json();
-    res.json({ status: r.status, lastMessageId: lastDiscordMessageId, messages: data });
+    const [msgR, guildsR] = await Promise.all([
+      fetch(`https://discord.com/api/v10/channels/${channelId}/messages?limit=3`, { headers: { 'Authorization': `Bot ${botToken}` } }),
+      fetch(`https://discord.com/api/v10/users/@me/guilds`, { headers: { 'Authorization': `Bot ${botToken}` } }),
+    ]);
+    const messages = await msgR.json();
+    const guilds   = await guildsR.json();
+    res.json({
+      channelStatus: msgR.status,
+      channelId,
+      lastMessageId: lastDiscordMessageId,
+      messages,
+      guilds: Array.isArray(guilds) ? guilds.map(g => ({ id: g.id, name: g.name })) : guilds,
+    });
   } catch (e) {
     res.json({ error: e.message });
   }
