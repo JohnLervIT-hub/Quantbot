@@ -332,6 +332,15 @@ let   lastDailySummaryDate = '';
 const postCloseCooldown       = new Map(); // instrument → ms timestamp of last close
 const POST_CLOSE_COOLDOWN_MS  = 15 * 60 * 1000; // 15 minutes
 
+// Pair-specific trail settings — commodities trail tighter/earlier than forex
+const TRAIL_SETTINGS = {
+  XAG_USD:   { startR: 1.5, trailR: 0.3 },
+  BCO_USD:   { startR: 1.5, trailR: 0.3 },
+  WTICO_USD: { startR: 1.5, trailR: 0.3 },
+  XAU_USD:   { startR: 1.5, trailR: 0.3 },
+  default:   { startR: 2.0, trailR: 0.5 },
+};
+
 
 // ─── XAVIER RULES ────────────────────────────────────────────────────────────
 // USER EXPLICIT OVERRIDE — backtest-validated combinations (2026-05-27)
@@ -1221,7 +1230,7 @@ async function partialCloseTrade(tradeId, units) {
   }
 }
 
-// ─── OPEN TRADE MANAGER (runs every 30s) ─────────────────────────────────────
+// ─── OPEN TRADE MANAGER (runs every 10s) ─────────────────────────────────────
 async function manageOpenTrades() {
   if (process.env.AUTO_MODE_ENABLED !== 'true') return;
 
@@ -1235,22 +1244,27 @@ async function manageOpenTrades() {
     return;
   }
 
-  // ── Detect closed trades ────────────────────────────────────────────────────
+  // ── Detect closed trades (auto + manual) ────────────────────────────────────
   const currentIds = new Set(openTrades.map(t => t.id));
   for (const id of lastKnownTradeIds) {
     if (!currentIds.has(id)) {
-      const state = tradeManagementState.get(id);
-      if (state) {
-        try {
-          const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${id}`, { headers: H });
-          const data = await r.json();
-          const trade = data.trade;
-          if (trade) {
-            const pnl   = parseFloat(trade.realizedPL || 0);
-            const instr = trade.instrument;
-            const dir   = parseFloat(trade.initialUnits || 1) >= 0 ? 'LONG' : 'SHORT';
-            const won   = pnl > 0;
-            // Update daily stats
+      // Always fetch the closed trade to get instrument — handles manual closes too
+      try {
+        const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${id}`, { headers: H });
+        const data = await r.json();
+        const trade = data.trade;
+        if (trade) {
+          const pnl   = parseFloat(trade.realizedPL || 0);
+          const instr = trade.instrument;
+          const dir   = parseFloat(trade.initialUnits || 1) >= 0 ? 'LONG' : 'SHORT';
+          const won   = pnl > 0;
+
+          // Post-close cooldown — always set on any close, including manual
+          postCloseCooldown.set(instr, Date.now());
+          console.log(`[COOLDOWN] ${instr} — locked 15 min after close (PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)})`);
+
+          // Update daily stats (only for Xavier-managed closes)
+          if (tradeManagementState.has(id)) {
             const today = new Date().toISOString().slice(0, 10);
             if (dailyStats.date !== today) {
               dailyStats = { date: today, trades: 0, winners: 0, losers: 0, totalPnl: 0, bestTrade: '', _bestPnl: -Infinity };
@@ -1262,22 +1276,21 @@ async function manageOpenTrades() {
               dailyStats._bestPnl   = pnl;
               dailyStats.bestTrade  = `${instr.replace('_', '/')} ${dir} +$${pnl.toFixed(2)}`;
             }
-            const emoji = won ? '✅' : '❌';
-            await sendTelegram(
-              `${emoji} <b>TRADE CLOSED</b>\n` +
-              `Pair: ${instr.replace('_', '/')} ${dir}\n` +
-              `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n` +
-              `Today: ${dailyStats.winners}W/${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`
-            );
-            // Post-close cooldown — lock this instrument for 15 minutes
-            postCloseCooldown.set(instr, Date.now());
-            console.log(`[COOLDOWN] ${instr} — locked for 15 min after close (PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)})`);
           }
-        } catch (e) {
-          console.error('[mgmt] Closed trade fetch failed:', e.message);
+
+          const isManual = !tradeManagementState.has(id);
+          const emoji = won ? '✅' : '❌';
+          await sendTelegram(
+            `${emoji} <b>TRADE CLOSED${isManual ? ' (manual)' : ''}</b>\n` +
+            `Pair: ${instr.replace('_', '/')} ${dir}\n` +
+            `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n` +
+            (isManual ? `⚠️ Manual close — cooldown set` : `Today: ${dailyStats.winners}W/${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`)
+          );
         }
-        tradeManagementState.delete(id);
+      } catch (e) {
+        console.error('[mgmt] Closed trade fetch failed:', e.message);
       }
+      tradeManagementState.delete(id);
       lastKnownTradeIds.delete(id);
     }
   }
@@ -1316,7 +1329,10 @@ async function manageOpenTrades() {
     const state   = tradeManagementState.get(tradeId);
     state.peakR   = Math.max(state.peakR, currentR);
 
-    // ── 1R reached: breakeven + partial close 50% ────────────────────────────
+    // Pair-specific trail settings
+    const trail = TRAIL_SETTINGS[instrument] || TRAIL_SETTINGS.default;
+
+    // ── 1R reached: move to breakeven ────────────────────────────────────────
     if (currentR >= 1.0 && !state.movedToBreakeven) {
       const pip     = SERVER_PIP_SIZE[instrument] || 0.0001;
       const bePrice = dir === 'LONG' ? entry + pip : entry - pip;
@@ -1332,32 +1348,38 @@ async function manageOpenTrades() {
       }
     }
 
+    // ── 1R reached: partial close 33% (keep 67% running toward 2R/3R) ────────
     if (currentR >= 1.0 && !state.partialClosed) {
-      const halfUnits = Math.round(Math.abs(units) * 0.5);
-      if (halfUnits > 0) {
-        const result = await partialCloseTrade(tradeId, halfUnits);
+      const thirdUnits = Math.round(Math.abs(units) * 0.33);
+      if (thirdUnits > 0) {
+        const result = await partialCloseTrade(tradeId, thirdUnits);
         if (result) {
           state.partialClosed = true;
           await sendTelegram(
-            `💰 <b>PARTIAL CLOSE</b>\n` +
+            `💰 <b>PARTIAL CLOSE 33%</b>\n` +
             `${instrument.replace('_', '/')} ${dir}\n` +
-            `Closed ${halfUnits} units @ ${formatPrice(result.fill, instrument)}\n` +
-            `Locked: ${result.pnl >= 0 ? '+' : ''}$${result.pnl.toFixed(2)}`
+            `Closed ${thirdUnits} units @ ${formatPrice(result.fill, instrument)}\n` +
+            `Locked: ${result.pnl >= 0 ? '+' : ''}$${result.pnl.toFixed(2)}\n` +
+            `67% still running`
           );
         }
       }
     }
 
-    // ── 2R+ reached: trail stop to (currentR - 0.5R), only if improving ──────
-    if (currentR >= 2.0) {
+    // ── Trail stop: pair-specific startR and trailR ───────────────────────────
+    // Commodities (XAG, BCO, WTICO, XAU): start at 1.5R, trail 0.3R behind
+    // Forex/indices: start at 2.0R, trail 0.5R behind
+    if (currentR >= trail.startR) {
       const trailPrice = dir === 'LONG'
-        ? entry + risk * (currentR - 0.5)
-        : entry - risk * (currentR - 0.5);
-      const currentSL = parseFloat(trade.stopLossOrder?.price || sl);
-      const improving  = dir === 'LONG' ? trailPrice > currentSL + risk * 0.1
-                                        : trailPrice < currentSL - risk * 0.1;
+        ? entry + risk * (currentR - trail.trailR)
+        : entry - risk * (currentR - trail.trailR);
+      const currentSL  = parseFloat(trade.stopLossOrder?.price || sl);
+      const improving   = dir === 'LONG'
+        ? trailPrice > currentSL + risk * 0.05
+        : trailPrice < currentSL - risk * 0.05;
       if (improving) {
         await updateTradeSL(tradeId, trailPrice, instrument);
+        console.log(`[TRAIL] ${instrument} ${dir} — SL → ${formatPrice(trailPrice, instrument)} (+${currentR.toFixed(2)}R)`);
       }
     }
   }
@@ -2175,7 +2197,7 @@ setInterval(() => serverSwingAutoTrade().catch(e => console.error('[swing-auto] 
 
 // Upgrade 1 — Trade management (breakeven, partial close, trail) every 30s
 setTimeout(() => manageOpenTrades().catch(e => console.error('[mgmt] Startup:', e.message)), 20_000);
-setInterval(() => manageOpenTrades().catch(e => console.error('[mgmt] Loop:', e.message)), 30_000);
+setInterval(() => manageOpenTrades().catch(e => console.error('[mgmt] Loop:', e.message)), 10_000);
 
 // Daily summary check every 60s (fires Telegram at 00:00–00:01 UTC)
 setInterval(() => maybeSendDailySummary().catch(e => console.error('[mgmt] Summary:', e.message)), 60_000);
