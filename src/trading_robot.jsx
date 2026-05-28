@@ -359,12 +359,15 @@ function generateSignal(history, strategy, pair) {
   } else if (strategy === "Mean Revert") {
     const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
     const dev = Math.abs(last - mean) / mean;
-    const pairKey = pair.replace("/", "_");
-    const isGold = pairKey.includes("XAU");
-    const isJpy  = pairKey.includes("JPY");
-    const t1 = isGold ? 0.0008 : isJpy ? 0.0015 : 0.001;
-    const t2 = isGold ? 0.0015 : isJpy ? 0.003  : 0.002;
-    const t3 = isGold ? 0.003  : isJpy ? 0.005  : 0.004;
+    const pairKey  = pair.replace("/", "_");
+    const isSilver = pairKey.includes("XAG");
+    const isGold   = pairKey.includes("XAU");
+    const isOil    = pairKey.includes("BCO") || pairKey.includes("WTICO");
+    const isJpy    = pairKey.includes("JPY");
+    // Silver moves 10× faster — wider deviation thresholds (USER EXPLICIT OVERRIDE 2026-05-27)
+    const t1 = isSilver ? 0.004 : isOil ? 0.003 : isGold ? 0.0008 : isJpy ? 0.0015 : 0.001;
+    const t2 = isSilver ? 0.008 : isOil ? 0.006 : isGold ? 0.0015 : isJpy ? 0.003  : 0.002;
+    const t3 = isSilver ? 0.015 : isOil ? 0.012 : isGold ? 0.003  : isJpy ? 0.005  : 0.004;
     if (dev > t1) {
       const dir = last > mean ? "SHORT" : "LONG";
       score += 50;
@@ -462,7 +465,11 @@ function generateSignal(history, strategy, pair) {
     threshold = Math.max(55, Math.min(65, pairBase + stratPenalty + sesBonus));
   } catch {}
   if (!direction || score < threshold) return null;
-  return { direction, score: Math.min(score, 100), reason, rsi: parseFloat(rsi.toFixed(1)), threshold };
+  const _pairKey2  = pair.replace("/", "_");
+  const _isSilver2 = _pairKey2.includes("XAG");
+  const _isOil2    = _pairKey2.includes("BCO") || _pairKey2.includes("WTICO");
+  const minHold    = _isSilver2 ? 30 : _isOil2 ? 20 : 5;
+  return { direction, score: Math.min(score, 100), reason, rsi: parseFloat(rsi.toFixed(1)), threshold, minHold };
 }
 
 // ─── REGIME / GATEKEEPER ENGINE ──────────────────────────────────────────────
@@ -7320,14 +7327,17 @@ function generateSignalM5(history, strategy, pair) {
     if (change > 0.001) { score += 25; direction = direction || "LONG";  reason.push("Uptrend M5"); }
     else if (change < -0.001) { score += 25; direction = direction || "SHORT"; reason.push("Downtrend M5"); }
   } else if (strategy === "Mean Revert") {
-    const mean   = recent.reduce((a, b) => a + b, 0) / recent.length;
-    const dev    = Math.abs(last - mean) / mean;
-    const pairKey = pair.replace("/", "_");
-    const isGold  = pairKey.includes("XAU");
-    const isJpy   = pairKey.includes("JPY");
-    const t1 = isGold ? 0.0003 : isJpy ? 0.0006 : 0.0005;
-    const t2 = isGold ? 0.0007 : isJpy ? 0.0012 : 0.001;
-    const t3 = isGold ? 0.0014 : isJpy ? 0.002  : 0.002;
+    const mean    = recent.reduce((a, b) => a + b, 0) / recent.length;
+    const dev     = Math.abs(last - mean) / mean;
+    const pairKey  = pair.replace("/", "_");
+    const isSilver = pairKey.includes("XAG");
+    const isGold   = pairKey.includes("XAU");
+    const isOil    = pairKey.includes("BCO") || pairKey.includes("WTICO");
+    const isJpy    = pairKey.includes("JPY");
+    // M5 silver/oil thresholds: ~40% of live thresholds (5-min candles are much smaller)
+    const t1 = isSilver ? 0.0015 : isOil ? 0.0012 : isGold ? 0.0003 : isJpy ? 0.0006 : 0.0005;
+    const t2 = isSilver ? 0.0030 : isOil ? 0.0024 : isGold ? 0.0007 : isJpy ? 0.0012 : 0.001;
+    const t3 = isSilver ? 0.0060 : isOil ? 0.0048 : isGold ? 0.0014 : isJpy ? 0.002  : 0.002;
     if (dev > t1) {
       const dir = last > mean ? "SHORT" : "LONG";
       score += 50;

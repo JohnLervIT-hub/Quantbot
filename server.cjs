@@ -379,6 +379,22 @@ const INDEX_PAIRS = new Set([
   'AU200_AUD',                  // Sydney only
 ]);
 
+// High-threshold pairs — 75% signal score required (volatile, wider spreads, needs higher conviction)
+const HIGH_THRESHOLD_PAIRS = new Set([
+  'XAG_USD', 'BCO_USD', 'WTICO_USD',           // Commodities — volatile
+  'NAS100_USD', 'JP225_USD', 'UK100_GBP', 'AU200_AUD', 'SPX500_USD', // Indices
+]);
+
+// Silver/oil session gates — thin Asian liquidity makes spreads unworkable
+const XAG_ALLOWED_SESSIONS  = new Set(['LONDON', 'PRIME', 'NY']);
+const OIL_ALLOWED_SESSIONS  = new Set(['LONDON', 'PRIME', 'NY']);
+const XAG_MAX_SPREAD        = 0.05;  // 5 cents — wider = skip
+const OIL_MAX_SPREAD        = 0.08;  // 8 cents
+
+// ATR stop multipliers by asset class
+const ATR_SL_MULTIPLIER = { XAG_USD: 3.0, BCO_USD: 2.5, WTICO_USD: 2.5 };
+const ATR_TP_MULTIPLIER = { XAG_USD: 6.0, BCO_USD: 5.0, WTICO_USD: 5.0 };
+
 const INDEX_HOME_SESSION = {
   SPX500_USD: 'NY',     NAS100_USD: 'NY',
   JP225_USD:  'TOKYO',
@@ -1542,13 +1558,16 @@ function serverGenerateSignal(history, strategy, instrument) {
     if      (change >  0.003)             { score += 25; direction = direction || 'LONG';  reason.push('Strong uptrend');   }
     else if (change < -0.003)             { score += 25; direction = direction || 'SHORT'; reason.push('Strong downtrend'); }
   } else if (strategy === 'Mean Revert') {
-    const mean   = recent.reduce((a, b) => a + b, 0) / recent.length;
-    const dev    = Math.abs(last - mean) / mean;
-    const isGold = instrument.includes('XAU');
-    const isJpy  = instrument.includes('JPY');
-    const t1 = isGold ? 0.0008 : isJpy ? 0.0015 : 0.001;
-    const t2 = isGold ? 0.0015 : isJpy ? 0.003  : 0.002;
-    const t3 = isGold ? 0.003  : isJpy ? 0.005  : 0.004;
+    const mean     = recent.reduce((a, b) => a + b, 0) / recent.length;
+    const dev      = Math.abs(last - mean) / mean;
+    const isSilver = instrument.includes('XAG');
+    const isGold   = instrument.includes('XAU');
+    const isOil    = instrument.includes('BCO') || instrument.includes('WTICO');
+    const isJpy    = instrument.includes('JPY');
+    // Silver moves 10× faster — needs proportionally wider deviation thresholds
+    const t1 = isSilver ? 0.004 : isOil ? 0.003 : isGold ? 0.0008 : isJpy ? 0.0015 : 0.001;
+    const t2 = isSilver ? 0.008 : isOil ? 0.006 : isGold ? 0.0015 : isJpy ? 0.003  : 0.002;
+    const t3 = isSilver ? 0.015 : isOil ? 0.012 : isGold ? 0.003  : isJpy ? 0.005  : 0.004;
     if (dev > t1) {
       const dir = last > mean ? 'SHORT' : 'LONG';
       score += 50;
@@ -1608,7 +1627,10 @@ function serverGenerateSignal(history, strategy, instrument) {
 
   score = Math.min(score, 100);
   if (score < 65) return null;
-  return { direction, score, reason, rsi: parseFloat(rsi.toFixed(1)) };
+  const isSilverInst = instrument.includes('XAG');
+  const isOilInst    = instrument.includes('BCO') || instrument.includes('WTICO');
+  const minHold      = isSilverInst ? 30 : isOilInst ? 20 : 5;
+  return { direction, score, reason, rsi: parseFloat(rsi.toFixed(1)), minHold };
 }
 
 // ─── TREND CONFIRMATION (USER EXPLICIT OVERRIDE) ─────────────────────────────
@@ -1760,14 +1782,38 @@ async function serverAutoTrade() {
       continue;
     }
 
-    let price = 0;
+    let price = 0, spread = 0;
     try {
       const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/pricing?instruments=${instrument}`, { headers: H });
       const data = await r.json();
       const px   = data.prices?.[0];
       if (!px) continue;
-      price = (parseFloat(px.bids[0].price) + parseFloat(px.asks[0].price)) / 2;
+      const bid = parseFloat(px.bids[0].price);
+      const ask = parseFloat(px.asks[0].price);
+      price  = (bid + ask) / 2;
+      spread = ask - bid;
     } catch { continue; }
+
+    // Silver session gate — London/Prime/NY only (thin Asian liquidity widens spreads)
+    if (instrument === 'XAG_USD' && !XAG_ALLOWED_SESSIONS.has(session)) {
+      console.log(`[XAG BLOCK] Silver only trades London/Prime/NY — ${session} skipped`);
+      continue;
+    }
+    // Oil session gate
+    if ((instrument === 'BCO_USD' || instrument === 'WTICO_USD') && !OIL_ALLOWED_SESSIONS.has(session)) {
+      console.log(`[OIL BLOCK] Oil only trades London/Prime/NY — ${session} skipped`);
+      continue;
+    }
+    // Silver spread gate (5 cents max)
+    if (instrument === 'XAG_USD' && spread > XAG_MAX_SPREAD) {
+      console.log(`[XAG BLOCK] Spread too wide: ${spread.toFixed(4)} > ${XAG_MAX_SPREAD} — skipping`);
+      continue;
+    }
+    // Oil spread gate (8 cents max)
+    if ((instrument === 'BCO_USD' || instrument === 'WTICO_USD') && spread > OIL_MAX_SPREAD) {
+      console.log(`[OIL BLOCK] Spread too wide: ${spread.toFixed(4)} — skipping`);
+      continue;
+    }
 
     const liveHistory = [...history, price];
     const signal = serverGenerateSignal(liveHistory, strategy, instrument);
@@ -1777,8 +1823,11 @@ async function serverAutoTrade() {
       continue;
     }
 
-    // Indices: enforce 75% score threshold (higher conviction required)
-    if (INDEX_PAIRS.has(instrument) && signal.score < 75) continue;
+    // High-threshold pairs (commodities + indices) require 75% conviction
+    if (HIGH_THRESHOLD_PAIRS.has(instrument) && signal.score < 75) {
+      console.log(`[HIGH-THRESH] ${instrument} — score ${signal.score}% < 75% required for volatile asset`);
+      continue;
+    }
 
     console.log(`[auto] ${instrument} ${signal.direction} ${signal.score}% — ${strategy} — gatekeeping`);
 
@@ -1812,8 +1861,10 @@ async function serverAutoTrade() {
     const atr       = tr.reduce((a, b) => a + b, 0) / tr.length || 0.00001;
     const pip       = SERVER_PIP_SIZE[instrument] || 0.0001;
     const atrPips   = (atr / pip).toFixed(1);
-    const sl        = signal.direction === 'LONG' ? price - atr * 1.5 : price + atr * 1.5;
-    const tp        = signal.direction === 'LONG' ? price + atr * 3.0 : price - atr * 3.0;
+    const slMult    = ATR_SL_MULTIPLIER[instrument] ?? 1.5;
+    const tpMult    = ATR_TP_MULTIPLIER[instrument] ?? 3.0;
+    const sl        = signal.direction === 'LONG' ? price - atr * slMult : price + atr * slMult;
+    const tp        = signal.direction === 'LONG' ? price + atr * tpMult : price - atr * tpMult;
     const ema9v     = liveHistory.slice(-9).reduce((a, b) => a + b, 0) / 9;
     const ema21v    = liveHistory.slice(-21).reduce((a, b) => a + b, 0) / 21;
     const ema50v    = liveHistory.length >= 50 ? liveHistory.slice(-50).reduce((a, b) => a + b, 0) / 50 : ema21v;
@@ -1842,9 +1893,9 @@ async function serverAutoTrade() {
         regime:         signal.regime || 'RANGING',
         momentum:       signal.momentum?.toFixed(4) || '0',
         heat,
-        rr:             '2.0',
-        slDistance:     (atr * 1.5 / pip).toFixed(1),
-        tpDistance:     (atr * 3.0 / pip).toFixed(1),
+        rr:             (tpMult / slMult).toFixed(1),
+        slDistance:     (atr * slMult / pip).toFixed(1),
+        tpDistance:     (atr * tpMult / pip).toFixed(1),
         rsi:            signal.rsi?.toFixed(1) || '50',
         closes:         liveHistory.slice(-5).map(v => v.toFixed(5)).join(', '),
         reason:         signal.reason.join(', '),
