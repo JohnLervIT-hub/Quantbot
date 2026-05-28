@@ -481,6 +481,10 @@ const HIGH_THRESHOLD_PAIRS = new Set([
   'NAS100_USD', 'JP225_USD', 'UK100_GBP', 'AU200_AUD', 'SPX500_USD', // Indices
 ]);
 
+// USD-sensitive pairs — price below EMA50 signals USD strength → LONGs blocked
+// Update this set if the USD macro regime shifts (currently: strong USD)
+const USD_SENSITIVE_PAIRS = new Set(['EUR_USD', 'GBP_USD', 'AUD_USD', 'NZD_USD', 'EUR_GBP']);
+
 // Silver/oil session gates — thin Asian liquidity makes spreads unworkable
 const XAG_ALLOWED_SESSIONS  = new Set(['LONDON', 'PRIME', 'NY']);
 const OIL_ALLOWED_SESSIONS  = new Set(['LONDON', 'PRIME', 'NY']);
@@ -1988,6 +1992,46 @@ async function serverAutoTrade() {
       continue;
     }
     console.log(`[TREND CONFIRMED] ${instrument} ${signal.direction} — trend active, proceeding to consensus`);
+
+    // ── Macro trend filter — LONG trades only ──────────────────────────────────
+    // SHORT logic is working well — untouched.
+    if (signal.direction === 'LONG') {
+      const ema50check = liveHistory.length >= 50
+        ? liveHistory.slice(-50).reduce((a, b) => a + b, 0) / 50
+        : liveHistory.slice(-21).reduce((a, b) => a + b, 0) / 21;
+
+      // Condition 1: price is above EMA50 (pair in uptrend on M5)
+      const c1_ema50Up = price > ema50check;
+
+      // Condition 2: weekly bias — EMA50 of last 50 bars is rising vs earlier 50 bars
+      // Proxy computed from 60-bar history: new avg [10:60] > old avg [0:50]
+      const c2_weeklyBull = liveHistory.length >= 60
+        ? (liveHistory.slice(10).reduce((a, b) => a + b, 0) / 50) >
+          (liveHistory.slice(0, 50).reduce((a, b) => a + b, 0) / 50)
+        : c1_ema50Up; // fallback if history is short
+
+      // Condition 3: Xavier intel is fresh (<60 min) and bullish
+      const intelFreshForLong = lastXavierIntel.ts && (Date.now() - lastXavierIntel.ts) < 60 * 60_000;
+      const c3_xavierBull     = intelFreshForLong &&
+        (lastXavierIntel.sentiment || '').toUpperCase().includes('BULL');
+
+      const condsMet = [c1_ema50Up, c2_weeklyBull, c3_xavierBull].filter(Boolean).length;
+
+      // Currency strength hard filter — USD-sensitive pairs blocked for LONG when USD is strong
+      // USD strong = price below EMA50 on EUR/GBP/AUD/NZD vs USD
+      const usdStrong = USD_SENSITIVE_PAIRS.has(instrument) && !c1_ema50Up;
+
+      if (condsMet < 2 || usdStrong) {
+        const reason = usdStrong
+          ? `USD strength regime — ${instrument} below EMA50, LONG blocked`
+          : `LONG macro filter: ${condsMet}/3 bullish (EMA50up:${c1_ema50Up} LTbias:${c2_weeklyBull} XavierBull:${c3_xavierBull})`;
+        console.log(`[LONG FILTER] ${instrument} LONG blocked — ${reason}`);
+        serverRejections.unshift({ ts, instrument, direction: 'LONG', score: signal.score, session, strategy, rejections: [{ condition: 'Macro Long Filter', actual: reason, threshold: '2/3 conditions required (or USD strength override)' }] });
+        if (serverRejections.length > 50) serverRejections.pop();
+        continue;
+      }
+      console.log(`[LONG FILTER] ${instrument} LONG cleared — ${condsMet}/3 (EMA50up:${c1_ema50Up} LTbias:${c2_weeklyBull} XavierBull:${c3_xavierBull})`);
+    }
 
     lastConsensus.set(instrument, Date.now());
 
