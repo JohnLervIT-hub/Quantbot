@@ -1493,6 +1493,17 @@ async function updateTradeSL(tradeId, newSLPrice, instrument) {
   }
 }
 
+// Fresh OANDA check — used as a final duplicate guard before any order is placed
+async function hasOpenPosition(instrument) {
+  try {
+    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
+    const data = await r.json();
+    return (data.trades || []).some(t => t.instrument === instrument);
+  } catch {
+    return false; // fail open — OANDA is the final backstop
+  }
+}
+
 async function partialCloseTrade(tradeId, units) {
   try {
     const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/close`, {
@@ -2278,6 +2289,12 @@ async function serverAutoTrade() {
     const intelAgeMins = lastXavierIntel.ts ? Math.round((Date.now() - lastXavierIntel.ts) / 60_000) : null;
     const intelFresh   = intelAgeMins !== null && intelAgeMins < 30;
 
+    // Duplicate guard — fresh OANDA check in case another loop opened this pair since scan started
+    if (await hasOpenPosition(instrument)) {
+      console.log(`[DUPLICATE GUARD] ${instrument} — already open on OANDA, skipping`);
+      continue;
+    }
+
     console.log(`[auto] ${instrument} — calling consensus`);
     let consensus;
     try {
@@ -2664,6 +2681,12 @@ async function serverSwingAutoTrade() {
         freshNews:         swingIntelFresh ? lastXavierIntel.freshNews  : null,
         xavierIntelAgeMin: swingIntelAgeMins,
       };
+
+      // Duplicate guard — fresh OANDA check before committing to consensus
+      if (await hasOpenPosition(instrument)) {
+        console.log(`[DUPLICATE GUARD] ${instrument} — already open on OANDA, skipping swing`);
+        continue;
+      }
 
       const consensus = await runSwingConsensus(consensusParams);
       if (!consensus.passes) continue;
