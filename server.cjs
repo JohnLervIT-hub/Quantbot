@@ -344,21 +344,23 @@ const TRAIL_SETTINGS = {
 
 // ─── XAVIER RULES ────────────────────────────────────────────────────────────
 // USER EXPLICIT OVERRIDE — backtest-validated combinations (2026-05-27)
+// USER EXPLICIT OVERRIDE 2026-05-28 — XAG_USD removed (capital protection, multiple losses)
+// XAG_USD / BCO_USD / WTICO_USD = manual trading only, never auto
 const XAVIER_RULES = {
   TOKYO:  { strategy: 'Trend Follow', pairs: ['NZD_USD', 'UK100_GBP', 'EUR_USD'],          minScore: 65 },
-  LONDON: { strategy: 'Momentum',     pairs: ['XAG_USD', 'UK100_GBP', 'GBP_USD'],          minScore: 65 },
+  LONDON: { strategy: 'Momentum',     pairs: ['GBP_USD', 'EUR_USD', 'XAU_USD'],            minScore: 65 },
   PRIME:  { strategy: 'Mean Revert',  pairs: ['NZD_USD', 'AU200_AUD', 'GBP_USD'],          minScore: 65 },
   NY:     { strategy: 'Mean Revert',  pairs: ['AU200_AUD', 'XAU_USD', 'SPX500_USD'],       minScore: 65 },
-  SYDNEY: { strategy: 'Trend Follow', pairs: ['NAS100_USD', 'XAG_USD', 'NZD_USD'],         minScore: 65 },
+  SYDNEY: { strategy: 'Trend Follow', pairs: ['NAS100_USD', 'NZD_USD', 'AUD_USD'],         minScore: 65 },
   AVOID:  { strategy: null,           pairs: [],                                           minScore: 999 },
 };
 
-// Validated pairs for auto-execution — backtest-verified 2026-05-27
+// Validated pairs for auto-execution — XAG_USD/BCO_USD/WTICO_USD removed 2026-05-28 (manual only)
 const SERVER_PAIRS = new Set([
-  'NZD_USD', 'UK100_GBP', 'XAG_USD',
-  'AU200_AUD', 'NAS100_USD', 'SPX500_USD',
-  'XAU_USD', 'GBP_USD', 'EUR_USD',
-  'USD_JPY', 'AUD_USD', 'USD_CAD',
+  'EUR_USD', 'GBP_USD', 'USD_JPY',
+  'AUD_USD', 'USD_CAD', 'XAU_USD',
+  'NZD_USD', 'UK100_GBP', 'AU200_AUD',
+  'NAS100_USD', 'SPX500_USD',
 ]);
 
 // Index pairs — home session only, 75%+ score required (tighter spreads, higher conviction)
@@ -1847,7 +1849,8 @@ async function serverAutoTrade() {
 }
 
 // ─── KILL SHOT PAIRS ─────────────────────────────────────────────────────────
-const KILL_SHOT_PAIRS = ['XAU_USD', 'GBP_USD', 'EUR_USD', 'USD_JPY', 'NAS100_USD', 'BCO_USD'];
+// BCO_USD removed 2026-05-28 — manual trading only
+const KILL_SHOT_PAIRS = ['XAU_USD', 'GBP_USD', 'EUR_USD', 'USD_JPY', 'NAS100_USD'];
 
 // ─── OANDA CANDLE FETCHER (any granularity) ───────────────────────────────────
 async function fetchOandaCandles(instrument, granularity, count) {
