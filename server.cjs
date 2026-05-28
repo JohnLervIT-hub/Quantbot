@@ -1647,7 +1647,7 @@ function serverGenerateSignal(history, strategy, instrument) {
 }
 
 // ─── TREND CONFIRMATION (USER EXPLICIT OVERRIDE) ─────────────────────────────
-// Runs before consensus. Requires 2/3 checks to pass:
+// Runs before consensus. Forex requires 2/3 checks. Indices require 1/3 (mixed candles normal).
 //   1. Last 3 M5 candles close in signal direction (bullish/bearish bodies)
 //   2. Price moved > 0.1% over last 10 bars (not flat)
 //   3. EMA9 pulling away from EMA21 by > 0.02%
@@ -1659,7 +1659,9 @@ function calcEMAFromArr(arr, period) {
   return ema;
 }
 
-function confirmTrend(candles, direction) {
+const INDEX_INSTRUMENTS = new Set(['JP225_USD', 'NAS100_USD', 'SPX500_USD', 'UK100_GBP', 'AU200_AUD']);
+
+function confirmTrend(candles, direction, instrument = '') {
   if (candles.length < 10) return false;
   const len    = candles.length;
   const last3  = candles.slice(len - 3, len);
@@ -1682,9 +1684,11 @@ function confirmTrend(candles, direction) {
     ? ema9 > ema21 * 1.0002
     : ema9 < ema21 * 0.9998;
 
-  const confirmCount = [last3Confirm, isMoving, emaSeparating].filter(Boolean).length;
-  const passed       = confirmCount >= 2;
-  console.log(`[TREND] ${direction} | last3:${last3Confirm} moving:${isMoving}(${(priceChange * 100).toFixed(3)}%) emaSep:${emaSeparating} → ${passed ? 'CONFIRMED ✓' : 'WAIT'} (${confirmCount}/3)`);
+  const confirmCount   = [last3Confirm, isMoving, emaSeparating].filter(Boolean).length;
+  // Indices move in waves — mixed candles normal. Price movement alone sufficient.
+  const trendThreshold = INDEX_INSTRUMENTS.has(instrument) ? 1 : 2;
+  const passed         = confirmCount >= trendThreshold;
+  console.log(`[TREND] ${instrument} ${direction} | last3:${last3Confirm} moving:${isMoving}(${(priceChange * 100).toFixed(3)}%) emaSep:${emaSeparating} → ${passed ? 'CONFIRMED ✓' : 'WAIT'} (${confirmCount}/3 threshold:${trendThreshold})`);
   return passed;
 }
 
@@ -1853,15 +1857,17 @@ async function serverAutoTrade() {
       continue;
     }
 
-    // Trend confirmation — 2/3 checks required before consensus
+    // Trend confirmation — 2/3 for forex, 1/3 for indices (mixed candles normal)
     const m5Candles = await getM5Candles(instrument);
     const trendOk   = confirmTrend(
       [...m5Candles, { open: price, close: price }],
       signal.direction,
+      instrument,
     );
     if (!trendOk) {
+      const threshold = INDEX_INSTRUMENTS.has(instrument) ? '1/3' : '2/3';
       console.log(`[TREND WAIT] ${instrument} — signal ${signal.score}% detected but trend not confirmed yet. Waiting for momentum to develop.`);
-      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Trend Not Confirmed', actual: '< 2/3 checks (last3 candles, price moving, EMA separating)', threshold: '2/3 required' }] });
+      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Trend Not Confirmed', actual: `< ${threshold} checks (last3 candles, price moving, EMA separating)`, threshold: `${threshold} required` }] });
       if (serverRejections.length > 50) serverRejections.pop();
       continue;
     }
