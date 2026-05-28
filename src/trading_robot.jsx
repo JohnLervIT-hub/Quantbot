@@ -3441,9 +3441,12 @@ function SwingJournalPanel({ swingTrades, openTrades, livePrices, displayNav, is
         <div style={{ fontSize: 10, color: "#484f58" }}>{allActive.length} open · {closedTrades.length} closed</div>
       </div>
       {allActive.map(t => {
-        const liveOanda = openTrades?.find(o => o.id === t.oandaId);
-        const liveSL    = liveOanda?.stopLossOrder?.price  ? parseFloat(liveOanda.stopLossOrder.price)  : (t.sl  || 0);
-        const liveTP    = liveOanda?.takeProfitOrder?.price ? parseFloat(liveOanda.takeProfitOrder.price) : (t.tp1 || 0);
+        const liveOanda  = openTrades?.find(o => o.id === t.oandaId);
+        // Always use actual OANDA order prices — never BASE_PRICES or estimates
+        const displaySL  = liveOanda?.stopLossOrder?.price  || t.sl  || null;
+        const displayTP  = liveOanda?.takeProfitOrder?.price || t.tp1 || null;
+        const liveSL     = displaySL ? parseFloat(displaySL) : 0;
+        const liveTP     = displayTP ? parseFloat(displayTP) : 0;
 
         // R calculation — prefer OANDA unrealizedPL (authoritative, no price estimation needed)
         let pnlR = null, priceLoading = false;
@@ -3479,7 +3482,7 @@ function SwingJournalPanel({ swingTrades, openTrades, livePrices, displayNav, is
               </span>
             </div>
             <div style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO, marginBottom: 2 }}>
-              {fmtDays(t.openedAt)} · {t.score != null ? `Score ${t.score}% · ` : ""}SL {swingFmt(t.pair, liveSL)} · TP1 {swingFmt(t.pair, liveTP)}
+              {fmtDays(t.openedAt)} · {t.score != null ? `Score ${t.score}% · ` : ""}SL {displaySL ?? "—"} · TP {displayTP ?? "—"}
             </div>
             <div style={{ fontSize: 10, color: "#8b949e", fontStyle: "italic" }}>{t.thesis}</div>
           </div>
@@ -5424,7 +5427,9 @@ function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile, mgmtRef
                 <span style={{ fontFamily: FONT_MONO, fontSize: 11, fontVariantNumeric: "tabular-nums" }}>
                   {sl !== null ? <span style={{ color: "#f85149" }}>{sl.toFixed(dec)}</span> : <span style={{ color: "#484f58" }}>—</span>}
                 </span>
-                <span style={{ fontFamily: FONT_MONO, color: "var(--color-text-primary)", fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{current ? current.toFixed(dec) : "—"}</span>
+                <span style={{ fontFamily: FONT_MONO, fontSize: 11, fontVariantNumeric: "tabular-nums" }}>
+                  {tp !== null ? <span style={{ color: "#3fb950" }}>{tp.toFixed(dec)}</span> : <span style={{ color: "#484f58" }}>—</span>}
+                </span>
                 <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                   <span style={{ fontFamily: FONT_MONO, fontWeight: 600, color: pnl >= 0 ? "#1D9E75" : "#E24B4A", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>{pnlStr}</span>
                   <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: rColor }}>{rStr}</span>
