@@ -457,11 +457,14 @@ REASON: (one sentence, max 15 words, use specific numbers, trader language — n
 }
 
 function buildGPTPrompt(p) {
+  const ema50side = p.ema50side || (p.ema50 && p.price
+    ? (p.direction === 'LONG' ? (parseFloat(p.price) > parseFloat(p.ema50) ? 'ABOVE' : 'BELOW') : (parseFloat(p.price) < parseFloat(p.ema50) ? 'BELOW' : 'ABOVE'))
+    : '?');
   return `You are the Pattern Analyst. Validate price action and trend structure only.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
 Signal score: ${p.score}%
-EMA9: ${p.ema9 || '?'} | EMA21: ${p.ema21 || '?'} | EMA50 side: ${p.ema50side || '?'}
+EMA9: ${p.ema9 || '?'} | EMA21: ${p.ema21 || '?'} | EMA50: ${p.ema50 || '?'} | Price vs EMA50: ${ema50side}
 Last 5 closes: ${p.closes || p.price}
 Trend regime: ${p.regime || 'UNKNOWN'}
 Momentum: ${p.momentum || '0'}%
@@ -746,7 +749,16 @@ async function askGemini(prompt, sys) {
 
 const MODEL_TAG = { 'Claude Sonnet': 'CLAUDE', 'GPT-4o': 'GPT4', 'DeepSeek': 'DEEPSEEK', 'Gemini 2.5 Flash': 'GEMINI' };
 
-async function runConsensus(params) {
+async function runConsensus(rawParams) {
+  // Normalize field names — accept both server-style (sl/tp/rr/instrument) and
+  // friendly-style (stopLoss/takeProfit/riskReward/pair) so tests and frontend calls both work
+  const params = {
+    ...rawParams,
+    instrument: rawParams.instrument || rawParams.pair,
+    sl:         rawParams.sl         || rawParams.stopLoss,
+    tp:         rawParams.tp         || rawParams.takeProfit,
+    rr:         rawParams.rr         || rawParams.riskReward,
+  };
   const settled = await Promise.allSettled([
     askClaude(buildClaudePrompt(params),    SYS_CLAUDE),
     askGPT(buildGPTPrompt(params),          SYS_GPT),
