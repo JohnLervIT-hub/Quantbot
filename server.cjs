@@ -161,9 +161,10 @@ app.post('/order', async (req, res) => {
   res.json(data);
 });
 
-// ─── SWING ORDER — 500 units, explicit SL/TP1 prices ─────────────────────────
+// ─── SWING ORDER — instrument-calibrated units, explicit SL/TP1 prices ────────
 app.post('/swing/order', async (req, res) => {
-  const { instrument, units, slPrice, tp1Price } = req.body;
+  const { instrument, slPrice, tp1Price } = req.body;
+  let { units } = req.body;
   if (!instrument || !units) return res.status(400).json({ error: 'instrument and units required' });
 
   if (swingInFlight.has(instrument)) {
@@ -173,7 +174,25 @@ app.post('/swing/order', async (req, res) => {
   swingInFlight.add(instrument);
   setTimeout(() => swingInFlight.delete(instrument), 30000);
 
+  // Apply instrument-calibrated sizing (overrides frontend default of 500)
   const direction = Number(units) >= 0 ? 'LONG' : 'SHORT';
+  const calibratedSize = SWING_UNITS[instrument] ?? 500;
+  units = direction === 'LONG' ? calibratedSize : -calibratedSize;
+
+  // Margin pre-flight — estimate entry from midpoint of SL and TP
+  if (slPrice && tp1Price) {
+    const estPrice = (parseFloat(slPrice) + parseFloat(tp1Price)) / 2;
+    const marginCheck = await checkMargin(instrument, units, estPrice);
+    if (!marginCheck.sufficient) {
+      console.log(`[MARGIN BLOCK SWING] ${instrument} — required: $${marginCheck.required}, available: $${marginCheck.available}`);
+      return res.status(400).json({
+        error: 'INSUFFICIENT_MARGIN',
+        required: marginCheck.required,
+        available: marginCheck.available,
+      });
+    }
+  }
+
   console.log(`POST /swing/order — ${instrument} ${direction} ${Math.abs(Number(units))} units`);
   const order = {
     type: 'MARKET', instrument, units: String(units),
@@ -425,6 +444,15 @@ const MARGIN_RATE = {
   NAS100_USD: 0.05, JP225_USD: 0.05, SPX500_USD: 0.05, UK100_GBP: 0.05, AU200_AUD: 0.05,
 };
 
+// Swing position sizing — high-priced instruments need fewer units to keep margin manageable
+const SWING_UNITS = {
+  XAU_USD:    100,
+  BCO_USD:    100,
+  WTICO_USD:  100,
+  NAS100_USD:  10,
+  SPX500_USD:  10,
+}; // default: 500 for all forex pairs
+
 async function getMarginAvailable() {
   try {
     const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/summary`, { headers: H });
@@ -439,11 +467,11 @@ async function checkMargin(instrument, units, price) {
   const rate      = MARGIN_RATE[instrument] ?? 0.05;
   const required  = Math.abs(units) * price * rate;
   const available = await getMarginAvailable();
-  const ok        = required <= available * 0.80; // keep 20% buffer
-  if (!ok) {
+  const sufficient = required <= available * 0.80; // keep 20% buffer
+  if (!sufficient) {
     console.log(`[MARGIN BLOCK] ${instrument} — need $${required.toFixed(2)}, have $${(available * 0.80).toFixed(2)} (80% of $${available.toFixed(2)} available)`);
   }
-  return ok;
+  return { sufficient, required: parseFloat(required.toFixed(2)), available: parseFloat(available.toFixed(2)) };
 }
 
 // High-threshold pairs — 75% signal score required (volatile, wider spreads, needs higher conviction)
@@ -2043,7 +2071,7 @@ async function serverAutoTrade() {
     const units = signal.direction === 'LONG' ? 1000 : -1000;
 
     // Pre-flight margin check — prevents INSUFFICIENT_MARGIN rejections
-    if (!(await checkMargin(instrument, units, price))) continue;
+    if (!(await checkMargin(instrument, units, price)).sufficient) continue;
 
     try {
       // SL sanity check — wrong-side SL causes STOP_LOSS_ON_FILL_LOSS rejection
@@ -2373,8 +2401,9 @@ async function serverSwingAutoTrade() {
       }
 
       // ── Pre-flight margin check ──────────────────────────────────────────────
-      const units = sig.direction === 'LONG' ? 500 : -500;
-      if (!(await checkMargin(instrument, units, liveEntry))) continue;
+      const swingUnitSize = SWING_UNITS[instrument] ?? 500;
+      const units = sig.direction === 'LONG' ? swingUnitSize : -swingUnitSize;
+      if (!(await checkMargin(instrument, units, liveEntry)).sufficient) continue;
 
       // ── Place swing order (500 units, SL + TP1 from live price) ─────────────
       const order = {
