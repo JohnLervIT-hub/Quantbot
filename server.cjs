@@ -1036,8 +1036,19 @@ app.get('/auto-status', (_req, res) => {
 // ─── TRANSACTION AUDIT ────────────────────────────────────────────────────────
 app.get('/audit', async (req, res) => {
   try {
-    const count = Math.min(parseInt(req.query.count || '200', 10), 500);
-    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/transactions?count=${count}`, { headers: H });
+    // Step 1: get lastTransactionID from account
+    const acctR  = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/summary`, { headers: H });
+    const acctD  = await acctR.json();
+    const lastId = parseInt(acctD.account?.lastTransactionID || acctD.lastTransactionID || '0', 10);
+
+    const count   = Math.min(parseInt(req.query.count || '200', 10), 900);
+    const fromId  = Math.max(1, lastId - count + 1);
+
+    // Step 2: fetch by ID range (OANDA v20 idrange endpoint)
+    const r    = await fetch(
+      `${BASE}/v3/accounts/${ACCOUNT}/transactions/idrange?from=${fromId}&to=${lastId}`,
+      { headers: H }
+    );
     const data = await r.json();
     const txns = data.transactions || [];
 
