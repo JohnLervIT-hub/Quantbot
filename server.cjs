@@ -2580,6 +2580,13 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`OANDA bridge live on port ${PORT}`);
   console.log(`  AI: Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | OpenAI ${OPENAI_KEY ? '✓' : '✗'} | DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | Gemini ${GEMINI_KEY ? '✓' : '✗'}`);
   console.log(`  Auto mode: ${process.env.AUTO_MODE_ENABLED === 'true' ? 'ENABLED ⚡' : 'disabled (set AUTO_MODE_ENABLED=true to activate)'}`);
+  console.log('[ENV CHECK]', {
+    hasOanda:    !!process.env.OANDA_TOKEN,
+    hasDiscord:  !!process.env.DISCORD_WEBHOOK_URL,
+    hasTelegram: !!process.env.TELEGRAM_BOT_TOKEN,
+    hasClaude:   !!process.env.ANTHROPIC_API_KEY,
+    nodeEnv:     process.env.NODE_ENV,
+  });
 });
 
 setTimeout(() => serverAutoTrade().catch(e => console.error('[auto] Startup:', e.message)), 10_000);
