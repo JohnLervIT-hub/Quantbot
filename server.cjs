@@ -171,6 +171,21 @@ app.post('/swing/order', async (req, res) => {
     console.log(`[SWING SKIP] ${instrument} already in flight — duplicate request blocked`);
     return res.json({ skipped: true, reason: 'already in flight' });
   }
+
+  // Max 2 open trades (Rule 3) — check before placing
+  try {
+    const ot = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
+    const otData = await ot.json();
+    const currentOpen = (otData.trades || []).length;
+    if (currentOpen >= 2) {
+      console.log(`[SWING BLOCK] ${instrument} — ${currentOpen} trades open, circuit breaker at 2`);
+      return res.status(400).json({ error: 'MAX_TRADES', message: `${currentOpen} trades already open — max 2 allowed` });
+    }
+  } catch (e) {
+    console.error('[SWING BLOCK] open trades check failed:', e.message);
+    // fail open — let OANDA be the final backstop
+  }
+
   swingInFlight.add(instrument);
   setTimeout(() => swingInFlight.delete(instrument), 30000);
 
@@ -2360,8 +2375,11 @@ async function serverSwingAutoTrade() {
     return;
   }
 
-  // Hard cap: max 4 open trades (M5 + swing combined)
-  if (openTrades.length >= 4) return;
+  // Hard cap: max 2 open trades (M5 + swing combined) — matches Rule 3
+  if (openTrades.length >= 2) {
+    console.log(`[swing-auto] ${openTrades.length} open trades — circuit breaker, skipping swing scan`);
+    return;
+  }
 
   const session = getServerSession();
 
