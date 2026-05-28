@@ -8099,38 +8099,16 @@ export default function TradingRobot() {
     }).catch(() => {});
   }, []);
 
-  // On mount: fetch server trade log and merge into closedTrades so PerformanceDashboard
-  // sees all trades placed server-side, not just those captured in this browser session
+  // One-time migration: clear stale open-trade entries that were incorrectly
+  // saved to qb_closed_trades at open time with 0 P&L. Start fresh so only
+  // real closed trades with realized P&L are stored.
   useEffect(() => {
-    fetch(`${BRIDGE}/trade-log`)
-      .then(r => r.json())
-      .then(data => {
-        if (!Array.isArray(data.trades) || data.trades.length === 0) return;
-        setClosedTrades(prev => {
-          const existingIds = new Set(prev.map(t => String(t.oandaId || t.id)));
-          const toAdd = data.trades
-            .filter(t => !existingIds.has(String(t.id)))
-            .map(t => ({
-              id:        t.id,
-              oandaId:   t.id,
-              pair:      (t.pair || '').replace('_', '/'),
-              direction: t.direction,
-              strategy:  t.strategy,
-              session:   t.session,
-              score:     t.score,
-              entry:     t.entry,
-              sl:        t.sl,
-              tp:        t.tp,
-              units:     t.units,
-              type:      t.type,
-              timestamp: t.timestamp,
-              source:    'server-log',
-            }));
-          if (toAdd.length === 0) return prev;
-          return [...toAdd, ...prev].slice(0, 500);
-        });
-      })
-      .catch(() => {});
+    if (!localStorage.getItem('qb_closed_trades_v2')) {
+      localStorage.removeItem('qb_closed_trades');
+      seenClosedIdsRef.current.clear();
+      setClosedTrades([]);
+      localStorage.setItem('qb_closed_trades_v2', '1');
+    }
   }, []); // eslint-disable-line
 
   // Persist closed trades to localStorage on change
@@ -8206,17 +8184,24 @@ export default function TradingRobot() {
             : null;
 
           newEntries.push({
-            oandaId: t.id,
+            id:         t.id,
+            oandaId:    t.id,
             pair,
             dir,
+            direction:  dir,
+            entry:      entryPrice,
             entryPrice,
             closePrice,
+            pnl:        parseFloat(realizedPL.toFixed(2)),
             realizedPL: parseFloat(realizedPL.toFixed(2)),
             pips,
             rMultiple,
             duration,
-            openTime: t.openTime,
-            closeTime: t.closeTime,
+            session:    deriveSession(t.openTime),
+            strategy:   localStorage.getItem('active_strategy') || 'Unknown',
+            openTime:   t.openTime,
+            closeTime:  t.closeTime,
+            timestamp:  new Date(t.closeTime || Date.now()).getTime(),
           });
         }
 
