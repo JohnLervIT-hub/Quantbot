@@ -342,6 +342,15 @@ app.get('/backtest/candles', async (req, res) => {
   }
 });
 
+app.get('/test-notify', async (_req, res) => {
+  await sendNotification(
+    '🎯 QuantBot Pro — Discord Connected!\n' +
+    'Xavier is live and watching the markets.\n' +
+    'You will receive alerts for all trade events.'
+  );
+  res.json({ sent: true });
+});
+
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
