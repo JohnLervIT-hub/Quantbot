@@ -2721,6 +2721,18 @@ function ToastContainer({ toasts, onDismiss }) {
 // ─── KILL SHOT — SWING ENGINE ─────────────────────────────────────────────────
 const KILL_SHOT_PAIRS = ["XAU/USD", "GBP/USD", "EUR/USD", "USD/JPY", "NAS100/USD", "BCO/USD"];
 
+// Allowed sessions per instrument — forex entries omitted (always visible)
+const INSTRUMENT_HOME_SESSIONS = {
+  NAS100_USD: ['NY', 'SYDNEY'],
+  JP225_USD:  ['TOKYO'],
+  UK100_GBP:  ['LONDON', 'PRIME'],
+  AU200_AUD:  ['SYDNEY', 'TOKYO'],
+  SPX500_USD: ['NY'],
+  XAG_USD:    ['LONDON', 'PRIME', 'NY'],
+  BCO_USD:    ['LONDON', 'PRIME', 'NY'],
+  WTICO_USD:  ['NY', 'PRIME'],
+};
+
 function _ema(prices, period) {
   if (prices.length < period) return null;
   const k = 2 / (period + 1);
@@ -3101,8 +3113,12 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
   const [consensusMap, setConsensusMap] = useState({});
   const fetchedRef = useRef(new Set());
 
-  const activePairs = KILL_SHOT_PAIRS.filter(p => signals[p]?.score >= 75);
-  const watchPairs  = KILL_SHOT_PAIRS.filter(p => !signals[p] || signals[p].score < 75);
+  const sessionPairs = KILL_SHOT_PAIRS.filter(p => {
+    const allowed = INSTRUMENT_HOME_SESSIONS[p.replace("/", "_")];
+    return !allowed || allowed.includes(session);
+  });
+  const activePairs = sessionPairs.filter(p => signals[p]?.score >= 75);
+  const watchPairs  = sessionPairs.filter(p => !signals[p] || signals[p].score < 75);
 
   // Auto-fetch consensus for each qualifying pair as soon as it appears
   useEffect(() => {
@@ -3203,7 +3219,7 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
           <div style={{ fontSize: 10, color: "#484f58", marginTop: 1 }}>H4 · 3–5R targets · 2-5 day holds</div>
         </div>
         <div style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO }}>
-          {scanning ? "Scanning…" : `${KILL_SHOT_PAIRS.length} pairs`}
+          {scanning ? "Scanning…" : `${sessionPairs.length} pairs`}
         </div>
       </div>
 
