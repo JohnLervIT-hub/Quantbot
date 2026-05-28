@@ -1563,6 +1563,14 @@ async function serverAutoTrade() {
   for (const instrument of pairs) {
     if (Date.now() - (lastConsensus.get(instrument) || 0) < 5 * 60_000) continue;
 
+    // Cross-system pair lock — one position per instrument across M5 + swing
+    if (openTrades.some(t => t.instrument === instrument)) {
+      console.log(`[PAIR LOCK] ${instrument} already open in another timeframe — skipping M5`);
+      serverRejections.unshift({ ts, instrument, direction: '?', score: 0, session, strategy, rejections: [{ condition: 'Pair Lock', actual: `${instrument} already open`, threshold: 'One position per pair across all systems' }] });
+      if (serverRejections.length > 50) serverRejections.pop();
+      continue;
+    }
+
     // Upgrade 2 — news guard
     if (isNewsWindow(instrument)) {
       console.log(`[auto] ${instrument} — NEWS BLOCK (high-impact event ±2h)`);
@@ -1916,8 +1924,13 @@ async function serverSwingAutoTrade() {
       const sig = serverGenerateSwingSignal(h4Candles, weeklyCandles, instrument);
       if (!sig) continue;
 
-      // Block if OANDA already has an open trade on this instrument
-      if (openTrades.some(t => t.instrument === instrument)) continue;
+      // Cross-system pair lock — block if OANDA already has ANY open trade on this instrument
+      if (openTrades.some(t => t.instrument === instrument)) {
+        console.log(`[SWING PAIR LOCK] ${instrument} already open in another timeframe — skipping swing`);
+        serverRejections.unshift({ ts: now.toISOString(), instrument, direction: '?', score: 0, session, strategy: 'Kill Shot', rejections: [{ condition: 'Pair Lock', actual: `${instrument} already open`, threshold: 'One position per pair across all systems' }] });
+        if (serverRejections.length > 50) serverRejections.pop();
+        continue;
+      }
       // Block if swing auto already tracking an open trade for this pair
       if (swingAutoTrades.some(t => t.instrument === instrument && !t.closed)) continue;
 
