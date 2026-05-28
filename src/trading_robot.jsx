@@ -3397,15 +3397,38 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
 
 function SwingJournalPanel({ swingTrades, openTrades, livePrices, displayNav, isMobile }) {
   // Reconcile against OANDA: if a trade has an oandaId and is NOT in openTrades, it's already closed
-  const activeTrades  = swingTrades.filter(t => {
+  const activeTrades = swingTrades.filter(t => {
     if (t.closed) return false;
     if (t.oandaId && openTrades?.length > 0) return openTrades.some(o => o.id === t.oandaId);
     return true;
   });
-  const closedTrades  = swingTrades.filter(t => t.closed);
-  if (swingTrades.length === 0) return null;
+  const closedTrades = swingTrades.filter(t => t.closed);
 
-  const oneR = (displayNav || 100) * 0.015;
+  // Orphaned OANDA trades: open in OANDA but not in swingTrades (server-placed, e.g. M5 auto-trade)
+  const trackedIds     = new Set(activeTrades.map(t => t.oandaId).filter(Boolean));
+  const orphanedOanda  = (openTrades || []).filter(o => !trackedIds.has(o.id));
+  const orphanedTrades = orphanedOanda.map(o => ({
+    id:          `oanda_${o.id}`,
+    oandaId:     o.id,
+    pair:        o.instrument?.replace('_', '/'),
+    direction:   parseInt(o.currentUnits) >= 0 ? 'LONG' : 'SHORT',
+    entry:       parseFloat(o.price),
+    sl:          parseFloat(o.stopLossOrder?.price  || 0),
+    tp1:         parseFloat(o.takeProfitOrder?.price || 0),
+    score:       null,
+    openedAt:    new Date(o.openTime).getTime(),
+    thesis:      `Server-placed — OANDA #${o.id}`,
+    closed:      false,
+    _orphaned:   true,
+  }));
+
+  console.log('[SWING JOURNAL] activeTrades:', JSON.stringify(activeTrades));
+  console.log('[SWING JOURNAL] openTrades from OANDA:', JSON.stringify(openTrades?.map(t => t.instrument)));
+
+  const allActive = [...activeTrades, ...orphanedTrades];
+  if (allActive.length === 0 && closedTrades.length === 0) return null;
+
+  const oneR    = (displayNav || 100) * 0.015;
   const fmtDays = (ms) => {
     const d = (Date.now() - ms) / 86400000;
     return d < 1 ? `${Math.round(d * 24)}h` : `${d.toFixed(1)}d`;
@@ -3415,34 +3438,48 @@ function SwingJournalPanel({ swingTrades, openTrades, livePrices, displayNav, is
     <div style={{ margin: isMobile ? "0 0 16px" : "0 16px 16px", background: "#161b22", border: "1px solid #F9731630", borderRadius: 12, overflow: "hidden" }}>
       <div style={{ padding: "10px 14px", borderBottom: "1px solid #21262d", background: "#0d1117", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: "#F97316" }}>⚔️ Swing Journal</div>
-        <div style={{ fontSize: 10, color: "#484f58" }}>{activeTrades.length} open · {closedTrades.length} closed</div>
+        <div style={{ fontSize: 10, color: "#484f58" }}>{allActive.length} open · {closedTrades.length} closed</div>
       </div>
-      {activeTrades.map(t => {
-        const liveOanda  = openTrades?.find(o => o.id === t.oandaId);
-        // livePrices is the real-time feed — liveOanda.price is the fill price (= entry), not current
-        const livePrice  = livePrices?.[t.pair] ?? (liveOanda ? parseFloat(liveOanda.price) : t.entry);
-        const liveSL     = liveOanda?.stopLossOrder?.price  ? parseFloat(liveOanda.stopLossOrder.price)  : t.sl;
-        const liveTP     = liveOanda?.takeProfitOrder?.price ? parseFloat(liveOanda.takeProfitOrder.price) : t.tp1;
-        const riskDist   = Math.abs(t.entry - liveSL);
-        const pnlPips    = t.direction === "LONG" ? livePrice - t.entry : t.entry - livePrice;
-        const rawR       = riskDist > 0 ? pnlPips / riskDist : null;
-        // Cap at -3R / +10R — anything outside range is stale data or calculation error
-        const pnlR       = (rawR === null || rawR < -3 || rawR > 10) ? null : rawR;
-        const rColor     = pnlR === null ? "#484f58" : pnlR >= 2 ? "#3fb950" : pnlR >= 1 ? "#d29922" : pnlR >= 0 ? "#8b949e" : "#f85149";
+      {allActive.map(t => {
+        const liveOanda = openTrades?.find(o => o.id === t.oandaId);
+        const liveSL    = liveOanda?.stopLossOrder?.price  ? parseFloat(liveOanda.stopLossOrder.price)  : (t.sl  || 0);
+        const liveTP    = liveOanda?.takeProfitOrder?.price ? parseFloat(liveOanda.takeProfitOrder.price) : (t.tp1 || 0);
+
+        // R calculation — prefer OANDA unrealizedPL (authoritative, no price estimation needed)
+        let pnlR = null, priceLoading = false;
+        if (liveOanda && oneR > 0) {
+          const rawR = parseFloat(liveOanda.unrealizedPL || 0) / oneR;
+          pnlR = (rawR < -3 || rawR > 10) ? null : rawR;
+        } else {
+          // Multi-format lookup: "EUR/USD", "EUR_USD"
+          const currentPrice = livePrices?.[t.pair] || livePrices?.[t.pair?.replace('/', '_')] || null;
+          if (currentPrice) {
+            const riskDist = Math.abs(t.entry - liveSL);
+            const pnlPips  = t.direction === "LONG" ? currentPrice - t.entry : t.entry - currentPrice;
+            const rawR     = riskDist > 0 ? pnlPips / riskDist : null;
+            pnlR = (rawR === null || rawR < -3 || rawR > 10) ? null : rawR;
+          } else {
+            priceLoading = true;
+          }
+        }
+
+        const rColor = pnlR === null ? "#484f58" : pnlR >= 2 ? "#3fb950" : pnlR >= 1 ? "#d29922" : pnlR >= 0 ? "#8b949e" : "#f85149";
         return (
           <div key={t.id} style={{ padding: "10px 14px", borderBottom: "0.5px solid #21262d" }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span style={{ fontSize: 11, fontWeight: 700, color: "#e6edf3", fontFamily: FONT_MONO }}>{t.pair}</span>
                 <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: t.direction === "LONG" ? "#3fb95022" : "#f8514922", color: t.direction === "LONG" ? "#3fb950" : "#f85149", fontWeight: 700 }}>{t.direction}</span>
-                <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "#F9731622", color: "#F97316", fontWeight: 700 }}>SWING</span>
+                <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "#F9731622", color: "#F97316", fontWeight: 700 }}>{t._orphaned ? "M5" : "SWING"}</span>
               </div>
               <span style={{ fontSize: 12, fontWeight: 800, color: rColor, fontFamily: FONT_MONO }}>
-                {pnlR === null ? "—" : `${pnlR >= 0 ? "+" : ""}${pnlR.toFixed(1)}R`}
+                {priceLoading ? <span style={{ fontSize: 10, color: "#484f58" }}>loading…</span>
+                  : pnlR === null ? "—"
+                  : `${pnlR >= 0 ? "+" : ""}${pnlR.toFixed(1)}R`}
               </span>
             </div>
             <div style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO, marginBottom: 2 }}>
-              {fmtDays(t.openedAt)} · Score {t.score}% · SL {swingFmt(t.pair, liveSL)} · TP1 {swingFmt(t.pair, liveTP)}
+              {fmtDays(t.openedAt)} · {t.score != null ? `Score ${t.score}% · ` : ""}SL {swingFmt(t.pair, liveSL)} · TP1 {swingFmt(t.pair, liveTP)}
             </div>
             <div style={{ fontSize: 10, color: "#8b949e", fontStyle: "italic" }}>{t.thesis}</div>
           </div>
