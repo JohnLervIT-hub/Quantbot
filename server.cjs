@@ -360,6 +360,22 @@ app.get('/test-notify', async (_req, res) => {
   res.json({ sent: true });
 });
 
+app.get('/discord-debug', async (_req, res) => {
+  const botToken  = process.env.DISCORD_BOT_TOKEN;
+  const channelId = process.env.DISCORD_CHANNEL_ID;
+  if (!botToken || !channelId) return res.json({ error: 'DISCORD_BOT_TOKEN or DISCORD_CHANNEL_ID missing' });
+  try {
+    const r = await fetch(
+      `https://discord.com/api/v10/channels/${channelId}/messages?limit=5`,
+      { headers: { 'Authorization': `Bot ${botToken}` } }
+    );
+    const data = await r.json();
+    res.json({ status: r.status, lastMessageId: lastDiscordMessageId, messages: data });
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
+
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
