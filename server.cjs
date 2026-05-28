@@ -1351,6 +1351,26 @@ async function sendTelegram(message) {
   }
 }
 
+async function sendNotification(message) {
+  if (process.env.TELEGRAM_BOT_TOKEN || (TELEGRAM_TOKEN && TELEGRAM_CHAT_ID)) {
+    await sendTelegram(message);
+    return;
+  }
+  if (process.env.DISCORD_WEBHOOK_URL) {
+    try {
+      // Strip HTML tags for Discord (no parse_mode support)
+      const plain = message.replace(/<[^>]+>/g, '');
+      await fetch(process.env.DISCORD_WEBHOOK_URL, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: plain }),
+      });
+    } catch (e) {
+      console.error('[discord] Send failed:', e.message);
+    }
+  }
+}
+
 // ─── ECONOMIC CALENDAR ────────────────────────────────────────────────────────
 const CALENDAR_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
 
@@ -1487,7 +1507,7 @@ async function manageOpenTrades() {
 
           const isManual = !tradeManagementState.has(id);
           const emoji = won ? '✅' : '❌';
-          await sendTelegram(
+          await sendNotification(
             `${emoji} <b>TRADE CLOSED${isManual ? ' (manual)' : ''}</b>\n` +
             `Pair: ${instr.replace('_', '/')} ${dir}\n` +
             `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n` +
@@ -1546,7 +1566,7 @@ async function manageOpenTrades() {
       const moved   = await updateTradeSL(tradeId, bePrice, instrument);
       if (moved) {
         state.movedToBreakeven = true;
-        await sendTelegram(
+        await sendNotification(
           `🛡 <b>BREAKEVEN</b>\n` +
           `${instrument.replace('_', '/')} ${dir}\n` +
           `SL → ${formatPrice(bePrice, instrument)} (entry +1pip)\n` +
@@ -1562,7 +1582,7 @@ async function manageOpenTrades() {
         const result = await partialCloseTrade(tradeId, thirdUnits);
         if (result) {
           state.partialClosed = true;
-          await sendTelegram(
+          await sendNotification(
             `💰 <b>PARTIAL CLOSE 33%</b>\n` +
             `${instrument.replace('_', '/')} ${dir}\n` +
             `Closed ${thirdUnits} units @ ${formatPrice(result.fill, instrument)}\n` +
@@ -1602,11 +1622,11 @@ async function maybeSendDailySummary() {
 
   const yesterday = dailyStats.date;
   if (!yesterday || dailyStats.trades === 0) {
-    await sendTelegram(`📊 <b>DAILY SUMMARY</b>\nNo trades executed yesterday.`);
+    await sendNotification(`📊 <b>DAILY SUMMARY</b>\nNo trades executed yesterday.`);
     return;
   }
   const winRate = ((dailyStats.winners / dailyStats.trades) * 100).toFixed(0);
-  await sendTelegram(
+  await sendNotification(
     `📊 <b>DAILY SUMMARY — ${yesterday}</b>\n` +
     `Trades: ${dailyStats.trades} (${dailyStats.winners}W/${dailyStats.losers}L · ${winRate}%)\n` +
     `Net P&L: ${dailyStats.totalPnl >= 0 ? '+' : ''}$${dailyStats.totalPnl.toFixed(2)}\n` +
@@ -1924,7 +1944,7 @@ async function serverAutoTrade() {
       console.log(`[auto] ${instrument} — NEWS BLOCK (high-impact event ±2h)`);
       serverRejections.unshift({ ts, instrument, direction: '?', score: 0, session, strategy, rejections: [{ condition: 'Information Filtering (Principle 33)', actual: `High-impact event ±${xavierWeights.newsWindowMins || 120}min`, threshold: 'No trading', reason: 'Standing down.' }] });
       if (serverRejections.length > 50) serverRejections.pop();
-      await sendTelegram(`📰 <b>NEWS BLOCK</b>\n${instrument.replace('_', '/')} — high-impact event within ±${xavierWeights.newsWindowMins || 120}min\nSession: ${session}`);
+      await sendNotification(`📰 <b>NEWS BLOCK</b>\n${instrument.replace('_', '/')} — high-impact event within ±${xavierWeights.newsWindowMins || 120}min\nSession: ${session}`);
       continue;
     }
 
@@ -2178,7 +2198,7 @@ async function serverAutoTrade() {
         if (serverTradeLog.length > 500) serverTradeLog.pop();
         console.log(`[auto] ✓ EXECUTED ${instrument} ${signal.direction} @ ${fill} — ${consensus.votes.confirm}/4 — ${strategy} — ${session}`);
         // Upgrade 3 — Telegram notification
-        await sendTelegram(
+        await sendNotification(
           `⚡ <b>TRADE OPENED</b>\n` +
           `${instrument.replace('_', '/')} ${signal.direction}\n` +
           `Entry: ${formatPrice(parseFloat(fill), instrument)}\n` +
