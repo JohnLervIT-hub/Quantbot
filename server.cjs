@@ -321,6 +321,10 @@ let   lastScanAt         = null;
 const swingAutoTrades    = [];        // newest-first, capped at 50
 const lastSwingConsensus = new Map(); // instrument → ms (4-hour cooldown per pair)
 
+// Server-side trade log — persists across frontend sessions within a Railway deploy
+// Frontend fetches on mount and merges with localStorage to show complete history
+const serverTradeLog = [];          // newest-first, capped at 500
+
 // Upgrade state — trade management, calendar, daily stats
 const tradeManagementState = new Map(); // tradeId → { movedToBreakeven, partialClosed, peakR }
 const lastKnownTradeIds    = new Set(); // for closed trade detection
@@ -1115,6 +1119,10 @@ app.get('/swing-auto-trades', (_req, res) => {
 // ─── PAPER TRADES ENDPOINT ────────────────────────────────────────────────────
 app.get('/paper-trades', (_req, res) => {
   res.json({ count: paperTrades.length, trades: paperTrades });
+});
+
+app.get('/trade-log', (_req, res) => {
+  res.json({ count: serverTradeLog.length, trades: serverTradeLog });
 });
 
 // ─── AUTO STATUS ENDPOINT ─────────────────────────────────────────────────────
@@ -1969,9 +1977,12 @@ async function serverAutoTrade() {
         if (paperTrades.length > 100) paperTrades.pop();
         console.log(`[auto] ${instrument} — PAPER logged (market halted)`);
       } else {
-        const fill = result?.orderFillTransaction?.price ?? price.toFixed(5);
-        autoTrades.unshift({ id: Date.now(), timestamp: ts, instrument, direction: signal.direction, units, price: fill, session, strategy, score: signal.score, consensus: consensus.votes, models: consensus.models, oandaOrderId: result.orderFillTransaction?.id || null });
+        const fill    = result?.orderFillTransaction?.price ?? price.toFixed(5);
+        const oandaId = result.orderFillTransaction?.tradeOpened?.tradeID || result.orderFillTransaction?.id || null;
+        autoTrades.unshift({ id: Date.now(), timestamp: ts, instrument, direction: signal.direction, units, price: fill, session, strategy, score: signal.score, consensus: consensus.votes, models: consensus.models, oandaOrderId: oandaId });
         if (autoTrades.length > 100) autoTrades.pop();
+        serverTradeLog.unshift({ id: oandaId, pair: instrument, direction: signal.direction, strategy, session, score: signal.score, entry: parseFloat(fill), sl: parseFloat(formatPrice(sl, instrument)), tp: parseFloat(formatPrice(tp, instrument)), units, type: 'm5', timestamp: Date.now() });
+        if (serverTradeLog.length > 500) serverTradeLog.pop();
         console.log(`[auto] ✓ EXECUTED ${instrument} ${signal.direction} @ ${fill} — ${consensus.votes.confirm}/4 — ${strategy} — ${session}`);
         // Upgrade 3 — Telegram notification
         await sendTelegram(
@@ -2315,6 +2326,9 @@ async function serverSwingAutoTrade() {
       const fill    = result.orderFillTransaction.price;
       const tradeId = result.orderFillTransaction.tradeOpened?.tradeID || null;
       console.log(`[KILL SHOT SUCCESS] ${instrument} — tradeID: ${tradeId} @ ${fill}`);
+
+      serverTradeLog.unshift({ id: tradeId, pair: instrument, direction: sig.direction, strategy: 'Kill Shot', session, score: sig.score, entry: parseFloat(fill), sl: parseFloat(formatPrice(liveSl, instrument)), tp: parseFloat(formatPrice(liveTp1, instrument)), units, type: 'swing', timestamp: Date.now() });
+      if (serverTradeLog.length > 500) serverTradeLog.pop();
 
       swingAutoTrades.unshift({
         id: Date.now(), timestamp: ts, instrument,

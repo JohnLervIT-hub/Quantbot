@@ -8015,6 +8015,40 @@ export default function TradingRobot() {
     }).catch(() => {});
   }, []);
 
+  // On mount: fetch server trade log and merge into closedTrades so PerformanceDashboard
+  // sees all trades placed server-side, not just those captured in this browser session
+  useEffect(() => {
+    fetch(`${BRIDGE}/trade-log`)
+      .then(r => r.json())
+      .then(data => {
+        if (!Array.isArray(data.trades) || data.trades.length === 0) return;
+        setClosedTrades(prev => {
+          const existingIds = new Set(prev.map(t => String(t.oandaId || t.id)));
+          const toAdd = data.trades
+            .filter(t => !existingIds.has(String(t.id)))
+            .map(t => ({
+              id:        t.id,
+              oandaId:   t.id,
+              pair:      (t.pair || '').replace('_', '/'),
+              direction: t.direction,
+              strategy:  t.strategy,
+              session:   t.session,
+              score:     t.score,
+              entry:     t.entry,
+              sl:        t.sl,
+              tp:        t.tp,
+              units:     t.units,
+              type:      t.type,
+              timestamp: t.timestamp,
+              source:    'server-log',
+            }));
+          if (toAdd.length === 0) return prev;
+          return [...toAdd, ...prev].slice(0, 500);
+        });
+      })
+      .catch(() => {});
+  }, []); // eslint-disable-line
+
   // Persist closed trades to localStorage on change
   useEffect(() => {
     localStorage.setItem("qb_closed_trades", JSON.stringify(closedTrades.slice(0, 200)));
