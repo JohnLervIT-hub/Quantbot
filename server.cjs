@@ -2098,12 +2098,57 @@ async function serverAutoTrade() {
 
     console.log(`[auto] ${instrument} ${signal.direction} ${signal.score}% — ${strategy} — gatekeeping`);
 
+    // Signal detected alert — fires for all signals >= 60% before any gate
+    if (signal.score >= 60) {
+      await sendDiscordEmbed({
+        title: '👁 Signal Detected',
+        color: 0x8B5CF6,
+        fields: [
+          { name: 'Pair',      value: instrument.replace('_', '/'), inline: true },
+          { name: 'Direction', value: signal.direction,             inline: true },
+          { name: 'Score',     value: `${signal.score}%`,          inline: true },
+          { name: 'Strategy',  value: strategy,                     inline: true },
+          { name: 'Session',   value: session,                      inline: true },
+          { name: 'Status',    value: 'Evaluating gates…',          inline: true },
+        ],
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     const gate = serverRunGatekeepers(liveHistory, signal, openTrades, instrument, strategy);
     if (!gate.passed) {
       const reasons = gate.rejections.map(r => r.condition).join(', ');
       console.log(`[auto] ${instrument} — BLOCKED: ${reasons}`);
       serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: gate.rejections });
       if (serverRejections.length > 50) serverRejections.pop();
+      if (signal.score >= 60) {
+        const hasScoreBlock = gate.rejections.some(r => r.condition.includes('Opportunity Selection'));
+        const hasHeatBlock  = gate.rejections.some(r => r.condition.includes('Position limit') || r.condition.includes('Drawdown Control'));
+        if (hasScoreBlock) {
+          const threshold = xavierWeights.scoreThreshold || 65;
+          await sendDiscordEmbed({
+            title: '⚠️ Signal Blocked — Low Score',
+            color: 0xffaa00,
+            fields: [
+              { name: 'Pair',     value: instrument.replace('_', '/'), inline: true },
+              { name: 'Score',    value: `${signal.score}%`,           inline: true },
+              { name: 'Required', value: `${threshold}%`,              inline: true },
+            ],
+            timestamp: new Date().toISOString(),
+          });
+        } else if (hasHeatBlock) {
+          await sendDiscordEmbed({
+            title: '🔒 Signal Locked — Heat Limit',
+            color: 0xffaa00,
+            fields: [
+              { name: 'Pair',        value: instrument.replace('_', '/'),   inline: true },
+              { name: 'Open Trades', value: `${openTrades.length}/2`,       inline: true },
+              { name: 'Reason',      value: 'Max trades reached',           inline: true },
+            ],
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
       continue;
     }
 
@@ -2119,6 +2164,16 @@ async function serverAutoTrade() {
       console.log(`[TREND WAIT] ${instrument} — signal ${signal.score}% detected but trend not confirmed yet. Waiting for momentum to develop.`);
       serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Trend Not Confirmed', actual: `< ${threshold} checks (last3 candles, price moving, EMA separating)`, threshold: `${threshold} required` }] });
       if (serverRejections.length > 50) serverRejections.pop();
+      await sendDiscordEmbed({
+        title: '⏳ Signal Waiting — Trend',
+        color: 0x0088ff,
+        fields: [
+          { name: 'Pair',      value: instrument.replace('_', '/'),   inline: true },
+          { name: 'Score',     value: `${signal.score}%`,             inline: true },
+          { name: 'Reason',    value: 'Trend not confirmed yet',      inline: true },
+        ],
+        timestamp: new Date().toISOString(),
+      });
       continue;
     }
     console.log(`[TREND CONFIRMED] ${instrument} ${signal.direction} — trend active, proceeding to consensus`);
@@ -2158,6 +2213,16 @@ async function serverAutoTrade() {
         console.log(`[LONG FILTER] ${instrument} LONG blocked — ${reason}`);
         serverRejections.unshift({ ts, instrument, direction: 'LONG', score: signal.score, session, strategy, rejections: [{ condition: 'Macro Long Filter', actual: reason, threshold: '2/3 conditions required (or USD strength override)' }] });
         if (serverRejections.length > 50) serverRejections.pop();
+        await sendDiscordEmbed({
+          title: '🚫 Signal Blocked — USD Strength',
+          color: 0xff4444,
+          fields: [
+            { name: 'Pair',      value: instrument.replace('_', '/'),                              inline: true },
+            { name: 'Direction', value: 'LONG blocked',                                            inline: true },
+            { name: 'Reason',    value: usdStrong ? 'USD strength regime' : `${condsMet}/3 macro conditions`, inline: true },
+          ],
+          timestamp: new Date().toISOString(),
+        });
         continue;
       }
       console.log(`[LONG FILTER] ${instrument} LONG cleared — ${condsMet}/3 (EMA50up:${c1_ema50Up} LTbias:${c2_weeklyBull} XavierBull:${c3_xavierBull})`);
