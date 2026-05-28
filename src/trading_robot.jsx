@@ -8178,10 +8178,22 @@ export default function TradingRobot() {
             ? `${Math.floor(diffMins / 60)}h ${diffMins % 60}m`
             : `${diffMins}m`;
 
-          const nav = oandaNavRef.current;
-          const rMultiple = nav > 0
-            ? parseFloat((realizedPL / (nav * 0.015)).toFixed(2))
-            : null;
+          const stopLossPrice = parseFloat(t.stopLossOrder?.price || 0);
+          const absUnits = Math.abs(initialUnits);
+          // USD-base pairs (USD/JPY, USD/CAD) need price conversion to get USD P&L per unit
+          const isUsdBase = pair.startsWith("USD/");
+          const pipValue = isUsdBase ? 1 / entryPrice : 1;
+          const oneR = stopLossPrice > 0 && entryPrice > 0
+            ? Math.abs(entryPrice - stopLossPrice) * absUnits * pipValue
+            : 0;
+          const rawR = oneR > 0 ? realizedPL / oneR : 0;
+          const rMultiple = parseFloat(Math.max(-5, Math.min(10, rawR)).toFixed(2));
+          console.log("[TRADE CLOSE]", pair,
+            "pnl:", realizedPL.toFixed(2),
+            "entry:", entryPrice,
+            "sl:", stopLossPrice || "none",
+            "oneR:", oneR.toFixed(4),
+            "rMultiple:", rMultiple);
 
           newEntries.push({
             id:         t.id,
@@ -8191,6 +8203,7 @@ export default function TradingRobot() {
             direction:  dir,
             entry:      entryPrice,
             entryPrice,
+            stopLoss:   stopLossPrice || null,
             closePrice,
             pnl:        parseFloat(realizedPL.toFixed(2)),
             realizedPL: parseFloat(realizedPL.toFixed(2)),
