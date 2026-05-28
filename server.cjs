@@ -105,17 +105,36 @@ app.post('/order', async (req, res) => {
   const direction = Number(units) >= 0 ? 'LONG' : 'SHORT';
   console.log(`POST /order — ${instrument} ${direction} ${Math.abs(Number(units))} units`);
 
+  // Session gate — XAG/oil only trade in their liquidity windows
+  const currentSession = getServerSession();
+  console.log(`[XAG SESSION] ${currentSession} allowed:${[...XAG_ALLOWED_SESSIONS].join(',')}`);
+  if (instrument === 'XAG_USD' && !XAG_ALLOWED_SESSIONS.has(currentSession)) {
+    console.log(`[XAG SESSION] BLOCKED — ${currentSession} is outside London/Prime/NY`);
+    return res.status(400).json({ error: `XAG_USD not allowed in ${currentSession} — only London/Prime/NY` });
+  }
+  if ((instrument === 'BCO_USD' || instrument === 'WTICO_USD') && !OIL_ALLOWED_SESSIONS.has(currentSession)) {
+    console.log(`[OIL SESSION] BLOCKED — ${instrument} in ${currentSession} outside London/Prime/NY`);
+    return res.status(400).json({ error: `${instrument} not allowed in ${currentSession} — only London/Prime/NY` });
+  }
+
   const entryPrice = parseFloat(price) || 0;
   const atrVal     = parseFloat(atr)   || 0;
+  const slMult     = ATR_SL_MULTIPLIER[instrument] ?? 1.5;
+  const tpMult     = ATR_TP_MULTIPLIER[instrument] ?? 3.0;
+  const minStop    = ({ EUR_USD: 0.0010, GBP_USD: 0.0012, USD_JPY: 0.10, AUD_USD: 0.0010, NZD_USD: 0.0010, USD_CAD: 0.0010, EUR_GBP: 0.0008, XAU_USD: 1.50, XAG_USD: 0.10 })[instrument] ?? 0.0010;
+  const rawSlDist  = atrVal * slMult;
+  const slDist     = Math.max(rawSlDist, minStop);
+  console.log(`[XAG CALIBRATION] atrMult:${slMult} minStop:${minStop} rawDist:${rawSlDist.toFixed(5)} actualDist:${slDist.toFixed(5)}`);
+
   const slPrice    = atrVal > 0 && entryPrice > 0
-    ? (direction === 'LONG' ? entryPrice - atrVal * 1.5 : entryPrice + atrVal * 1.5)
+    ? (direction === 'LONG' ? entryPrice - slDist : entryPrice + slDist)
     : null;
 
   const order = {
     type: 'MARKET', instrument, units: String(units),
     timeInForce: 'FOK', positionFill: 'DEFAULT',
   };
-  console.log(`[ORDER] SL decision — atrVal=${atrVal} | entryPrice=${entryPrice} | slPrice=${slPrice}`);
+  console.log(`[ORDER] SL decision — atrVal=${atrVal} | slMult=${slMult} | entryPrice=${entryPrice} | slPrice=${slPrice}`);
   if (slPrice) {
     order.stopLossOnFill = { price: formatPrice(slPrice, instrument), timeInForce: 'GTC' };
     console.log('[ORDER] stopLossOnFill:', JSON.stringify(order.stopLossOnFill));
@@ -123,13 +142,12 @@ app.post('/order', async (req, res) => {
     console.log('[ORDER] stopLossOnFill SKIPPED — atr=' + atrVal + ' or price=' + entryPrice + ' is zero/missing');
   }
 
-  // Level 1 TP: 2R target (ATR × 1.5 stop × 2 = ATR × 3 reward)
   const tpPrice = atrVal > 0 && entryPrice > 0
-    ? (direction === 'LONG' ? entryPrice + atrVal * 3 : entryPrice - atrVal * 3)
+    ? (direction === 'LONG' ? entryPrice + atrVal * tpMult : entryPrice - atrVal * tpMult)
     : null;
   if (tpPrice) {
     order.takeProfitOnFill = { price: formatPrice(tpPrice, instrument), timeInForce: 'GTC' };
-    console.log('[ORDER] takeProfitOnFill (2R):', JSON.stringify(order.takeProfitOnFill));
+    console.log(`[ORDER] takeProfitOnFill (${tpMult}R):`, JSON.stringify(order.takeProfitOnFill));
   }
 
   const body = JSON.stringify({ order });
@@ -359,7 +377,7 @@ const TRAIL_SETTINGS = {
 // M5 backtest-validated combinations — updated 2026-05-27
 const XAVIER_RULES = {
   TOKYO:  { strategy: 'Mean Revert', pairs: ['EUR_GBP', 'EUR_USD', 'AUD_USD'],    minScore: 65 },
-  LONDON: { strategy: 'Momentum',    pairs: ['XAG_USD', 'GBP_USD', 'EUR_USD'],    minScore: 65 },
+  LONDON: { strategy: 'Momentum',    pairs: ['GBP_USD', 'EUR_USD'],              minScore: 65 },
   PRIME:  { strategy: 'Breakout',    pairs: ['EUR_GBP', 'USD_CAD', 'XAU_USD'],    minScore: 65 },
   NY:     { strategy: 'Mean Revert', pairs: ['USD_CAD', 'AU200_AUD', 'NZD_USD'],  minScore: 65 },
   SYDNEY: { strategy: 'Mean Revert', pairs: ['GBP_USD', 'NZD_USD', 'AUD_USD'],   minScore: 65 },
