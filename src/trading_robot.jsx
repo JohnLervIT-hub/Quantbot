@@ -4778,8 +4778,8 @@ function deriveSession(openTimeStr) {
 
 // Persists a closed trade into xavier_memory localStorage
 function updateXavierMemory(closedTrade) {
-  // Skip near-zero R trades — not meaningful lessons (instant SL, data error, etc.)
-  if (Math.abs(closedTrade.rMultiple || 0) < 0.05) return;
+  // Skip spread-noise trades — only learn from real signal outcomes
+  if (Math.abs(closedTrade.rMultiple || 0) < 0.10) return;
   try {
     const memory = JSON.parse(
       localStorage.getItem('xavier_memory') ||
@@ -4810,8 +4810,8 @@ function updateXavierMemory(closedTrade) {
     if (closedTrade.pnl > 0) pattern.wins++;
     pattern.totalR += (closedTrade.rMultiple || 0);
 
-    // Generate lesson on loss
-    if (closedTrade.pnl < 0) {
+    // Generate lesson only on meaningful losses — skip spread noise
+    if (closedTrade.pnl < 0 && Math.abs(closedTrade.rMultiple || 0) >= 0.10) {
       memory.recentLessons.unshift(
         `${closedTrade.pair} ${closedTrade.session} ${closedTrade.strategy} lost ${closedTrade.rMultiple}R — review setup conditions`
       );
@@ -7864,9 +7864,10 @@ function useTradeReinforcement(closedTrades) {
       setReinforcement({});
       return;
     }
-    const recent = closedTrades.slice(-50);
+    // Strip spread-noise trades — only learn from trades with real signal value
+    const recent = closedTrades.slice(-50).filter(t => Math.abs(parseFloat(t.rMultiple || 0)) >= 0.10);
 
-    // Per-pair win rates over last 10 trades per pair
+    // Per-pair win rates over last 10 meaningful trades per pair
     const pairBuckets = {};
     recent.forEach(t => {
       const p = t.instrument || t.pair || "UNKNOWN";
@@ -7877,7 +7878,8 @@ function useTradeReinforcement(closedTrades) {
     const pairThresholds = {};
     Object.entries(pairBuckets).forEach(([pair, trades]) => {
       const last10 = trades.slice(-10);
-      if (last10.length < 3) return; // need at least 3 trades to judge
+      if (last10.length < 3) return;    // need 3+ trades to appear in stats
+      if (last10.length < 10) { pairThresholds[pair] = 65; return; } // 10+ required to adjust threshold
       const wins = last10.filter(t => (parseFloat(t.pnl || t.realizedPL || 0)) > 0).length;
       const wr = wins / last10.length;
       if (wr < 0.35) pairThresholds[pair] = 75; // struggling — raise bar
