@@ -3475,7 +3475,7 @@ function SwingJournalPanel({ swingTrades, openTrades, livePrices, displayNav, is
               <span style={{ fontSize: 12, fontWeight: 800, color: rColor, fontFamily: FONT_MONO }}>
                 {priceLoading ? <span style={{ fontSize: 10, color: "#484f58" }}>loading…</span>
                   : pnlR === null ? "—"
-                  : `${pnlR >= 0 ? "+" : ""}${pnlR.toFixed(1)}R`}
+                  : Math.abs(pnlR) < 0.05 ? "0.0R" : `${pnlR >= 0 ? "+" : ""}${pnlR.toFixed(1)}R`}
               </span>
             </div>
             <div style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO, marginBottom: 2 }}>
