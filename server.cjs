@@ -165,6 +165,14 @@ app.post('/order', async (req, res) => {
 app.post('/swing/order', async (req, res) => {
   const { instrument, units, slPrice, tp1Price } = req.body;
   if (!instrument || !units) return res.status(400).json({ error: 'instrument and units required' });
+
+  if (swingInFlight.has(instrument)) {
+    console.log(`[SWING SKIP] ${instrument} already in flight — duplicate request blocked`);
+    return res.json({ skipped: true, reason: 'already in flight' });
+  }
+  swingInFlight.add(instrument);
+  setTimeout(() => swingInFlight.delete(instrument), 30000);
+
   const direction = Number(units) >= 0 ? 'LONG' : 'SHORT';
   console.log(`POST /swing/order — ${instrument} ${direction} ${Math.abs(Number(units))} units`);
   const order = {
@@ -176,7 +184,15 @@ app.post('/swing/order', async (req, res) => {
   try {
     const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify({ order }) });
     const data = await r.json();
-    if (!r.ok) console.error('[SWING ORDER] OANDA error:', r.status, JSON.stringify(data).slice(0, 200));
+    console.log('[SWING ORDER RESULT]', JSON.stringify(data).slice(0, 500));
+    if (data.orderFillTransaction) {
+      const tradeId = data.orderFillTransaction.tradeOpened?.tradeID ?? data.orderFillTransaction.id;
+      console.log(`[SWING SUCCESS] ${instrument} ${direction} — tradeID: ${tradeId}, fill: ${data.orderFillTransaction.price}`);
+    } else if (data.orderRejectTransaction) {
+      console.error(`[SWING REJECTED] ${instrument} — ${data.orderRejectTransaction.rejectReason}`);
+    } else {
+      console.error(`[SWING UNKNOWN] ${instrument} —`, JSON.stringify(data).slice(0, 200));
+    }
     res.json(data);
   } catch (e) {
     console.error('[SWING ORDER] fetch error:', e.message);
@@ -440,6 +456,7 @@ const HIGH_THRESHOLD_PAIRS = new Set([
 const XAG_ALLOWED_SESSIONS  = new Set(['LONDON', 'PRIME', 'NY']);
 const OIL_ALLOWED_SESSIONS  = new Set(['LONDON', 'PRIME', 'NY']);
 const XAG_MAX_SPREAD        = 0.05;  // 5 cents — wider = skip
+const swingInFlight         = new Set(); // dedup guard — cleared after 30s per instrument
 const OIL_MAX_SPREAD        = 0.08;  // 8 cents
 
 // ATR stop multipliers by asset class
