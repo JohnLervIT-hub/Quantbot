@@ -2893,6 +2893,34 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`OANDA bridge live on port ${PORT}`);
   console.log(`  AI: Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | OpenAI ${OPENAI_KEY ? '✓' : '✗'} | DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | Gemini ${GEMINI_KEY ? '✓' : '✗'}`);
   console.log(`  Auto mode: ${process.env.AUTO_MODE_ENABLED === 'true' ? 'ENABLED ⚡' : 'disabled (set AUTO_MODE_ENABLED=true to activate)'}`);
+
+  // ── Environment audit — shows exactly which variables are present ──────────
+  const REQUIRED_VARS = [
+    'OANDA_TOKEN',
+    'OANDA_ACCOUNT_ID',
+    'ANTHROPIC_API_KEY',
+    'OPENAI_API_KEY',
+    'DEEPSEEK_API_KEY',
+    'GEMINI_API_KEY',
+    'AUTO_MODE_ENABLED',
+    'DISCORD_WEBHOOK_URL',
+    'DISCORD_BOT_TOKEN',
+    'DISCORD_CHANNEL_ID',
+  ];
+  const OPTIONAL_VARS = [
+    'TELEGRAM_BOT_TOKEN',
+    'TELEGRAM_CHAT_ID',
+    'VITE_ANTHROPIC_KEY',    // local dev fallback
+    'VITE_OPENAI_API_KEY',   // local dev fallback
+    'VITE_DEEPSEEK_API_KEY', // local dev fallback
+    'VITE_GEMINI_API_KEY',   // local dev fallback
+    'VITE_AUTO_MODE',        // local dev fallback
+  ];
+  console.log('── ENV AUDIT ─────────────────────────────');
+  REQUIRED_VARS.forEach(v => console.log(`  [ENV] ${v}: ${process.env[v] ? '✅ SET' : '❌ MISSING'}`));
+  console.log('  Optional:');
+  OPTIONAL_VARS.forEach(v => { if (process.env[v]) console.log(`  [ENV] ${v}: ✅ SET`); });
+  console.log('──────────────────────────────────────────');
 });
 
 setTimeout(() => serverAutoTrade().catch(e => console.error('[auto] Startup:', e.message)), 10_000);
