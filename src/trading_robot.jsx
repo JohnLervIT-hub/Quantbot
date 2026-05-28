@@ -3396,7 +3396,12 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
 }
 
 function SwingJournalPanel({ swingTrades, openTrades, livePrices, displayNav, isMobile }) {
-  const activeTrades  = swingTrades.filter(t => !t.closed);
+  // Reconcile against OANDA: if a trade has an oandaId and is NOT in openTrades, it's already closed
+  const activeTrades  = swingTrades.filter(t => {
+    if (t.closed) return false;
+    if (t.oandaId && openTrades?.length > 0) return openTrades.some(o => o.id === t.oandaId);
+    return true;
+  });
   const closedTrades  = swingTrades.filter(t => t.closed);
   if (swingTrades.length === 0) return null;
 
@@ -3413,13 +3418,17 @@ function SwingJournalPanel({ swingTrades, openTrades, livePrices, displayNav, is
         <div style={{ fontSize: 10, color: "#484f58" }}>{activeTrades.length} open · {closedTrades.length} closed</div>
       </div>
       {activeTrades.map(t => {
-        const liveOanda = openTrades?.find(o => o.id === t.oandaId);
-        const livePrice = liveOanda ? parseFloat(liveOanda.price) : (livePrices?.[t.pair] || t.entry);
-        const liveSL    = liveOanda?.stopLossOrder?.price  ? parseFloat(liveOanda.stopLossOrder.price)  : t.sl;
-        const liveTP    = liveOanda?.takeProfitOrder?.price ? parseFloat(liveOanda.takeProfitOrder.price) : t.tp1;
-        const pnlPips   = t.direction === "LONG" ? livePrice - t.entry : t.entry - livePrice;
-        const pnlR      = oneR > 0 ? (pnlPips / Math.abs(t.entry - liveSL)) * 1 : 0;
-        const rColor    = pnlR >= 2 ? "#3fb950" : pnlR >= 1 ? "#d29922" : pnlR >= 0 ? "#8b949e" : "#f85149";
+        const liveOanda  = openTrades?.find(o => o.id === t.oandaId);
+        // livePrices is the real-time feed — liveOanda.price is the fill price (= entry), not current
+        const livePrice  = livePrices?.[t.pair] ?? (liveOanda ? parseFloat(liveOanda.price) : t.entry);
+        const liveSL     = liveOanda?.stopLossOrder?.price  ? parseFloat(liveOanda.stopLossOrder.price)  : t.sl;
+        const liveTP     = liveOanda?.takeProfitOrder?.price ? parseFloat(liveOanda.takeProfitOrder.price) : t.tp1;
+        const riskDist   = Math.abs(t.entry - liveSL);
+        const pnlPips    = t.direction === "LONG" ? livePrice - t.entry : t.entry - livePrice;
+        const rawR       = riskDist > 0 ? pnlPips / riskDist : null;
+        // Cap at -3R / +10R — anything outside range is stale data or calculation error
+        const pnlR       = (rawR === null || rawR < -3 || rawR > 10) ? null : rawR;
+        const rColor     = pnlR === null ? "#484f58" : pnlR >= 2 ? "#3fb950" : pnlR >= 1 ? "#d29922" : pnlR >= 0 ? "#8b949e" : "#f85149";
         return (
           <div key={t.id} style={{ padding: "10px 14px", borderBottom: "0.5px solid #21262d" }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
@@ -3428,7 +3437,9 @@ function SwingJournalPanel({ swingTrades, openTrades, livePrices, displayNav, is
                 <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: t.direction === "LONG" ? "#3fb95022" : "#f8514922", color: t.direction === "LONG" ? "#3fb950" : "#f85149", fontWeight: 700 }}>{t.direction}</span>
                 <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "#F9731622", color: "#F97316", fontWeight: 700 }}>SWING</span>
               </div>
-              <span style={{ fontSize: 12, fontWeight: 800, color: rColor, fontFamily: FONT_MONO }}>{pnlR >= 0 ? "+" : ""}{pnlR.toFixed(1)}R</span>
+              <span style={{ fontSize: 12, fontWeight: 800, color: rColor, fontFamily: FONT_MONO }}>
+                {pnlR === null ? "—" : `${pnlR >= 0 ? "+" : ""}${pnlR.toFixed(1)}R`}
+              </span>
             </div>
             <div style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO, marginBottom: 2 }}>
               {fmtDays(t.openedAt)} · Score {t.score}% · SL {swingFmt(t.pair, liveSL)} · TP1 {swingFmt(t.pair, liveTP)}
