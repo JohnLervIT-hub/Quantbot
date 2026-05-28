@@ -344,9 +344,18 @@ app.get('/backtest/candles', async (req, res) => {
 
 app.get('/test-notify', async (_req, res) => {
   await sendNotification(
-    '🎯 QuantBot Pro — Discord Connected!\n' +
-    'Xavier is live and watching the markets.\n' +
-    'You will receive alerts for all trade events.'
+    '🎯 QuantBot Pro — Discord Connected! Xavier is live and watching the markets.',
+    {
+      color: 0x00ff88,
+      title: '🎯 QuantBot Pro — Online',
+      description: 'Xavier is live and watching the markets. Rich embeds active.',
+      fields: [
+        { name: 'Status', value: '✅ Connected', inline: true },
+        { name: 'Commands', value: '`/status` `/pause` `/resume` `/trades` `/balance` `/kill`', inline: false },
+      ],
+      timestamp: new Date().toISOString(),
+      footer: { text: 'Xavier | QuantBot Pro' },
+    }
   );
   res.json({ sent: true });
 });
@@ -1360,22 +1369,38 @@ async function sendTelegram(message) {
   }
 }
 
-async function sendNotification(message) {
+async function sendDiscordEmbed(embed) {
+  if (!process.env.DISCORD_WEBHOOK_URL) return;
+  try {
+    await fetch(process.env.DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'Xavier | QuantBot Pro',
+        avatar_url: 'https://i.imgur.com/4M34hi2.png',
+        embeds: [embed],
+      }),
+    });
+  } catch (err) { console.error('[DISCORD EMBED ERROR]', err.message); }
+}
+
+// embed param is optional — Telegram gets plain text, Discord gets rich embed when provided
+async function sendNotification(message, embed) {
   if (process.env.TELEGRAM_BOT_TOKEN || (TELEGRAM_TOKEN && TELEGRAM_CHAT_ID)) {
     await sendTelegram(message);
-    return;
   }
   if (process.env.DISCORD_WEBHOOK_URL) {
-    try {
-      // Strip HTML tags for Discord (no parse_mode support)
-      const plain = message.replace(/<[^>]+>/g, '');
-      await fetch(process.env.DISCORD_WEBHOOK_URL, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: plain }),
-      });
-    } catch (e) {
-      console.error('[discord] Send failed:', e.message);
+    if (embed) {
+      await sendDiscordEmbed(embed);
+    } else {
+      try {
+        const plain = message.replace(/<[^>]+>/g, '');
+        await fetch(process.env.DISCORD_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: plain }),
+        });
+      } catch (e) { console.error('[discord] Send failed:', e.message); }
     }
   }
 }
@@ -1516,12 +1541,25 @@ async function manageOpenTrades() {
 
           const isManual = !tradeManagementState.has(id);
           const emoji = won ? '✅' : '❌';
-          await sendNotification(
+          const closeMsg =
             `${emoji} <b>TRADE CLOSED${isManual ? ' (manual)' : ''}</b>\n` +
             `Pair: ${instr.replace('_', '/')} ${dir}\n` +
             `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n` +
-            (isManual ? `⚠️ Manual close — cooldown set` : `Today: ${dailyStats.winners}W/${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`)
-          );
+            (isManual ? `⚠️ Manual close — cooldown set` : `Today: ${dailyStats.winners}W/${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`);
+          await sendNotification(closeMsg, {
+            color: won ? 0x3fb950 : 0xf85149,
+            title: `${emoji} Trade Closed${isManual ? ' (Manual)' : ''}`,
+            fields: [
+              { name: 'Pair',      value: instr.replace('_', '/'), inline: true },
+              { name: 'Direction', value: dir,                      inline: true },
+              { name: 'P&L',       value: `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`, inline: true },
+              ...(isManual
+                ? [{ name: 'Note', value: '⚠️ Manual close — cooldown set', inline: false }]
+                : [{ name: 'Today', value: `${dailyStats.winners}W / ${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`, inline: false }]
+              ),
+            ],
+            timestamp: new Date().toISOString(),
+          });
         }
       } catch (e) {
         console.error('[mgmt] Closed trade fetch failed:', e.message);
@@ -1579,7 +1617,18 @@ async function manageOpenTrades() {
           `🛡 <b>BREAKEVEN</b>\n` +
           `${instrument.replace('_', '/')} ${dir}\n` +
           `SL → ${formatPrice(bePrice, instrument)} (entry +1pip)\n` +
-          `Current: +${currentR.toFixed(2)}R`
+          `Current: +${currentR.toFixed(2)}R`,
+          {
+            color: 0x0088ff,
+            title: '🛡 Breakeven Locked',
+            fields: [
+              { name: 'Pair',          value: instrument.replace('_', '/'), inline: true },
+              { name: 'Direction',     value: dir,                          inline: true },
+              { name: 'Reached',       value: `+${currentR.toFixed(2)}R`,  inline: true },
+              { name: 'Stop Moved To', value: `${formatPrice(bePrice, instrument)} (entry +1pip)`, inline: false },
+            ],
+            timestamp: new Date().toISOString(),
+          }
         );
       }
     }
@@ -1953,7 +2002,21 @@ async function serverAutoTrade() {
       console.log(`[auto] ${instrument} — NEWS BLOCK (high-impact event ±2h)`);
       serverRejections.unshift({ ts, instrument, direction: '?', score: 0, session, strategy, rejections: [{ condition: 'Information Filtering (Principle 33)', actual: `High-impact event ±${xavierWeights.newsWindowMins || 120}min`, threshold: 'No trading', reason: 'Standing down.' }] });
       if (serverRejections.length > 50) serverRejections.pop();
-      await sendNotification(`📰 <b>NEWS BLOCK</b>\n${instrument.replace('_', '/')} — high-impact event within ±${xavierWeights.newsWindowMins || 120}min\nSession: ${session}`);
+      await sendNotification(
+        `📰 <b>NEWS BLOCK</b>\n${instrument.replace('_', '/')} — high-impact event within ±${xavierWeights.newsWindowMins || 120}min\nSession: ${session}`,
+        {
+          color: 0xffaa00,
+          title: '📰 News Block — Standing Down',
+          fields: [
+            { name: 'Pair',     value: instrument.replace('_', '/'), inline: true },
+            { name: 'Window',   value: `±${xavierWeights.newsWindowMins || 120} min`, inline: true },
+            { name: 'Session',  value: session, inline: true },
+            { name: 'Resumes',  value: 'After news window clears', inline: false },
+          ],
+          timestamp: new Date().toISOString(),
+          footer: { text: 'Information Filtering — Principle 33' },
+        }
+      );
       continue;
     }
 
@@ -2206,14 +2269,29 @@ async function serverAutoTrade() {
         serverTradeLog.unshift({ id: oandaId, pair: instrument, direction: signal.direction, strategy, session, score: signal.score, entry: parseFloat(fill), sl: parseFloat(formatPrice(sl, instrument)), tp: parseFloat(formatPrice(tp, instrument)), units, type: 'm5', timestamp: Date.now() });
         if (serverTradeLog.length > 500) serverTradeLog.pop();
         console.log(`[auto] ✓ EXECUTED ${instrument} ${signal.direction} @ ${fill} — ${consensus.votes.confirm}/4 — ${strategy} — ${session}`);
-        // Upgrade 3 — Telegram notification
         await sendNotification(
           `⚡ <b>TRADE OPENED</b>\n` +
           `${instrument.replace('_', '/')} ${signal.direction}\n` +
           `Entry: ${formatPrice(parseFloat(fill), instrument)}\n` +
           `SL: ${formatPrice(sl, instrument)} · TP: ${formatPrice(tp, instrument)}\n` +
           `Score: ${signal.score}% · Models: ${consensus.votes.confirm}/4\n` +
-          `Strategy: ${strategy} · Session: ${session}`
+          `Strategy: ${strategy} · Session: ${session}`,
+          {
+            color: 0x00ff88,
+            title: '⚡ Trade Opened',
+            fields: [
+              { name: 'Pair',      value: instrument.replace('_', '/'), inline: true },
+              { name: 'Direction', value: signal.direction,             inline: true },
+              { name: 'Score',     value: `${signal.score}%`,          inline: true },
+              { name: 'Entry',     value: formatPrice(parseFloat(fill), instrument), inline: true },
+              { name: 'SL',        value: formatPrice(sl, instrument),  inline: true },
+              { name: 'TP',        value: formatPrice(tp, instrument),  inline: true },
+              { name: 'Consensus', value: `${consensus.votes.confirm}/4`, inline: true },
+              { name: 'Session',   value: session,   inline: true },
+              { name: 'Strategy',  value: strategy,  inline: true },
+            ],
+            timestamp: new Date().toISOString(),
+          }
         );
       }
     } catch (e) {
@@ -2576,10 +2654,148 @@ async function serverSwingAutoTrade() {
       if (swingAutoTrades.length > 50) swingAutoTrades.pop();
 
       console.log(`[KILL SHOT FIRED] ${instrument} ${sig.direction} @ ${fill} — score:${sig.score}% — ${consensus.confirms}/4 — ${session}`);
+      await sendNotification(
+        `🎯 <b>KILL SHOT FIRED</b>\n${instrument.replace('_', '/')} ${sig.direction}\nEntry: ${fill} · SL: ${formatPrice(liveSl, instrument)} · TP1: ${formatPrice(liveTp1, instrument)}\nScore: ${sig.score}% · ${consensus.confirms}/4 · ${session}`,
+        {
+          color: 0x8B5CF6,
+          title: '🎯 Kill Shot Fired',
+          fields: [
+            { name: 'Pair',      value: instrument.replace('_', '/'), inline: true },
+            { name: 'Direction', value: sig.direction,                inline: true },
+            { name: 'Score',     value: `${sig.score}%`,             inline: true },
+            { name: 'Entry',     value: fill,                         inline: true },
+            { name: 'SL',        value: formatPrice(liveSl,  instrument), inline: true },
+            { name: 'TP1',       value: formatPrice(liveTp1, instrument), inline: true },
+            { name: 'Consensus', value: `${consensus.confirms}/4`, inline: true },
+            { name: 'Session',   value: session,                 inline: true },
+            { name: 'Strategy',  value: 'Kill Shot (H4)',        inline: true },
+          ],
+          timestamp: new Date().toISOString(),
+          footer: { text: sig.reasons.slice(0, 3).join(' · ') },
+        }
+      );
 
     } catch (err) {
       console.error(`[swing-auto] ${instrument} — error: ${err.message}`);
     }
+  }
+}
+
+// ─── DISCORD TWO-WAY COMMANDS ─────────────────────────────────────────────────
+let lastDiscordMessageId = '0';
+
+async function sendDiscordChannelMessage(content, embed) {
+  const botToken  = process.env.DISCORD_BOT_TOKEN;
+  const channelId = process.env.DISCORD_CHANNEL_ID;
+  if (!botToken || !channelId) return;
+  try {
+    await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bot ${botToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(embed ? { embeds: [embed] } : { content }),
+    });
+  } catch (e) { console.error('[DISCORD CHANNEL]', e.message); }
+}
+
+async function pollDiscordCommands() {
+  const botToken  = process.env.DISCORD_BOT_TOKEN;
+  const channelId = process.env.DISCORD_CHANNEL_ID;
+  if (!botToken || !channelId) return;
+  try {
+    const r = await fetch(
+      `https://discord.com/api/v10/channels/${channelId}/messages?after=${lastDiscordMessageId}&limit=10`,
+      { headers: { 'Authorization': `Bot ${botToken}` } }
+    );
+    if (!r.ok) return;
+    const messages = await r.json();
+    if (!Array.isArray(messages) || messages.length === 0) return;
+
+    // Process oldest first
+    const sorted = messages.sort((a, b) => (BigInt(a.id) > BigInt(b.id) ? 1 : -1));
+    for (const msg of sorted) {
+      if (BigInt(msg.id) > BigInt(lastDiscordMessageId)) lastDiscordMessageId = msg.id;
+    }
+
+    for (const msg of sorted) {
+      if (msg.author?.bot) continue;
+      const cmd = (msg.content || '').trim().toLowerCase();
+
+      if (cmd === '/status') {
+        const sess = getServerSession();
+        const rule = XAVIER_RULES[sess] || {};
+        let openTrades = [];
+        try { const ot = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H }); openTrades = (await ot.json()).trades || []; } catch {}
+        await sendDiscordChannelMessage(null, {
+          color: 0x58a6ff, title: '📊 Xavier Status',
+          fields: [
+            { name: 'Session',     value: sess,                                                    inline: true },
+            { name: 'Auto Mode',   value: process.env.AUTO_MODE_ENABLED === 'true' ? '✅ ON' : '❌ OFF', inline: true },
+            { name: 'Heat',        value: `${(openTrades.length * 1.5).toFixed(1)}R / 4R max`,    inline: true },
+            { name: 'Open Trades', value: String(openTrades.length),                               inline: true },
+            { name: 'Strategy',    value: rule.strategy || 'N/A',                                  inline: true },
+            { name: 'Pairs',       value: (rule.pairs || []).join(', ') || 'None',                 inline: true },
+          ],
+          timestamp: new Date().toISOString(),
+        });
+
+      } else if (cmd === '/pause') {
+        process.env.AUTO_MODE_ENABLED = 'false';
+        console.log('[DISCORD CMD] /pause — auto-trading disabled');
+        await sendDiscordChannelMessage('⏸ **Xavier paused** — auto-trading disabled. Send `/resume` to restart.');
+
+      } else if (cmd === '/resume') {
+        process.env.AUTO_MODE_ENABLED = 'true';
+        console.log('[DISCORD CMD] /resume — auto-trading enabled');
+        await sendDiscordChannelMessage('▶️ **Xavier resumed** — auto-trading active.');
+
+      } else if (cmd === '/trades') {
+        let openTrades = [];
+        try { const ot = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H }); openTrades = (await ot.json()).trades || []; } catch {}
+        if (openTrades.length === 0) {
+          await sendDiscordChannelMessage('📭 No open trades right now.');
+        } else {
+          const fields = openTrades.map(t => {
+            const pnl = parseFloat(t.unrealizedPL || 0);
+            const dir = parseFloat(t.currentUnits) >= 0 ? 'LONG' : 'SHORT';
+            return { name: `${t.instrument.replace('_', '/')} ${dir}`, value: `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`, inline: true };
+          });
+          await sendDiscordChannelMessage(null, { color: 0x58a6ff, title: '📈 Open Trades', fields, timestamp: new Date().toISOString() });
+        }
+
+      } else if (cmd === '/balance') {
+        try {
+          const acct = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/summary`, { headers: H });
+          const d    = await acct.json();
+          const balance    = parseFloat(d.account?.balance      || 0);
+          const nav        = parseFloat(d.account?.NAV          || 0);
+          const unrealized = parseFloat(d.account?.unrealizedPL || 0);
+          await sendDiscordChannelMessage(null, {
+            color: 0x3fb950, title: '💰 Account Balance',
+            fields: [
+              { name: 'Balance',    value: `$${balance.toFixed(2)}`,                                   inline: true },
+              { name: 'NAV',        value: `$${nav.toFixed(2)}`,                                        inline: true },
+              { name: 'Unrealized', value: `${unrealized >= 0 ? '+' : ''}$${unrealized.toFixed(2)}`,   inline: true },
+            ],
+            timestamp: new Date().toISOString(),
+          });
+        } catch (e) { await sendDiscordChannelMessage(`❌ Balance fetch failed: ${e.message}`); }
+
+      } else if (cmd === '/kill') {
+        process.env.AUTO_MODE_ENABLED = 'false';
+        let closedCount = 0;
+        try {
+          const ot = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
+          const trades = (await ot.json()).trades || [];
+          for (const t of trades) {
+            try { await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${t.id}/close`, { method: 'PUT', headers: H }); closedCount++; } catch {}
+          }
+        } catch {}
+        console.log(`[DISCORD CMD] /kill — auto-trading disabled, ${closedCount} trade(s) closed`);
+        await sendDiscordChannelMessage(`💀 **KILL executed** — auto-trading disabled. ${closedCount} trade(s) closed.`);
+      }
+    }
+  } catch (e) {
+    console.error('[DISCORD POLL]', e.message);
   }
 }
 
@@ -2615,3 +2831,7 @@ setInterval(() => maybeSendDailySummary().catch(e => console.error('[mgmt] Summa
 // Upgrade 2 — Economic calendar refresh every hour
 refreshEconomicCalendar().catch(e => console.error('[calendar] Startup:', e.message));
 setInterval(() => refreshEconomicCalendar().catch(e => console.error('[calendar] Refresh:', e.message)), 60 * 60_000);
+
+// Discord two-way command polling — every 30s (requires DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID)
+setTimeout(() => pollDiscordCommands().catch(e => console.error('[discord-poll] Startup:', e.message)), 8_000);
+setInterval(() => pollDiscordCommands().catch(e => console.error('[discord-poll] Loop:', e.message)), 30_000);
