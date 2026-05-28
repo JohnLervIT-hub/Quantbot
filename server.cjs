@@ -352,21 +352,23 @@ const TRAIL_SETTINGS = {
 // USER EXPLICIT OVERRIDE — backtest-validated combinations (2026-05-27)
 // USER EXPLICIT OVERRIDE 2026-05-28 — XAG_USD removed (capital protection, multiple losses)
 // XAG_USD / BCO_USD / WTICO_USD = manual trading only, never auto
+// M5 backtest-validated combinations — updated 2026-05-27
 const XAVIER_RULES = {
-  TOKYO:  { strategy: 'Trend Follow', pairs: ['NZD_USD', 'UK100_GBP', 'EUR_USD'],          minScore: 65 },
-  LONDON: { strategy: 'Momentum',     pairs: ['GBP_USD', 'EUR_USD', 'XAU_USD'],            minScore: 65 },
-  PRIME:  { strategy: 'Mean Revert',  pairs: ['NZD_USD', 'AU200_AUD', 'GBP_USD'],          minScore: 65 },
-  NY:     { strategy: 'Mean Revert',  pairs: ['AU200_AUD', 'XAU_USD', 'SPX500_USD'],       minScore: 65 },
-  SYDNEY: { strategy: 'Trend Follow', pairs: ['NAS100_USD', 'NZD_USD', 'AUD_USD'],         minScore: 65 },
-  AVOID:  { strategy: null,           pairs: [],                                           minScore: 999 },
+  TOKYO:  { strategy: 'Mean Revert', pairs: ['EUR_GBP', 'EUR_USD', 'AUD_USD'],    minScore: 65 },
+  LONDON: { strategy: 'Mean Revert', pairs: ['USD_CAD', 'NZD_USD', 'GBP_USD'],    minScore: 65 },
+  PRIME:  { strategy: 'Breakout',    pairs: ['EUR_GBP', 'USD_CAD', 'XAU_USD'],    minScore: 65 },
+  NY:     { strategy: 'Mean Revert', pairs: ['USD_CAD', 'AU200_AUD', 'NZD_USD'],  minScore: 65 },
+  SYDNEY: { strategy: 'Mean Revert', pairs: ['GBP_USD', 'NZD_USD', 'AUD_USD'],   minScore: 65 },
+  AVOID:  { strategy: null,          pairs: [],                                    minScore: 999 },
 };
 
-// Validated pairs for auto-execution — XAG_USD/BCO_USD/WTICO_USD removed 2026-05-28 (manual only)
+// Phase 1 — Core forex only (M5 backtest validated 2026-05-27)
+// Phase 2 (add after 1 week clean execution): XAG_USD, NAS100_USD, UK100_GBP, AU200_AUD, SPX500_USD, JP225_USD
+// Phase 3 (add after Phase 2 validates):      BCO_USD, WTICO_USD
 const SERVER_PAIRS = new Set([
   'EUR_USD', 'GBP_USD', 'USD_JPY',
   'AUD_USD', 'USD_CAD', 'XAU_USD',
-  'NZD_USD', 'UK100_GBP', 'AU200_AUD',
-  'NAS100_USD', 'SPX500_USD',
+  'NZD_USD', 'EUR_GBP',
 ]);
 
 // Index pairs — home session only, 75%+ score required (tighter spreads, higher conviction)
