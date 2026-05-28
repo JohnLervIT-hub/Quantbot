@@ -1467,6 +1467,40 @@ const SESSION_GREETINGS = {
   AVOID:  "Markets are quiet. No major sessions overlapping — patience is the trade right now.",
 };
 
+// ─── XAVIER INSTITUTIONAL IDENTITY ───────────────────────────────────────────
+const XAVIER_ELITE_IDENTITY = `You are Xavier — an institutional-grade AI trading intelligence built on 40 elite trader principles.
+
+CORE PHILOSOPHY: (1) Probabilistic Thinking — think in expectancy, never certainty. (2) Risk-First — capital preservation is the #1 priority. (3) Asymmetric Payoffs — risk 1R to make 3–5R. (4) Process Over Outcome — judge execution quality, not just results. (5) Patience — A+ setups only; a trade not taken is never a loss.
+
+DECISION FRAMEWORK — before any trade: Edge Identification · Risk-First · Asymmetric Payoff · Session/Strategy Specialization · Regime Awareness · Position Sizing · Multi-Timeframe Context · Information Filtering (news risk within 2h).
+
+WISDOM: Never trade for excitement — trade for edge. One bad trade can erase 10 good ones. Drawdown recovery is harder than prevention.
+
+SELF-AWARENESS: Monte Carlo stress testing: not built. Walk-forward validation: partial. Order flow data: not available. Live account validation: pending.`;
+
+function getXavierWisdom(session, closedTrades = []) {
+  const recent = [...closedTrades].reverse();
+  let losses = 0, wins = 0;
+  for (const t of recent) {
+    const pnl = parseFloat(t.realizedPL ?? t.pnl ?? 0);
+    if (pnl < 0) { if (wins   > 0) break; losses++; }
+    else         { if (losses > 0) break; wins++;   }
+  }
+  if (losses >= 3) return `Self-Critical Analysis (Principle 30) — ${losses} consecutive losses. Not chasing. Raising my bar, reviewing what the market's telling me. No marginal setups until I see clean structure again.`;
+  if (losses >= 1) return `Process Consistency (Principle 7) — that loss stings. But if I followed my process it's a cost of doing business. Same standards, same discipline.`;
+  if (wins   >= 5) return `Patience (Principle 5) — ${wins} consecutive wins. Staying disciplined — same process, same standards. The edge doesn't change when you're running hot.`;
+  if (wins   >= 1) return `Process Consistency (Principle 7) — ${wins} wins. Worked because I followed the process, not luck. Keeping the same bar.`;
+  const WISDOM = {
+    PRIME:  "Prime session live — London-New York overlap. Probabilistic Thinking (Principle 1): best liquidity of the day, A+ setups only.",
+    LONDON: "London's open. Momentum Awareness (Principle 3): EUR and GBP setups, clean trend structure. Wait for the first 15 minutes to settle.",
+    NY:     "New York session. Information Filtering (Principle 33): USD pairs in focus, news-aware on every signal.",
+    TOKYO:  "Tokyo session. Volatility Adaptation (Principle 16): range-bound, JPY pairs, mean revert only — lower size.",
+    SYDNEY: "Sydney open. Patience (Principle 5): low liquidity. AUD and NZD only, waiting for clean setups.",
+    AVOID:  "Dead zone. Patience (Principle 9): elite traders know when NOT to trade. Cash is a valid position.",
+  };
+  return WISDOM[session] || WISDOM.AVOID;
+}
+
 const SESSION_CHIPS = {
   PRIME:  ["Best PRIME setup?", "EUR/USD or GBP/USD?", "Dollar direction?", "Risk on or off?"],
   LONDON: ["Best GBP pair?", "EUR/USD outlook?", "London bias?", "Any breakouts?"],
@@ -1494,7 +1528,7 @@ function IntelCard({ label, value, sub, color = "#8b949e", bgColor, borderColor,
   );
 }
 
-function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balance, currentHeadline, isMobile, session = "AVOID", strategy = "Mean Revert", openTrades = [], signalMap = {}, onIntelUpdate, swingSignals = {}, swingTrades = [], swingEnabled = false }) {
+function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balance, currentHeadline, isMobile, session = "AVOID", strategy = "Mean Revert", openTrades = [], signalMap = {}, onIntelUpdate, swingSignals = {}, swingTrades = [], swingEnabled = false, principleWisdom = null, onPrincipleWisdomSeen }) {
   const [briefLoading, setBriefLoading] = useState(false);
   const [metrics, setMetrics] = useState(() => { try { return JSON.parse(localStorage.getItem("xavier_intel")) || null; } catch { return null; } });
   const [question, setQuestion] = useState("");
@@ -1530,6 +1564,14 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
   useEffect(() => {
     if (metrics) localStorage.setItem("xavier_intel", JSON.stringify(metrics));
   }, [metrics]);
+
+  // Inject principle wisdom message into chat when adaptive weights fire
+  useEffect(() => {
+    if (!principleWisdom) return;
+    const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    setChatHistory(h => [...h, { role: "ai", text: principleWisdom, ts }]);
+    onPrincipleWisdomSeen?.();
+  }, [principleWisdom]); // eslint-disable-line
 
   const buildSystemPrompt = (freshPrices) => {
     const priceSource = freshPrices || prices;
@@ -1569,7 +1611,7 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
         }).join("\n")}\n\nYou are aware of these positions. When asked about open trades or portfolio status, reference these exact positions.`
       : "";
 
-    return `You are Xavier, a seasoned forex prop trader based in Calgary. Session: ${session}. Strategy: ${strategy}. Portfolio heat: ${heat}R. Open trades: ${openCount}. Active signals: ${signalPairs}. Current headline: "${currentHeadline}". Talk like a human — direct, confident, occasionally dry. Contractions always. No bullet points, no corporate phrasing. Max 80 words.\n\n${liveContext}${openTradesContext}${swingBlock}`;
+    return `${XAVIER_ELITE_IDENTITY}\n\nCURRENT STATE — Session: ${session} | Strategy: ${strategy} | Heat: ${heat}R | Open trades: ${openCount} | Active signals: ${signalPairs} | Headline: "${currentHeadline}"\n\nTalk like a human — direct, confident, occasionally dry. Contractions always. No bullet points. Max 80 words.\n\n${liveContext}${openTradesContext}${swingBlock}`;
   };
 
   const runAnalysis = async () => {
@@ -1579,7 +1621,7 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
     try {
       const result = await callClaude(
         `Session: ${session} | Strategy: ${strategy} | Heat: ${heat}R | Open positions: ${openCount}\nPrices: ${snap}\nHeadlines: ${headlines.join(" | ")}\n\nRespond in EXACTLY this format, no extra text:\nSENTIMENT: BULLISH or BEARISH or NEUTRAL\nBEST_PAIR: [pair] — [reason, max 12 words]\nKEY_RISK: [risk, max 12 words]\nBRIEF: [2-3 sentence analysis, max 80 words]`,
-        `You are Xavier, a sharp prop trader watching 8 forex pairs from Calgary. Session: ${session}. Strategy active: ${strategy}. Speak like a human — direct sentences, contractions always. The BRIEF field should sound like you're talking to a trader. Follow the output format exactly.`,
+        `${XAVIER_ELITE_IDENTITY}\n\nCURRENT: Session: ${session} | Strategy: ${strategy}. Speak like a human — direct sentences, contractions always. Follow the output format EXACTLY — no extra text.`,
         600
       );
       const parsed = {};
@@ -1667,7 +1709,8 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
   // Auto-send session greeting and trigger analysis on mount
   useEffect(() => {
     if (chatHistory.length === 0) {
-      const greeting = SESSION_GREETINGS[session] || SESSION_GREETINGS.AVOID;
+      const storedClosed = (() => { try { return JSON.parse(localStorage.getItem("qb_closed_trades")) || []; } catch { return []; } })();
+      const greeting = getXavierWisdom(session, storedClosed);
       const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       setChatHistory([{ role: "ai", text: greeting, ts }]);
     }
@@ -5341,7 +5384,8 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
   useEffect(() => {
     if (prevOptRunning.current && !xavierOpt.running && xavierOpt.result) {
       const top = xavierOpt.result.top3?.[0];
-      if (top) setOptNotification(`Optimization complete — best setup this week is ${top.pair} ${top.strategy} in ${top.session} at +${top.expectancyR.toFixed(2)}R expectancy. I've updated my rules for the week.`);
+      const m5Count = xavierOpt.m5Result?.validatedPairs?.length ?? 0;
+      if (top) setOptNotification(`M15+M5 optimization complete — best M15 setup: ${top.pair} ${top.strategy} in ${top.session} at +${top.expectancyR.toFixed(2)}R. ${m5Count} pairs validated for M5 auto-execution.`);
     }
     prevOptRunning.current = !!xavierOpt.running;
   }, [xavierOpt.running]); // eslint-disable-line
@@ -5792,26 +5836,22 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
 
       {/* ── Xavier's Optimization ── */}
       <div style={{ ...CARD, marginTop: 12, borderColor: xavierOpt.running ? "#1D9E7544" : "#21262d" }}>
+
+        {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, color: "#e6edf3" }}>Xavier's Optimization</div>
             <div style={{ fontSize: 10, color: "#484f58", marginTop: 2 }}>
               {xavierOpt.result
-                ? (() => { const ago = Math.floor((Date.now() - xavierOpt.result.lastUpdated) / 86400000); return `Last run: ${ago === 0 ? "today" : ago === 1 ? "yesterday" : `${ago} days ago`} · ${xavierOpt.result.totalCombinationsTested} combinations tested`; })()
+                ? (() => { const ago = Math.floor((Date.now() - xavierOpt.result.lastUpdated) / 86400000); return `Last run: ${ago === 0 ? "today" : ago === 1 ? "yesterday" : `${ago} days ago`} · M15 + M5 · 800 combinations`; })()
                 : "Never run · runs Sunday 11pm Calgary or on first load"}
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
             {xavierOpt.running ? (
-              <button onClick={xavierOpt.cancel}
-                style={{ fontSize: 10, padding: "5px 12px", borderRadius: 5, cursor: "pointer", border: "1px solid #8e1a17", background: "rgba(142,26,23,0.1)", color: "#f85149", fontFamily: "inherit" }}>
-                Cancel
-              </button>
+              <button onClick={xavierOpt.cancel} style={{ fontSize: 10, padding: "5px 12px", borderRadius: 5, cursor: "pointer", border: "1px solid #8e1a17", background: "rgba(142,26,23,0.1)", color: "#f85149", fontFamily: "inherit" }}>Cancel</button>
             ) : (
-              <button onClick={xavierOpt.run}
-                style={{ fontSize: 10, padding: "5px 12px", borderRadius: 5, cursor: "pointer", border: "1px solid #238636", background: "rgba(35,134,54,0.12)", color: "#3fb950", fontFamily: "inherit", fontWeight: 600 }}>
-                Run Now
-              </button>
+              <button onClick={xavierOpt.run} style={{ fontSize: 10, padding: "5px 12px", borderRadius: 5, cursor: "pointer", border: "1px solid #238636", background: "rgba(35,134,54,0.12)", color: "#3fb950", fontFamily: "inherit", fontWeight: 600 }}>Run Now</button>
             )}
           </div>
         </div>
@@ -5824,12 +5864,16 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
               <span style={{ fontFamily: FONT_MONO, color: "#3fb950" }}>{xavierOpt.done}/{xavierOpt.total}</span>
             </div>
             <div style={{ height: 3, background: "#21262d", borderRadius: 2, overflow: "hidden" }}>
-              <div style={{ height: "100%", width: `${xavierOpt.progress}%`, background: "#1D9E75", borderRadius: 2, transition: "width 0.2s" }} />
+              <div style={{ height: "100%", width: `${xavierOpt.progress}%`, background: xavierOpt.progress >= 50 ? "#58a6ff" : "#1D9E75", borderRadius: 2, transition: "width 0.2s" }} />
+            </div>
+            <div style={{ display: "flex", gap: 16, fontSize: 9, color: "#484f58", marginTop: 3 }}>
+              <span style={{ color: xavierOpt.progress >= 50 ? "#484f58" : "#1D9E75" }}>M15 swing {xavierOpt.progress >= 50 ? "✓ done" : `${Math.min(Math.round(xavierOpt.progress * 2), 100)}%`}</span>
+              <span style={{ color: xavierOpt.progress >= 50 ? "#58a6ff" : "#484f58" }}>M5 live {xavierOpt.progress >= 50 ? `${Math.round((xavierOpt.progress - 50) * 2)}%` : "—"}</span>
             </div>
           </div>
         )}
 
-        {/* Completion notification banner */}
+        {/* Completion notification */}
         {optNotification && (
           <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", background: "rgba(29,158,117,0.08)", border: "1px solid #1D9E7544", borderRadius: 8, marginBottom: 10 }}>
             <div style={{ flex: 1, fontSize: 11, color: "#8b949e", lineHeight: 1.6 }}>{optNotification}</div>
@@ -5837,95 +5881,126 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
           </div>
         )}
 
-        {/* Top 3 combinations */}
-        {xavierOpt.result?.top3?.length > 0 && !xavierOpt.running && (
-          <div>
-            <div style={{ fontSize: 10, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Top 3 This Week</div>
-            {xavierOpt.result.top3.map((c, i) => {
-              const STRAT_COLOR = { "Mean Revert": "#1D9E75", "Trend Follow": "#58a6ff", "Breakout": "#F97316", "Momentum": "#8B5CF6", "Range Scalp": "#d29922" };
-              const col = STRAT_COLOR[c.strategy] || "#8b949e";
-              return (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: i < 2 ? "0.5px solid #21262d" : "none" }}>
-                  <span style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO, minWidth: 14 }}>#{i + 1}</span>
-                  <div style={{ width: 3, height: 28, borderRadius: 2, background: col, flexShrink: 0 }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 11, color: "#e6edf3", fontWeight: 600 }}>{c.pair} <span style={{ color: col }}>{c.strategy}</span></div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
-                      <span style={{ fontSize: 9, color: "#484f58" }}>{c.session}</span>
-                      <span style={{ fontSize: 9, fontFamily: FONT_MONO, fontWeight: 700, padding: "1px 5px", borderRadius: 3, background: "#1D9E7520", border: "1px solid #1D9E7544", color: "#1D9E75" }}>{c.trades} trades</span>
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <div style={{ fontSize: 13, fontFamily: FONT_MONO, color: c.expectancyR >= 0 ? "#3fb950" : "#f85149", fontWeight: 700 }}>{c.expectancyR >= 0 ? "+" : ""}{c.expectancyR.toFixed(2)}R</div>
-                    <div style={{ fontSize: 9, color: "#8b949e", marginTop: 1 }}>{c.winRate.toFixed(0)}% win rate</div>
-                  </div>
+        {/* ── Pair Status Dashboard ── */}
+        {(xavierOpt.result || xavierOpt.m5Result) && !xavierOpt.running && (() => {
+          const ALL_PAIRS = [
+            "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "EUR/GBP", "NZD/USD",
+            "XAU/USD", "XAG/USD", "BCO/USD", "WTICO/USD",
+            "NAS100_USD", "JP225_USD", "UK100_GBP", "AU200_AUD", "SPX500_USD",
+          ];
+          const m15Validated = new Set(xavierOpt.result?.validatedPairs ?? []);
+          const m5Validated  = new Set(xavierOpt.m5Result?.validatedPairs ?? []);
+          const STATUS_COLOR = { "AUTO+SWING": "#3fb950", "AUTO": "#1D9E75", "SWING": "#58a6ff", "MANUAL": "#f85149" };
+          const STATUS_ICON  = { "AUTO+SWING": "✅", "AUTO": "✅", "SWING": "⚔️", "MANUAL": "❌" };
+          const getStatus = (pair) => {
+            const m5 = m5Validated.has(pair); const m15 = m15Validated.has(pair);
+            if (m5 && m15) return "AUTO+SWING";
+            if (m5)        return "AUTO";
+            if (m15)       return "SWING";
+            return "MANUAL";
+          };
+          const autoCount   = ALL_PAIRS.filter(p => m5Validated.has(p)).length;
+          const swingCount  = ALL_PAIRS.filter(p => !m5Validated.has(p) && m15Validated.has(p)).length;
+          const manualCount = ALL_PAIRS.filter(p => !m5Validated.has(p) && !m15Validated.has(p)).length;
+          const fmtEdge = (v, thresh) => v == null
+            ? <span style={{ color: "#30363d" }}>—</span>
+            : <span style={{ color: v >= thresh ? "#3fb950" : v >= 0 ? "#d29922" : "#f85149", fontWeight: 700, fontFamily: FONT_MONO }}>
+                {v >= 0 ? "+" : ""}{v.toFixed(2)}R {v >= thresh ? "✅" : v >= 0 ? "⚠️" : "❌"}
+              </span>;
+          return (
+            <div style={{ marginBottom: 14, borderBottom: "0.5px solid #21262d", paddingBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.06em" }}>Pair Status Dashboard</div>
+                <div style={{ display: "flex", gap: 10, fontSize: 9 }}>
+                  <span style={{ color: "#3fb950" }}>✅ {autoCount} Auto</span>
+                  <span style={{ color: "#58a6ff" }}>⚔️ {swingCount} Swing</span>
+                  <span style={{ color: "#f85149" }}>❌ {manualCount} Manual</span>
                 </div>
-              );
-            })}
-          </div>
-        )}
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "0.5px solid #21262d" }}>
+                      <th style={{ textAlign: "left", color: "#484f58", fontWeight: 600, padding: "3px 6px 6px 0", whiteSpace: "nowrap", fontFamily: FONT_MONO }}>PAIR</th>
+                      <th style={{ textAlign: "center", color: "#1D9E75", fontWeight: 600, padding: "3px 6px 6px", whiteSpace: "nowrap" }}>M5 EDGE</th>
+                      <th style={{ textAlign: "center", color: "#58a6ff", fontWeight: 600, padding: "3px 6px 6px", whiteSpace: "nowrap" }}>M15 EDGE</th>
+                      <th style={{ textAlign: "center", color: "#484f58", fontWeight: 600, padding: "3px 0 6px 6px", whiteSpace: "nowrap" }}>STATUS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ALL_PAIRS.map((pair) => {
+                      const status  = getStatus(pair);
+                      const col     = STATUS_COLOR[status];
+                      const m5Val   = xavierOpt.m5Result?.pairEdge?.[pair]?.bestExpectancy;
+                      const m15Val  = xavierOpt.result?.pairEdge?.[pair]?.bestExpectancy;
+                      return (
+                        <tr key={pair} style={{ borderBottom: "0.5px solid #161b22" }}>
+                          <td style={{ padding: "5px 6px 5px 0", color: "#8b949e", fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>{pair}</td>
+                          <td style={{ textAlign: "center", padding: "5px 6px" }}>{fmtEdge(m5Val, 0.30)}</td>
+                          <td style={{ textAlign: "center", padding: "5px 6px" }}>{fmtEdge(m15Val, 0.30)}</td>
+                          <td style={{ textAlign: "center", padding: "5px 0 5px 6px" }}>
+                            <span style={{ fontSize: 8, fontWeight: 700, color: col, background: col + "18", border: `1px solid ${col}44`, borderRadius: 3, padding: "2px 5px", whiteSpace: "nowrap" }}>{STATUS_ICON[status]} {status}</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {xavierOpt.m5Result?.validatedPairs?.length > 0 && (
+                <div style={{ marginTop: 8, padding: "7px 10px", background: "rgba(63,185,80,0.06)", border: "1px solid #3fb95033", borderRadius: 6 }}>
+                  <div style={{ fontSize: 9, color: "#3fb950", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>✅ M5 Auto-Execution Pairs</div>
+                  <div style={{ fontSize: 9, color: "#8b949e", fontFamily: FONT_MONO, lineHeight: 1.7 }}>{xavierOpt.m5Result.validatedPairs.join("  ·  ")}</div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
-        {/* Per-session optimized rules */}
-        {xavierOpt.result?.rules && !xavierOpt.running && (
-          <div style={{ marginTop: 12, borderTop: "0.5px solid #21262d", paddingTop: 10 }}>
-            <div style={{ fontSize: 10, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Optimized Rules by Session</div>
-            {Object.entries(xavierOpt.result.rules).map(([sess, rule]) => {
-              const STRAT_COLOR = { "Mean Revert": "#1D9E75", "Trend Follow": "#58a6ff", "Breakout": "#F97316", "Momentum": "#8B5CF6", "Range Scalp": "#d29922" };
-              const col = STRAT_COLOR[rule.strategy] || "#8b949e";
-              const pairs = rule.pairsDetail || rule.pairs?.map(p => ({ pair: p, trades: null, winRate: null, expectancyR: rule.expectancy })) || [];
-              return (
-                <div key={sess} style={{ marginBottom: 10, paddingBottom: 10, borderBottom: "0.5px solid #161b22" }}>
-                  {/* Session header */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
-                    <span style={{ fontSize: 9, color: "#484f58", fontFamily: FONT_MONO, minWidth: 56, textTransform: "uppercase", letterSpacing: "0.06em" }}>{sess}</span>
-                    <span style={{ fontSize: 10, color: col, fontWeight: 700 }}>{rule.strategy}</span>
-                    <span style={{ fontSize: 10, fontFamily: FONT_MONO, color: rule.expectancy >= 0 ? "#3fb950" : "#f85149", fontWeight: 600, marginLeft: "auto" }}>
-                      {rule.expectancy >= 0 ? "+" : ""}{rule.expectancy}R
-                    </span>
-                  </div>
-                  {/* Per-pair rows */}
-                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                    {pairs.map(pd => (
-                      <div key={pd.pair} style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 56 }}>
-                        <span style={{ fontSize: 9, color: "#8b949e", fontFamily: FONT_MONO, minWidth: 70 }}>{pd.pair}</span>
-                        {pd.expectancyR !== null && (
-                          <span style={{ fontSize: 9, fontFamily: FONT_MONO, fontWeight: 600, color: pd.expectancyR >= 0.30 ? "#3fb950" : pd.expectancyR >= 0 ? "#d29922" : "#f85149" }}>
-                            {pd.expectancyR >= 0 ? "+" : ""}{pd.expectancyR.toFixed(2)}R
-                          </span>
-                        )}
-                        {pd.trades !== null && (
-                          <span style={{ fontSize: 9, color: "#484f58" }}>{pd.trades} trades</span>
-                        )}
-                        {pd.winRate !== null && (
-                          <span style={{ fontSize: 9, color: "#484f58" }}>{pd.winRate.toFixed(0)}% WR</span>
-                        )}
-                        {pd.trades !== null && pd.trades < 50 && (
-                          <span style={{ fontSize: 8, color: "#d29922", fontWeight: 600 }}>⚠ low sample</span>
-                        )}
+        {/* ── M5 Live Execution Results ── */}
+        {xavierOpt.m5Result && !xavierOpt.running && (
+          <div style={{ marginBottom: 14, borderBottom: "0.5px solid #21262d", paddingBottom: 14 }}>
+            <div style={{ fontSize: 10, color: "#1D9E75", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+              M5 Live Execution Results
+              <span style={{ fontSize: 8, color: "#484f58", fontWeight: 400, marginLeft: 8 }}>minTrades=50 · maxDD=10R</span>
+              {xavierOpt.m5Result.totalSignals > 0 && (
+                <span style={{ fontSize: 8, fontFamily: FONT_MONO, color: "#1D9E75", fontWeight: 400, marginLeft: 8 }}>{xavierOpt.m5Result.totalSignals.toLocaleString()} M5 signals</span>
+              )}
+            </div>
+            {xavierOpt.m5Result.top3?.length > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 9, color: "#484f58", marginBottom: 5 }}>Top setups on M5</div>
+                {xavierOpt.m5Result.top3.map((c, i) => {
+                  const SC = { "Mean Revert": "#1D9E75", "Trend Follow": "#58a6ff", "Breakout": "#F97316", "Momentum": "#8B5CF6", "Range Scalp": "#d29922" };
+                  const col = SC[c.strategy] || "#8b949e";
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: i < xavierOpt.m5Result.top3.length - 1 ? "0.5px solid #161b22" : "none" }}>
+                      <span style={{ fontSize: 9, color: "#484f58", fontFamily: FONT_MONO, minWidth: 14 }}>#{i + 1}</span>
+                      <div style={{ width: 2, height: 24, borderRadius: 2, background: col, flexShrink: 0 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 10, color: "#e6edf3", fontWeight: 600 }}>{c.pair} <span style={{ color: col }}>{c.strategy}</span></div>
+                        <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
+                          <span style={{ fontSize: 8, color: "#484f58" }}>{c.session}</span>
+                          <span style={{ fontSize: 8, fontFamily: FONT_MONO, color: "#1D9E75" }}>{c.trades} trades</span>
+                        </div>
                       </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Pair validation results */}
-        {xavierOpt.result?.validatedPairs && !xavierOpt.running && (
-          <div style={{ marginTop: 12, borderTop: "0.5px solid #21262d", paddingTop: 10 }}>
-            <div style={{ fontSize: 10, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Live Trading Eligibility</div>
-            {xavierOpt.result.validatedPairs.length > 0 && (
-              <div style={{ padding: "8px 10px", background: "rgba(63,185,80,0.06)", border: "1px solid #3fb95033", borderRadius: 6, marginBottom: 6 }}>
-                <div style={{ fontSize: 9, color: "#3fb950", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>✓ Validated for live trading</div>
-                <div style={{ fontSize: 10, color: "#8b949e", fontFamily: FONT_MONO, lineHeight: 1.7 }}>{xavierOpt.result.validatedPairs.join("  ·  ")}</div>
+                      <div style={{ fontSize: 12, fontFamily: FONT_MONO, color: c.expectancyR >= 0 ? "#3fb950" : "#f85149", fontWeight: 700 }}>{c.expectancyR >= 0 ? "+" : ""}{c.expectancyR.toFixed(2)}R</div>
+                    </div>
+                  );
+                })}
               </div>
             )}
-            {xavierOpt.result.blockedPairs?.length > 0 && (
-              <div style={{ padding: "8px 10px", background: "rgba(248,81,73,0.06)", border: "1px solid #f8514933", borderRadius: 6, marginBottom: 6 }}>
-                <div style={{ fontSize: 9, color: "#f85149", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>✗ Blocked — insufficient edge</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                  {xavierOpt.result.blockedPairs.map(({ pair, reason }) => (
+            {xavierOpt.m5Result.validatedPairs?.length > 0 && (
+              <div style={{ padding: "7px 10px", background: "rgba(63,185,80,0.06)", border: "1px solid #3fb95033", borderRadius: 6, marginBottom: 4 }}>
+                <div style={{ fontSize: 9, color: "#3fb950", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>✓ Validated for auto-execution</div>
+                <div style={{ fontSize: 9, color: "#8b949e", fontFamily: FONT_MONO, lineHeight: 1.7 }}>{xavierOpt.m5Result.validatedPairs.join("  ·  ")}</div>
+              </div>
+            )}
+            {xavierOpt.m5Result.blockedPairs?.length > 0 && (
+              <div style={{ padding: "7px 10px", background: "rgba(248,81,73,0.06)", border: "1px solid #f8514933", borderRadius: 6 }}>
+                <div style={{ fontSize: 9, color: "#f85149", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>✗ Blocked — M5 edge insufficient</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {xavierOpt.m5Result.blockedPairs.map(({ pair, reason }) => (
                     <div key={pair} style={{ fontSize: 9, color: "#484f58", fontFamily: FONT_MONO }}>
                       <span style={{ color: "#8b949e" }}>{pair}</span><span style={{ color: "#30363d" }}> — </span>{reason}
                     </div>
@@ -5933,24 +6008,81 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
                 </div>
               </div>
             )}
-            {xavierOpt.result.candleCounts && (
-              <div style={{ padding: "8px 10px", background: "#0d111740", border: "0.5px solid #21262d", borderRadius: 6 }}>
-                <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>M15 candles loaded (90 days)</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  {Object.entries(xavierOpt.result.candleCounts).map(([pair, info]) => (
-                    <div key={pair} style={{ display: "flex", justifyContent: "space-between", fontFamily: FONT_MONO, fontSize: 9 }}>
-                      <span style={{ color: "#8b949e" }}>{pair}</span>
-                      <span style={{ color: "#484f58" }}>{info.count.toLocaleString()} candles · {info.days}d</span>
+          </div>
+        )}
+
+        {/* ── M15 Swing Trading Results ── */}
+        {xavierOpt.result && !xavierOpt.running && (
+          <div>
+            <div style={{ fontSize: 10, color: "#58a6ff", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+              M15 Swing Trading Results
+              <span style={{ fontSize: 8, color: "#484f58", fontWeight: 400, marginLeft: 8 }}>minTrades=30 · maxDD=15R</span>
+            </div>
+            {xavierOpt.result.top3?.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 9, color: "#484f58", marginBottom: 5 }}>Top setups on M15</div>
+                {xavierOpt.result.top3.map((c, i) => {
+                  const SC = { "Mean Revert": "#1D9E75", "Trend Follow": "#58a6ff", "Breakout": "#F97316", "Momentum": "#8B5CF6", "Range Scalp": "#d29922" };
+                  const col = SC[c.strategy] || "#8b949e";
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: i < 2 ? "0.5px solid #21262d" : "none" }}>
+                      <span style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO, minWidth: 14 }}>#{i + 1}</span>
+                      <div style={{ width: 3, height: 28, borderRadius: 2, background: col, flexShrink: 0 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11, color: "#e6edf3", fontWeight: 600 }}>{c.pair} <span style={{ color: col }}>{c.strategy}</span></div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
+                          <span style={{ fontSize: 9, color: "#484f58" }}>{c.session}</span>
+                          <span style={{ fontSize: 9, fontFamily: FONT_MONO, fontWeight: 700, padding: "1px 5px", borderRadius: 3, background: "#1D9E7520", border: "1px solid #1D9E7544", color: "#1D9E75" }}>{c.trades} trades</span>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right", flexShrink: 0 }}>
+                        <div style={{ fontSize: 13, fontFamily: FONT_MONO, color: c.expectancyR >= 0 ? "#3fb950" : "#f85149", fontWeight: 700 }}>{c.expectancyR >= 0 ? "+" : ""}{c.expectancyR.toFixed(2)}R</div>
+                        <div style={{ fontSize: 9, color: "#8b949e", marginTop: 1 }}>{c.winRate.toFixed(0)}% win rate</div>
+                      </div>
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
+              </div>
+            )}
+            {xavierOpt.result.rules && (
+              <div style={{ marginTop: 6, borderTop: "0.5px solid #21262d", paddingTop: 8 }}>
+                <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>M15 Optimized Rules by Session</div>
+                {Object.entries(xavierOpt.result.rules).map(([sess, rule]) => {
+                  const SC = { "Mean Revert": "#1D9E75", "Trend Follow": "#58a6ff", "Breakout": "#F97316", "Momentum": "#8B5CF6", "Range Scalp": "#d29922" };
+                  const col = SC[rule.strategy] || "#8b949e";
+                  const pairs = rule.pairsDetail || rule.pairs?.map(p => ({ pair: p, trades: null, winRate: null, expectancyR: rule.expectancy })) || [];
+                  return (
+                    <div key={sess} style={{ marginBottom: 8, paddingBottom: 8, borderBottom: "0.5px solid #161b22" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <span style={{ fontSize: 9, color: "#484f58", fontFamily: FONT_MONO, minWidth: 56, textTransform: "uppercase", letterSpacing: "0.06em" }}>{sess}</span>
+                        <span style={{ fontSize: 10, color: col, fontWeight: 700 }}>{rule.strategy}</span>
+                        <span style={{ fontSize: 10, fontFamily: FONT_MONO, color: rule.expectancy >= 0 ? "#3fb950" : "#f85149", fontWeight: 600, marginLeft: "auto" }}>{rule.expectancy >= 0 ? "+" : ""}{rule.expectancy}R</span>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        {pairs.map(pd => (
+                          <div key={pd.pair} style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 56 }}>
+                            <span style={{ fontSize: 9, color: "#8b949e", fontFamily: FONT_MONO, minWidth: 70 }}>{pd.pair}</span>
+                            {pd.expectancyR !== null && <span style={{ fontSize: 9, fontFamily: FONT_MONO, fontWeight: 600, color: pd.expectancyR >= 0.30 ? "#3fb950" : pd.expectancyR >= 0 ? "#d29922" : "#f85149" }}>{pd.expectancyR >= 0 ? "+" : ""}{pd.expectancyR.toFixed(2)}R</span>}
+                            {pd.trades !== null && <span style={{ fontSize: 9, color: "#484f58" }}>{pd.trades} trades</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {xavierOpt.result.validatedPairs?.length > 0 && (
+              <div style={{ marginTop: 8, padding: "7px 10px", background: "rgba(88,166,255,0.06)", border: "1px solid #58a6ff33", borderRadius: 6 }}>
+                <div style={{ fontSize: 9, color: "#58a6ff", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>⚔️ M15 Swing-Validated Pairs</div>
+                <div style={{ fontSize: 9, color: "#8b949e", fontFamily: FONT_MONO, lineHeight: 1.7 }}>{xavierOpt.result.validatedPairs.join("  ·  ")}</div>
               </div>
             )}
           </div>
         )}
 
-        {!xavierOpt.result && !xavierOpt.running && (
-          <div style={{ fontSize: 11, color: "#484f58", padding: "10px 0" }}>Click "Run Now" to test all 400 strategy/pair/session combinations across 16 pairs and find this week's best setups. Takes ~15 minutes.</div>
+        {!xavierOpt.result && !xavierOpt.m5Result && !xavierOpt.running && (
+          <div style={{ fontSize: 11, color: "#484f58", padding: "10px 0" }}>Click "Run Now" to run M15 swing + M5 live backtests — 16 pairs × 5 strategies × 5 sessions × 2 timeframes = 800 combinations. Takes ~30 minutes.</div>
         )}
       </div>
     </div>
@@ -7171,23 +7303,106 @@ const MOBILE_TABS = [
 ];
 
 // ─── STRATEGY INTELLIGENCE ENGINE ────────────────────────────────────────────
+// ─── M5 SIGNAL GENERATOR (backtest only — NOT protected generateSignal) ───────
+function generateSignalM5(history, strategy, pair) {
+  if (history.length < 20) return null;
+  const recent = history.slice(-20);
+  const ema9  = recent.slice(-9).reduce((a, b) => a + b, 0) / 9;
+  const ema21 = recent.reduce((a, b) => a + b, 0) / 20;
+  const last  = recent[recent.length - 1];
+  const prev  = recent[recent.length - 2];
+  const change = (last - recent[0]) / recent[0];
+  let score = 0, direction = null, reason = [];
+
+  if (strategy === "Trend Follow") {
+    if (ema9 > ema21 && last > ema9) { score += 40; direction = "LONG";  reason.push("EMA bullish cross"); }
+    else if (ema9 < ema21 && last < ema9) { score += 40; direction = "SHORT"; reason.push("EMA bearish cross"); }
+    if (change > 0.001) { score += 25; direction = direction || "LONG";  reason.push("Uptrend M5"); }
+    else if (change < -0.001) { score += 25; direction = direction || "SHORT"; reason.push("Downtrend M5"); }
+  } else if (strategy === "Mean Revert") {
+    const mean   = recent.reduce((a, b) => a + b, 0) / recent.length;
+    const dev    = Math.abs(last - mean) / mean;
+    const pairKey = pair.replace("/", "_");
+    const isGold  = pairKey.includes("XAU");
+    const isJpy   = pairKey.includes("JPY");
+    const t1 = isGold ? 0.0003 : isJpy ? 0.0006 : 0.0005;
+    const t2 = isGold ? 0.0007 : isJpy ? 0.0012 : 0.001;
+    const t3 = isGold ? 0.0014 : isJpy ? 0.002  : 0.002;
+    if (dev > t1) {
+      const dir = last > mean ? "SHORT" : "LONG";
+      score += 50;
+      if (dev > t2) score += 10;
+      if (dev > t3) score += 10;
+      const returning = (dir === "LONG" && last > prev) || (dir === "SHORT" && last < prev);
+      if (returning) score += 10;
+      direction = dir;
+      reason.push(`${(dev * 100).toFixed(3)}% deviation M5`);
+    }
+  } else if (strategy === "Breakout") {
+    const high = Math.max(...recent), low = Math.min(...recent), range = high - low;
+    if      (last > high - range * 0.05) { score += 45; direction = "LONG";  reason.push("Near range high"); }
+    else if (last < low  + range * 0.05) { score += 45; direction = "SHORT"; reason.push("Near range low");  }
+    if (direction) {
+      const tr      = recent.slice(1).map((p, i) => Math.abs(p - recent[i]));
+      const atr5    = tr.slice(-5).reduce((a, b) => a + b, 0) / 5;
+      const atrFull = tr.reduce((a, b) => a + b, 0) / tr.length;
+      if (atr5 > atrFull * 1.1)                  { score += 10; reason.push("ATR expanding"); }
+      if (Math.abs(last - prev) > atrFull * 1.5)  { score += 10; reason.push("Strong thrust"); }
+    }
+  } else if (strategy === "Momentum") {
+    const momentum = (last - recent[recent.length - 10]) / recent[recent.length - 10];
+    if (Math.abs(momentum) >= 0.002) {
+      direction = momentum > 0 ? "LONG" : "SHORT";
+      score += 55;
+      reason.push(`${(momentum * 100).toFixed(3)}% momentum M5`);
+      if (Math.abs(momentum) > 0.003) { score += 10; reason.push("Strong momentum"); }
+      if ((direction === "LONG" && ema9 > ema21) || (direction === "SHORT" && ema9 < ema21)) { score += 5; reason.push("EMA confirms"); }
+    }
+  } else {
+    const high20 = Math.max(...recent), low20 = Math.min(...recent);
+    const rangeSize = high20 - low20;
+    const rangePct  = low20 > 0 ? rangeSize / low20 : 1;
+    if (rangePct < 0.003) {
+      if      (last < low20  + rangeSize * 0.2) { score += 50; direction = "LONG";  reason.push("Range low boundary"); }
+      else if (last > high20 - rangeSize * 0.2) { score += 50; direction = "SHORT"; reason.push("Range high boundary"); }
+      if (direction) {
+        const rsiProxy = 50 + (change / 0.005) * 20;
+        if ((direction === "LONG" && rsiProxy < 45) || (direction === "SHORT" && rsiProxy > 55)) { score += 10; reason.push("Oscillator confirm"); }
+      }
+    }
+  }
+
+  const rsi = 50 + (change / 0.005) * 20;
+  if (strategy === "Momentum") {
+    if (direction === "LONG"  && rsi > 55) { score += 15; reason.push("RSI confirms"); }
+    if (direction === "SHORT" && rsi < 45) { score += 15; reason.push("RSI confirms"); }
+  } else {
+    if (direction === "LONG"  && rsi < 45) { score += 15; reason.push("RSI oversold"); }
+    if (direction === "SHORT" && rsi > 55) { score += 15; reason.push("RSI overbought"); }
+  }
+  if (!direction || score < 50) return null;
+  return { score, direction, reason, rsi: parseFloat(rsi.toFixed(1)) };
+}
+
 // ─── AUTONOMOUS BACKTEST SIMULATION ───────────────────────────────────────────
-async function runBtSimulation(closes, candles, strat, sessRange, pair) {
+async function runBtSimulation(closes, candles, strat, sessRange, pair, btConfig = {}) {
+  const minScore  = btConfig.minScore  ?? 65;
+  const signalFn  = btConfig.signalFn  ?? generateSignal;
   const isInSessLocal = (h, r) => { if (!r) return true; if (r.s > r.e) return h >= r.s || h < r.e; return h >= r.s && h < r.e; };
   const trades = [];
   const total  = closes.length;
   const CHUNK  = 300;
   // ── DEBUG counters ─────────────────────────────────────────────────────────
   let _sigsScanned = 0, _sigsPassScore = 0, _sigsPassSess = 0;
-  console.log('[BACKTEST] threshold: 65 | sim start:', pair, strat, '| candles:', total, '| session UTC:', JSON.stringify(sessRange));
+  console.log(`[BACKTEST] threshold: ${minScore} | sim start:`, pair, strat, '| candles:', total, '| session UTC:', JSON.stringify(sessRange));
   let i = 20;
   while (i < total) {
     await new Promise(resolve => setTimeout(resolve, 0));
     const end = Math.min(i + CHUNK, total - 1);
     while (i <= end) {
-      const sig = generateSignal(closes.slice(i - 20, i + 1), strat, pair);
+      const sig = signalFn(closes.slice(i - 20, i + 1), strat, pair);
       _sigsScanned++;
-      if (sig && sig.score >= 65 && sig.direction) {
+      if (sig && sig.score >= minScore && sig.direction) {
         _sigsPassScore++;
         const utcH = candles[i]?.time ? new Date(candles[i].time).getUTCHours() : 12;
         if (isInSessLocal(utcH, sessRange)) {
@@ -7219,7 +7434,7 @@ async function runBtSimulation(closes, candles, strat, sessRange, pair) {
       i++;
     }
   }
-  console.log(`[BACKTEST] ${pair} ${strat} | scanned:${_sigsScanned} score>=65:${_sigsPassScore} in-session:${_sigsPassSess} trades-resolved:${trades.length}`);
+  console.log(`[BACKTEST] ${pair} ${strat} | scanned:${_sigsScanned} score>=${minScore}:${_sigsPassScore} in-session:${_sigsPassSess} trades-resolved:${trades.length}`);
   if (trades.length < 10) return null;
   const wins     = trades.filter(t => t.win);
   const losses   = trades.filter(t => !t.win);
@@ -7233,132 +7448,189 @@ async function runBtSimulation(closes, candles, strat, sessRange, pair) {
   const rMean = rArr.reduce((a, b) => a + b, 0) / rArr.length;
   const rStd  = Math.sqrt(rArr.reduce((a, b) => a + (b - rMean) ** 2, 0) / rArr.length);
   const sharpe = rStd > 0 ? parseFloat((rMean / rStd).toFixed(2)) : 0;
-  return { trades: trades.length, winRate, expectancyR, profitFactor, maxDD, sharpe };
+  return { trades: trades.length, winRate, expectancyR, profitFactor, maxDD, sharpe, signalCount: _sigsPassSess };
 }
 
 // ─── XAVIER AUTONOMOUS OPTIMIZER HOOK ─────────────────────────────────────────
 function useAutonomousBacktest() {
-  const OPT_KEY  = "xavier_optimization_results";
+  const OPT_KEY    = "xavier_optimization_results";
+  const M5_OPT_KEY = "xavier_optimization_m5";
   const STRATS   = ["Mean Revert", "Trend Follow", "Breakout", "Momentum", "Range Scalp"];
   const PAIRS    = [
-    // Forex majors & crosses
     "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "EUR/GBP", "NZD/USD",
-    // Metals
     "XAU/USD", "XAG/USD",
-    // Energy
     "BCO/USD", "WTICO/USD",
-    // Indices
     "NAS100_USD", "JP225_USD", "UK100_GBP", "AU200_AUD", "SPX500_USD",
   ];
-  const SESSIONS = ["Tokyo", "London", "Prime", "NY", "Sydney"];
-  const SESS_UTC = { Tokyo: { s: 0, e: 9 }, London: { s: 7, e: 16 }, Prime: { s: 13, e: 17 }, NY: { s: 17, e: 20 }, Sydney: { s: 22, e: 4 } };
-  const TOTAL    = STRATS.length * PAIRS.length * SESSIONS.length; // 400
+  const SESSIONS   = ["Tokyo", "London", "Prime", "NY", "Sydney"];
+  const SESS_UTC   = { Tokyo: { s: 0, e: 9 }, London: { s: 7, e: 16 }, Prime: { s: 13, e: 17 }, NY: { s: 17, e: 20 }, Sydney: { s: 22, e: 4 } };
+  const TOTAL_PER  = STRATS.length * PAIRS.length * SESSIONS.length; // 400 per timeframe
+  const TOTAL_ALL  = TOTAL_PER * 2; // 800 combined
 
   const [running,  setRunning]  = useState(false);
   const [progress, setProgress] = useState(0);
   const [label,    setLabel]    = useState("");
   const [done,     setDone]     = useState(0);
   const [result,   setResult]   = useState(() => { try { return JSON.parse(localStorage.getItem(OPT_KEY)) || null; } catch { return null; } });
+  const [m5Result, setM5Result] = useState(() => { try { return JSON.parse(localStorage.getItem(M5_OPT_KEY)) || null; } catch { return null; } });
   const cancelRef  = useRef(false);
   const runningRef = useRef(false);
 
   const run = useCallback(async () => {
     if (runningRef.current) return;
     runningRef.current = true; cancelRef.current = false;
-    setRunning(true); setProgress(0); setDone(0); setLabel("Starting optimization…");
-    const allCombos = []; const rawResults = []; const pairStats = {}; const candleCounts = {}; let combosDone = 0;
-    for (const pair of PAIRS) {
-      if (cancelRef.current) break;
-      setLabel(`Fetching ${pair} (90d M15)…`);
-      let candles = [];
-      try {
-        const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M15&days=90`);
-        const data = await r.json();
-        if (!Array.isArray(data.candles) || data.candles.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
-        candles = data.candles;
-        // ── DEBUG: candle fetch diagnostics ──────────────────────────────────
-        const _fDate = candles[0]?.time ? new Date(candles[0].time).toISOString().slice(0, 10) : '?';
-        const _lDate = candles[candles.length - 1]?.time ? new Date(candles[candles.length - 1].time).toISOString().slice(0, 10) : '?';
-        const _calDays = candles[0]?.time && candles[candles.length - 1]?.time
-          ? Math.round((new Date(candles[candles.length - 1].time) - new Date(candles[0].time)) / 86400000) : 0;
-        console.log('[BACKTEST] candles fetched:', candles.length, 'for', pair, '|', _calDays, 'calendar days |', _fDate, '→', _lDate);
-        candleCounts[pair] = { count: candles.length, days: _calDays };
-      } catch { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
-      const closes = candles.map(c => parseFloat(c.mid?.c ?? 0)).filter(v => v > 0 && !isNaN(v));
-      if (closes.length !== candles.length)
-        console.warn('[BACKTEST] INDEX MISMATCH', pair, '— candles:', candles.length, 'closes:', closes.length, '— candles[i] lookups will be offset');
-      if (closes.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
-      for (const strat of STRATS) {
+    setRunning(true); setProgress(0); setDone(0);
+
+    // ── Phase 1: M15 backtest (swing / Kill Shot) ──────────────────────────────
+    setLabel("Starting M15 optimization…");
+    {
+      const allCombos = []; const rawResults = []; const pairStats = {}; const pairEdge = {}; const candleCounts = {}; let combosDone = 0;
+      for (const pair of PAIRS) {
         if (cancelRef.current) break;
-        for (const sess of SESSIONS) {
+        setLabel(`[M15] Fetching ${pair} (90d)…`);
+        let candles = [];
+        try {
+          const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M15&days=90`);
+          const data = await r.json();
+          if (!Array.isArray(data.candles) || data.candles.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
+          candles = data.candles;
+          const _fDate = candles[0]?.time ? new Date(candles[0].time).toISOString().slice(0, 10) : '?';
+          const _lDate = candles[candles.length - 1]?.time ? new Date(candles[candles.length - 1].time).toISOString().slice(0, 10) : '?';
+          const _calDays = candles[0]?.time && candles[candles.length - 1]?.time
+            ? Math.round((new Date(candles[candles.length - 1].time) - new Date(candles[0].time)) / 86400000) : 0;
+          console.log('[BACKTEST-M15] candles:', candles.length, 'for', pair, '|', _calDays, 'd |', _fDate, '→', _lDate);
+          candleCounts[pair] = { count: candles.length, days: _calDays };
+        } catch { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
+        const closes = candles.map(c => parseFloat(c.mid?.c ?? 0)).filter(v => v > 0 && !isNaN(v));
+        if (closes.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
+        for (const strat of STRATS) {
           if (cancelRef.current) break;
-          setLabel(`${pair} · ${strat} · ${sess}`);
-          const res = await runBtSimulation(closes, candles, strat, SESS_UTC[sess], pair);
-          combosDone++; setDone(combosDone); setProgress(Math.round(combosDone / TOTAL * 100));
-          // Save every combo result (raw) — nulls recorded as 0/null for auditability
-          rawResults.push({
-            pair, strategy: strat, session: sess,
-            trades:       res?.trades       ?? 0,
-            winRate:      res?.winRate      ?? null,
-            expectancyR:  res?.expectancyR  ?? null,
-            profitFactor: res?.profitFactor ?? null,
-            maxDD:        res?.maxDD        ?? null,
-            sharpe:       res?.sharpe       ?? null,
-          });
-          // Track best metrics independently across all combos for this pair
-          if (res) {
-            if (!pairStats[pair]) {
-              pairStats[pair] = { bestExpectancy: res.expectancyR, bestTrades: res.trades, bestDD: res.maxDD };
-            } else {
-              if (res.expectancyR > pairStats[pair].bestExpectancy) pairStats[pair].bestExpectancy = res.expectancyR;
-              if (res.trades     > pairStats[pair].bestTrades)     pairStats[pair].bestTrades     = res.trades;
-              if (res.maxDD      < pairStats[pair].bestDD)         pairStats[pair].bestDD          = res.maxDD;
+          for (const sess of SESSIONS) {
+            if (cancelRef.current) break;
+            setLabel(`[M15] ${pair} · ${strat} · ${sess}`);
+            const res = await runBtSimulation(closes, candles, strat, SESS_UTC[sess], pair);
+            combosDone++; setDone(combosDone); setProgress(Math.round(combosDone / TOTAL_ALL * 100));
+            rawResults.push({ pair, strategy: strat, session: sess, trades: res?.trades ?? 0, winRate: res?.winRate ?? null, expectancyR: res?.expectancyR ?? null, profitFactor: res?.profitFactor ?? null, maxDD: res?.maxDD ?? null, sharpe: res?.sharpe ?? null });
+            if (res) {
+              if (!pairStats[pair]) {
+                pairStats[pair] = { bestExpectancy: res.expectancyR, bestTrades: res.trades, bestDD: res.maxDD };
+              } else {
+                if (res.expectancyR > pairStats[pair].bestExpectancy) pairStats[pair].bestExpectancy = res.expectancyR;
+                if (res.trades     > pairStats[pair].bestTrades)     pairStats[pair].bestTrades     = res.trades;
+                if (res.maxDD      < pairStats[pair].bestDD)         pairStats[pair].bestDD          = res.maxDD;
+              }
+              if (!pairEdge[pair] || res.expectancyR > (pairEdge[pair].bestExpectancy ?? -Infinity))
+                pairEdge[pair] = { bestExpectancy: res.expectancyR, bestTrades: res.trades, bestDD: res.maxDD };
+            }
+            if (res && res.expectancyR >= 0 && res.trades >= 30 && res.maxDD <= 15) {
+              const score = Math.max(0, res.expectancyR) * 60 + res.profitFactor * 20 + res.sharpe * 10 + (res.trades >= 30 ? 10 : 0);
+              allCombos.push({ strategy: strat, pair, session: sess, score, expectancyR: res.expectancyR, winRate: res.winRate, profitFactor: res.profitFactor, sharpe: res.sharpe, trades: res.trades });
             }
           }
-          if (res && res.expectancyR >= 0 && res.trades >= 30 && res.maxDD <= 15) {
-            const score = Math.max(0, res.expectancyR) * 60 + res.profitFactor * 20 + res.sharpe * 10 + (res.trades >= 30 ? 10 : 0);
-            allCombos.push({ strategy: strat, pair, session: sess, score, expectancyR: res.expectancyR, winRate: res.winRate, profitFactor: res.profitFactor, sharpe: res.sharpe, trades: res.trades });
+        }
+      }
+      if (!cancelRef.current && allCombos.length > 0) {
+        const rules = {};
+        for (const sess of SESSIONS) {
+          const sessR = allCombos.filter(c => c.session === sess).sort((a, b) => b.score - a.score);
+          if (sessR.length > 0) {
+            const best = sessR[0];
+            const bestPairsDetail = sessR.filter(c => c.strategy === best.strategy).slice(0, 3).map(c => ({ pair: c.pair, trades: c.trades, winRate: parseFloat(c.winRate.toFixed(1)), expectancyR: parseFloat(c.expectancyR.toFixed(2)) }));
+            rules[sess.toUpperCase()] = { strategy: best.strategy, pairs: bestPairsDetail.map(p => p.pair), pairsDetail: bestPairsDetail, expectancy: parseFloat(best.expectancyR.toFixed(2)), score: Math.round(best.score) };
+          }
+        }
+        const top3 = [...allCombos].sort((a, b) => b.score - a.score).slice(0, 3);
+        const validatedPairs = []; const blockedPairs = [];
+        for (const p of PAIRS) {
+          const s = pairStats[p];
+          if (s && s.bestExpectancy >= 0.30 && s.bestTrades >= 30 && s.bestDD <= 15) {
+            validatedPairs.push(p);
+          } else {
+            const reason = !s ? 'no data' : s.bestExpectancy < 0.30 ? `best ${s.bestExpectancy.toFixed(2)}R < 0.30R` : s.bestTrades < 30 ? `only ${s.bestTrades} trades` : `DD ${s.bestDD.toFixed(1)}R > 15R`;
+            blockedPairs.push({ pair: p, reason });
+          }
+        }
+        const newResult = { lastUpdated: Date.now(), totalCombinationsTested: combosDone, rules, top3, validatedPairs, blockedPairs, candleCounts, pairEdge };
+        localStorage.setItem(OPT_KEY, JSON.stringify(newResult));
+        localStorage.setItem('xavier_backtest_raw', JSON.stringify(rawResults));
+        setResult(newResult);
+      }
+    }
+
+    // ── Phase 2: M5 backtest (live auto-execution) ─────────────────────────────
+    if (!cancelRef.current) {
+      setLabel("Starting M5 optimization…");
+      const allCombos = []; const pairStats = {}; const pairEdge = {}; const candleCounts = {}; let combosDone = 0; let totalM5Signals = 0;
+      for (const pair of PAIRS) {
+        if (cancelRef.current) break;
+        setLabel(`[M5] Fetching ${pair} (90d)…`);
+        let candles = [];
+        try {
+          const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M5&days=90`);
+          const data = await r.json();
+          if (!Array.isArray(data.candles) || data.candles.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(TOTAL_PER + combosDone); continue; }
+          candles = data.candles;
+          const _fDate = candles[0]?.time ? new Date(candles[0].time).toISOString().slice(0, 10) : '?';
+          const _lDate = candles[candles.length - 1]?.time ? new Date(candles[candles.length - 1].time).toISOString().slice(0, 10) : '?';
+          const _calDays = candles[0]?.time && candles[candles.length - 1]?.time
+            ? Math.round((new Date(candles[candles.length - 1].time) - new Date(candles[0].time)) / 86400000) : 0;
+          console.log('[BACKTEST-M5] candles:', candles.length, 'for', pair, '|', _calDays, 'd |', _fDate, '→', _lDate);
+          candleCounts[pair] = { count: candles.length, days: _calDays };
+        } catch { combosDone += STRATS.length * SESSIONS.length; setDone(TOTAL_PER + combosDone); continue; }
+        const closes = candles.map(c => parseFloat(c.mid?.c ?? 0)).filter(v => v > 0 && !isNaN(v));
+        if (closes.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(TOTAL_PER + combosDone); continue; }
+        for (const strat of STRATS) {
+          if (cancelRef.current) break;
+          for (const sess of SESSIONS) {
+            if (cancelRef.current) break;
+            setLabel(`[M5] ${pair} · ${strat} · ${sess}`);
+            const res = await runBtSimulation(closes, candles, strat, SESS_UTC[sess], pair, { minScore: 55, signalFn: generateSignalM5 });
+            combosDone++; setDone(TOTAL_PER + combosDone); setProgress(Math.round((TOTAL_PER + combosDone) / TOTAL_ALL * 100));
+            if (res) { totalM5Signals += res.signalCount || 0;
+              if (!pairStats[pair]) {
+                pairStats[pair] = { bestExpectancy: res.expectancyR, bestTrades: res.trades, bestDD: res.maxDD };
+              } else {
+                if (res.expectancyR > pairStats[pair].bestExpectancy) pairStats[pair].bestExpectancy = res.expectancyR;
+                if (res.trades     > pairStats[pair].bestTrades)     pairStats[pair].bestTrades     = res.trades;
+                if (res.maxDD      < pairStats[pair].bestDD)         pairStats[pair].bestDD          = res.maxDD;
+              }
+              if (!pairEdge[pair] || res.expectancyR > (pairEdge[pair].bestExpectancy ?? -Infinity))
+                pairEdge[pair] = { bestExpectancy: res.expectancyR, bestTrades: res.trades, bestDD: res.maxDD };
+            }
+            if (res && res.expectancyR >= 0 && res.trades >= 50 && res.maxDD <= 10) {
+              const score = Math.max(0, res.expectancyR) * 60 + res.profitFactor * 20 + res.sharpe * 10 + 10;
+              allCombos.push({ strategy: strat, pair, session: sess, score, expectancyR: res.expectancyR, winRate: res.winRate, profitFactor: res.profitFactor, sharpe: res.sharpe, trades: res.trades });
+            }
           }
         }
       }
-    }
-    if (!cancelRef.current && allCombos.length > 0) {
-      const rules = {};
-      for (const sess of SESSIONS) {
-        const sessR = allCombos.filter(c => c.session === sess).sort((a, b) => b.score - a.score);
-        if (sessR.length > 0) {
-          const best = sessR[0];
-          const bestPairsDetail = sessR
-            .filter(c => c.strategy === best.strategy)
-            .slice(0, 3)
-            .map(c => ({ pair: c.pair, trades: c.trades, winRate: parseFloat(c.winRate.toFixed(1)), expectancyR: parseFloat(c.expectancyR.toFixed(2)) }));
-          rules[sess.toUpperCase()] = {
-            strategy: best.strategy,
-            pairs: bestPairsDetail.map(p => p.pair),
-            pairsDetail: bestPairsDetail,
-            expectancy: parseFloat(best.expectancyR.toFixed(2)),
-            score: Math.round(best.score),
-          };
+      if (!cancelRef.current && allCombos.length > 0) {
+        const rules = {};
+        for (const sess of SESSIONS) {
+          const sessR = allCombos.filter(c => c.session === sess).sort((a, b) => b.score - a.score);
+          if (sessR.length > 0) {
+            const best = sessR[0];
+            const bestPairsDetail = sessR.filter(c => c.strategy === best.strategy).slice(0, 3).map(c => ({ pair: c.pair, trades: c.trades, winRate: parseFloat(c.winRate.toFixed(1)), expectancyR: parseFloat(c.expectancyR.toFixed(2)) }));
+            rules[sess.toUpperCase()] = { strategy: best.strategy, pairs: bestPairsDetail.map(p => p.pair), pairsDetail: bestPairsDetail, expectancy: parseFloat(best.expectancyR.toFixed(2)), score: Math.round(best.score) };
+          }
         }
-      }
-      const top3 = [...allCombos].sort((a, b) => b.score - a.score).slice(0, 3);
-      // Validate pairs: ≥0.30R expectancy + ≥30 trades + ≤15R drawdown
-      const validatedPairs = [];
-      const blockedPairs   = [];
-      for (const p of PAIRS) {
-        const s = pairStats[p];
-        if (s && s.bestExpectancy >= 0.30 && s.bestTrades >= 30 && s.bestDD <= 15) {
-          validatedPairs.push(p);
-        } else {
-          const reason = !s ? 'no data' : s.bestExpectancy < 0.30 ? `best ${s.bestExpectancy.toFixed(2)}R < 0.30R` : s.bestTrades < 30 ? `only ${s.bestTrades} trades` : `DD ${s.bestDD.toFixed(1)}R > 15R`;
-          blockedPairs.push({ pair: p, reason });
+        const top3 = [...allCombos].sort((a, b) => b.score - a.score).slice(0, 3);
+        const validatedPairs = []; const blockedPairs = [];
+        for (const p of PAIRS) {
+          const s = pairStats[p];
+          if (s && s.bestExpectancy >= 0.30 && s.bestTrades >= 50 && s.bestDD <= 10) {
+            validatedPairs.push(p);
+          } else {
+            const reason = !s ? 'no data' : s.bestExpectancy < 0.30 ? `best ${s.bestExpectancy.toFixed(2)}R < 0.30R` : s.bestTrades < 50 ? `only ${s.bestTrades} trades` : `DD ${s.bestDD.toFixed(1)}R > 10R`;
+            blockedPairs.push({ pair: p, reason });
+          }
         }
+        const newM5Result = { lastUpdated: Date.now(), totalCombinationsTested: combosDone, rules, top3, validatedPairs, blockedPairs, candleCounts, pairEdge, totalSignals: totalM5Signals };
+        localStorage.setItem(M5_OPT_KEY, JSON.stringify(newM5Result));
+        setM5Result(newM5Result);
       }
-      const newResult = { lastUpdated: Date.now(), totalCombinationsTested: combosDone, rules, top3, validatedPairs, blockedPairs, candleCounts };
-      localStorage.setItem(OPT_KEY, JSON.stringify(newResult));
-      localStorage.setItem('xavier_backtest_raw', JSON.stringify(rawResults));
-      setResult(newResult);
     }
+
     setLabel(""); setRunning(false); setProgress(cancelRef.current ? 0 : 100);
     runningRef.current = false;
   }, []); // eslint-disable-line
@@ -7385,7 +7657,7 @@ function useAutonomousBacktest() {
     return () => clearInterval(id);
   }, []); // eslint-disable-line
 
-  return { running, progress, label, done, total: TOTAL, result, run, cancel };
+  return { running, progress, label, done, total: TOTAL_ALL, result, m5Result, run, cancel };
 }
 
 function useXavierStrategy(session) {
@@ -7461,6 +7733,43 @@ const BASE_PRICES = {
   "XAG/USD": 32.50,   "BCO/USD": 82.00,   "WTICO/USD": 78.00,
   "NAS100_USD": 19500, "JP225_USD": 38000, "UK100_GBP": 8400, "AU200_AUD": 7800,
 };
+
+// ─── XAVIER PRINCIPLE WEIGHTS HOOK ────────────────────────────────────────────
+function useXavierPrincipleWeights(closedTrades = []) {
+  const WEIGHTS_KEY = 'xavier_principle_weights';
+  const DEFAULT_W   = { scoreThreshold: 65, newsWindowMins: 120, capitalPreservation: 1.0, informationFiltering: 1.0, patience: 1.0 };
+  const [weights, setWeights] = useState(() => { try { return JSON.parse(localStorage.getItem(WEIGHTS_KEY)) || DEFAULT_W; } catch { return DEFAULT_W; } });
+  const [wisdomMessage, setWisdomMessage] = useState(null);
+  const prevLenRef = useRef(closedTrades.length);
+
+  useEffect(() => {
+    if (closedTrades.length === prevLenRef.current) return;
+    prevLenRef.current = closedTrades.length;
+    const recent = [...closedTrades].reverse();
+    let losses = 0, wins = 0;
+    for (const t of recent) {
+      const pnl = parseFloat(t.realizedPL ?? t.pnl ?? 0);
+      if (pnl < 0) { if (wins   > 0) break; losses++; }
+      else         { if (losses > 0) break; wins++;   }
+    }
+    let newW = { ...weights }; let msg = null;
+    if (losses >= 3 && newW.scoreThreshold < 75) {
+      newW = { ...newW, scoreThreshold: 75, capitalPreservation: 1.5 };
+      msg  = `Three losses. Invoking Capital Preservation (Principle 2) — raising bar to 75%. No marginal setups.`;
+    } else if (wins >= 5 && newW.scoreThreshold > 65) {
+      newW = { ...newW, scoreThreshold: 65, capitalPreservation: 1.0 };
+      msg  = `Five wins. Staying disciplined (Principle 7) — same process, same standards. Threshold reset to 65%.`;
+    }
+    if (JSON.stringify(newW) !== JSON.stringify(weights)) {
+      setWeights(newW);
+      localStorage.setItem(WEIGHTS_KEY, JSON.stringify(newW));
+      if (msg) setWisdomMessage(msg);
+      fetch(`${BRIDGE}/xavier-weights`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newW) }).catch(() => {});
+    }
+  }, [closedTrades.length]); // eslint-disable-line
+
+  return { weights, wisdomMessage, clearWisdom: () => setWisdomMessage(null) };
+}
 
 // ─── TRADE REINFORCEMENT HOOK ─────────────────────────────────────────────────
 function useTradeReinforcement(closedTrades) {
@@ -7604,7 +7913,8 @@ export default function TradingRobot() {
   }, []);
   const oandaNavRef = useRef(null);
   const xavierIntelRef = useRef(null);
-  const reinforcement = useTradeReinforcement(closedTrades);
+  const reinforcement    = useTradeReinforcement(closedTrades);
+  const principleWeights = useXavierPrincipleWeights(closedTrades);
 
   // Reset reinforcement thresholds to defaults on mount — clears any biased data from sim runs
   useEffect(() => {
@@ -8801,7 +9111,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "ai" ? "block" : "none" }}>
-        <AIAnalystTab isVisible={tab === "ai"} headlines={liveHeadlines} newsLastFetchedAt={newsLastFetchedAt} prices={livePrices} trades={trades} balance={balance} currentHeadline={currentHeadline} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} signalMap={signalMap} onIntelUpdate={(intel) => { xavierIntelRef.current = intel; }} swingSignals={swingSignals} swingTrades={swingTrades} swingEnabled={swingEnabled} />
+        <AIAnalystTab isVisible={tab === "ai"} headlines={liveHeadlines} newsLastFetchedAt={newsLastFetchedAt} prices={livePrices} trades={trades} balance={balance} currentHeadline={currentHeadline} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} signalMap={signalMap} onIntelUpdate={(intel) => { xavierIntelRef.current = intel; }} swingSignals={swingSignals} swingTrades={swingTrades} swingEnabled={swingEnabled} principleWisdom={principleWeights.wisdomMessage} onPrincipleWisdomSeen={principleWeights.clearWisdom} />
       </div>
 
       <div style={{ display: tab === "knowledge" ? "block" : "none", padding: "0 16px", paddingBottom: 16 }}>

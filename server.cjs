@@ -332,6 +332,12 @@ let   lastDailySummaryDate = '';
 const postCloseCooldown       = new Map(); // instrument → ms timestamp of last close
 const POST_CLOSE_COOLDOWN_MS  = 15 * 60 * 1000; // 15 minutes
 
+// Adaptive principle weights — updated by frontend when consecutive streak events fire
+let xavierWeights = { scoreThreshold: 65, newsWindowMins: 120, capitalPreservation: 1.0, informationFiltering: 1.0, patience: 1.0 };
+
+// Xavier intel cache — populated when frontend calls /consensus with xavier data; used by server-side auto-trade
+let lastXavierIntel = { sentiment: null, keyRisk: null, brief: null, bestPair: null, freshNews: null, ts: 0 };
+
 // Pair-specific trail settings — commodities trail tighter/earlier than forex
 const TRAIL_SETTINGS = {
   XAG_USD:   { startR: 1.5, trailR: 0.3 },
@@ -432,6 +438,16 @@ Van Tharp Rules:
 
 If Xavier's key risk directly references this instrument, treat it as an elevated risk factor.
 CONFIRM if trend alignment is clear (70% weight). REJECT only if a major risk condition is violated.
+
+PRINCIPLE CHECKLIST — evaluate each before voting:
+✓ R:R >= 1.5? (Asymmetric Payoff — Principle 3)
+✓ Strategy matches current regime? (Regime Awareness — Principle 5)
+✓ Spread within acceptable limits? (Liquidity Awareness)
+✓ Higher timeframe supports direction? (MTF Context — Principle 7)
+✓ ATR within 2.5× normal? (Volatility Adaptation — Principle 16)
+✓ No HIGH-impact news within 2 hours? (Information Filtering — Principle 33)
+
+4+ violated → REJECT regardless of trend alignment. 2 or fewer violated → lean CONFIRM.
 
 Respond in this EXACT format:
 VERDICT: CONFIRM or REJECT
@@ -938,10 +954,35 @@ app.get('/economic-calendar', async (_req, res) => {
   }
 });
 
+// ─── XAVIER PRINCIPLE WEIGHTS ─────────────────────────────────────────────────
+app.get('/xavier-weights', (_req, res) => res.json(xavierWeights));
+app.post('/xavier-weights', (req, res) => {
+  const { scoreThreshold, newsWindowMins, capitalPreservation, informationFiltering, patience } = req.body;
+  if (typeof scoreThreshold       === 'number') xavierWeights.scoreThreshold       = Math.max(50, Math.min(95, scoreThreshold));
+  if (typeof newsWindowMins       === 'number') xavierWeights.newsWindowMins       = Math.max(60, Math.min(240, newsWindowMins));
+  if (typeof capitalPreservation  === 'number') xavierWeights.capitalPreservation  = capitalPreservation;
+  if (typeof informationFiltering === 'number') xavierWeights.informationFiltering  = informationFiltering;
+  if (typeof patience             === 'number') xavierWeights.patience             = patience;
+  console.log('[xavier-weights] Updated:', xavierWeights);
+  res.json({ ok: true, weights: xavierWeights });
+});
+
 // ─── CONSENSUS ENDPOINT ───────────────────────────────────────────────────────
 app.post('/consensus', async (req, res) => {
   try {
-    res.json(await runConsensus(req.body));
+    const p = req.body;
+    // Cache any xavier intel the frontend sends — server auto-trade uses this
+    if (p.xavierSentiment || p.xavierKeyRisk || p.xavierBrief) {
+      lastXavierIntel = {
+        sentiment: p.xavierSentiment || null,
+        keyRisk:   p.xavierKeyRisk   || null,
+        brief:     p.xavierBrief     || null,
+        bestPair:  p.xavierBestPair  || null,
+        freshNews: p.freshNews        || null,
+        ts:        Date.now(),
+      };
+    }
+    res.json(await runConsensus(p));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1181,10 +1222,11 @@ function isNewsWindow(instrument) {
   if (economicEvents.length === 0) return false;
   const now        = Date.now();
   const currencies = PAIR_CURRENCIES[instrument] || [];
+  const windowMs   = (xavierWeights.newsWindowMins || 120) * 60_000;
   for (const ev of economicEvents) {
-    const diff = ev.time - now;          // ms until event (negative = past)
-    if (diff > 120 * 60_000) continue;   // event is > 2h away — not yet a risk
-    if (diff < -60 * 60_000) continue;   // event was > 1h ago — dust settled
+    const diff = ev.time - now;
+    if (diff > windowMs) continue;        // event is beyond current news window
+    if (diff < -60 * 60_000) continue;    // event was > 1h ago — dust settled
     if (currencies.includes(ev.currency)) return true;
   }
   return false;
@@ -1598,22 +1640,23 @@ function confirmTrend(candles, direction) {
 }
 
 function serverRunGatekeepers(history, signal, openTrades, _instrument, strategy) {
-  const rejections = [];
-  const session    = getServerSession();
+  const rejections     = [];
+  const session        = getServerSession();
+  const scoreThreshold = xavierWeights.scoreThreshold || 65;
 
   if (session === 'AVOID') {
-    rejections.push({ condition: 'Dead zone block', reason: 'AVOID session — no trades' });
+    rejections.push({ condition: 'Patience (Principle 9)', reason: 'Dead zone — elite traders know when NOT to trade.' });
     return { passed: false, rejections };
   }
-  if (signal.score < 65) {
-    rejections.push({ condition: 'Score threshold', actual: `${signal.score}%`, threshold: '65%' });
+  if (signal.score < scoreThreshold) {
+    rejections.push({ condition: 'Opportunity Selection (Principle 38)', actual: `${signal.score}%`, threshold: `${scoreThreshold}%`, reason: 'Below confidence threshold — waiting for next setup.' });
   }
   if (openTrades.length >= 2) {
     rejections.push({ condition: 'Position limit', actual: `${openTrades.length} open`, threshold: 'Max 2' });
   }
   const heat = openTrades.length * 1.5;
   if (heat >= 4) {
-    rejections.push({ condition: 'Heat limit', actual: `${heat.toFixed(1)}R`, threshold: '4R max' });
+    rejections.push({ condition: 'Drawdown Control (Principle 8)', actual: `${heat.toFixed(1)}R`, threshold: '4R max', reason: 'Capital Preservation first.' });
   }
   if (history.length >= 21) {
     const bars  = history.slice(-21);
@@ -1621,7 +1664,7 @@ function serverRunGatekeepers(history, signal, openTrades, _instrument, strategy
     const atr5  = tr.slice(-5).reduce((a, b) => a + b, 0) / 5;
     const atr20 = tr.reduce((a, b) => a + b, 0) / tr.length || atr5;
     if (atr20 > 0 && atr5 > atr20 * 2.5) {
-      rejections.push({ condition: 'Volatility spike', actual: `${(atr5 / atr20).toFixed(1)}×`, threshold: '< 2.5×' });
+      rejections.push({ condition: 'Volatility Adaptation (Principle 16)', actual: `${(atr5 / atr20).toFixed(1)}×`, threshold: '< 2.5×', reason: 'ATR spiking — not entering noise.' });
     }
   }
   if (strategy === 'Trend Follow' && history.length >= 50) {
@@ -1691,9 +1734,9 @@ async function serverAutoTrade() {
     // Upgrade 2 — news guard
     if (isNewsWindow(instrument)) {
       console.log(`[auto] ${instrument} — NEWS BLOCK (high-impact event ±2h)`);
-      serverRejections.unshift({ ts, instrument, direction: '?', score: 0, session, strategy, rejections: [{ condition: 'News Block', actual: 'High-impact event ±2h', threshold: 'No trading' }] });
+      serverRejections.unshift({ ts, instrument, direction: '?', score: 0, session, strategy, rejections: [{ condition: 'Information Filtering (Principle 33)', actual: `High-impact event ±${xavierWeights.newsWindowMins || 120}min`, threshold: 'No trading', reason: 'Standing down.' }] });
       if (serverRejections.length > 50) serverRejections.pop();
-      await sendTelegram(`📰 <b>NEWS BLOCK</b>\n${instrument.replace('_', '/')} — high-impact event within ±2h\nSession: ${session}`);
+      await sendTelegram(`📰 <b>NEWS BLOCK</b>\n${instrument.replace('_', '/')} — high-impact event within ±${xavierWeights.newsWindowMins || 120}min\nSession: ${session}`);
       continue;
     }
 
@@ -1763,29 +1806,43 @@ async function serverAutoTrade() {
     const ema50side = signal.direction === 'LONG' ? (price > ema50v ? 'ABOVE' : 'BELOW') : (price < ema50v ? 'BELOW' : 'ABOVE');
     const heat      = (openTrades.length * 1.5).toFixed(1);
 
+    const intelAgeMins = lastXavierIntel.ts ? Math.round((Date.now() - lastXavierIntel.ts) / 60_000) : null;
+    const intelFresh   = intelAgeMins !== null && intelAgeMins < 30;
+
     console.log(`[auto] ${instrument} — calling consensus`);
     let consensus;
     try {
       consensus = await runConsensus({
         instrument, direction: signal.direction, score: signal.score,
-        price:         formatPrice(price, instrument),
-        change:        '0',
-        session,       strategy,
-        atr:           atr.toFixed(5),
+        price:          formatPrice(price, instrument),
+        change:         signal.priceChange?.toFixed(4) || '0',
+        session,        strategy,
+        atr:            atr.toFixed(5),
         atrPips,
-        sl:            formatPrice(sl, instrument),
-        tp:            formatPrice(tp, instrument),
-        ema9:          ema9v.toFixed(5),
-        ema21:         ema21v.toFixed(5),
+        sl:             formatPrice(sl, instrument),
+        tp:             formatPrice(tp, instrument),
+        ema9:           ema9v.toFixed(5),
+        ema21:          ema21v.toFixed(5),
+        ema50:          ema50v.toFixed(5),
         ema50side,
-        regime:        'RANGING',
+        regime:         signal.regime || 'RANGING',
+        momentum:       signal.momentum?.toFixed(4) || '0',
         heat,
-        rr:            '2.0',
-        rsi:           signal.rsi?.toFixed(1) || '50',
-        reason:        signal.reason.join(', '),
-        headline:      `Auto ${session} scan`,
-        newsRisk:      'LOW',
+        rr:             '2.0',
+        slDistance:     (atr * 1.5 / pip).toFixed(1),
+        tpDistance:     (atr * 3.0 / pip).toFixed(1),
+        rsi:            signal.rsi?.toFixed(1) || '50',
+        closes:         liveHistory.slice(-5).map(v => v.toFixed(5)).join(', '),
+        reason:         signal.reason.join(', '),
+        headline:       `Auto ${session} scan`,
+        newsRisk:       'LOW',
         sessionQuality: (session === 'PRIME' || session === 'LONDON') ? 'PRIME' : 'GOOD',
+        xavierSentiment:    intelFresh ? lastXavierIntel.sentiment : null,
+        xavierKeyRisk:      intelFresh ? lastXavierIntel.keyRisk   : null,
+        xavierBrief:        intelFresh ? lastXavierIntel.brief      : null,
+        xavierBestPair:     intelFresh ? lastXavierIntel.bestPair   : null,
+        freshNews:          intelFresh ? lastXavierIntel.freshNews  : null,
+        xavierIntelAgeMin:  intelAgeMins,
       });
     } catch (e) {
       console.error(`[auto] Consensus error ${instrument}: ${e.message}`);
@@ -2089,6 +2146,8 @@ async function serverSwingAutoTrade() {
       const liveTp3   = sig.direction === 'LONG' ? liveEntry + riskDist * 4.0 : liveEntry - riskDist * 4.0;
 
       const ts    = now.toISOString();
+      const swingIntelAgeMins = lastXavierIntel.ts ? Math.round((Date.now() - lastXavierIntel.ts) / 60_000) : null;
+      const swingIntelFresh   = swingIntelAgeMins !== null && swingIntelAgeMins < 30;
       const consensusParams = {
         instrument,
         direction: sig.direction,
@@ -2104,6 +2163,13 @@ async function serverSwingAutoTrade() {
         rsi:       sig.rsi.toFixed(1),
         atr:       sig.atr.toFixed(instrument.includes('JPY') ? 3 : 5),
         session,
+        strategy:  'Kill Shot',
+        regime:    'SWING',
+        xavierSentiment:   swingIntelFresh ? lastXavierIntel.sentiment : null,
+        xavierKeyRisk:     swingIntelFresh ? lastXavierIntel.keyRisk   : null,
+        xavierBrief:       swingIntelFresh ? lastXavierIntel.brief      : null,
+        freshNews:         swingIntelFresh ? lastXavierIntel.freshNews  : null,
+        xavierIntelAgeMin: swingIntelAgeMins,
       };
 
       const consensus = await runSwingConsensus(consensusParams);
