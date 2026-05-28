@@ -380,7 +380,8 @@ const serverTradeLog = [];          // newest-first, capped at 500
 
 // Upgrade state — trade management, calendar, daily stats
 const tradeManagementState = new Map(); // tradeId → { movedToBreakeven, partialClosed, peakR }
-const lastKnownTradeIds    = new Set(); // for closed trade detection
+const lastKnownTradeIds        = new Set(); // for closed trade detection (management loop)
+const serverAutoTradeOpenInstr = new Set(); // last-seen open instruments (auto-trade loop, for race-free cooldown detection)
 let   economicEvents       = [];        // high-impact events this week
 let   dailyStats           = { date: '', trades: 0, winners: 0, losers: 0, totalPnl: 0, bestTrade: '', _bestPnl: -Infinity };
 let   lastDailySummaryDate = '';
@@ -1864,15 +1865,30 @@ async function serverAutoTrade() {
     return;
   }
 
+  // ── Race-free cooldown detection ─────────────────────────────────────────────
+  // manageOpenTrades() sets postCloseCooldown but runs on its own 10s interval.
+  // If serverAutoTrade fires in the gap between a close and management detecting it,
+  // the cooldown won't be set yet. Self-detect by comparing to last-seen open instruments.
+  const currentOpenInstruments = new Set(openTrades.map(t => t.instrument));
+  for (const instr of serverAutoTradeOpenInstr) {
+    if (!currentOpenInstruments.has(instr)) {
+      postCloseCooldown.set(instr, Date.now());
+      console.log(`[COOLDOWN SET] ${instr} — detected close in auto-trade loop, cooldown locked (race-free)`);
+    }
+  }
+  serverAutoTradeOpenInstr.clear();
+  for (const instr of currentOpenInstruments) serverAutoTradeOpenInstr.add(instr);
+
   for (const instrument of pairs) {
     // Consensus cooldown — 15 minutes between signal attempts per pair
     if (Date.now() - (lastConsensus.get(instrument) || 0) < 15 * 60_000) continue;
 
     // Post-close cooldown — 15 minutes after any close on this instrument
     const lastClose = postCloseCooldown.get(instrument);
+    const cooldownMinsLeft = lastClose ? Math.ceil((POST_CLOSE_COOLDOWN_MS - (Date.now() - lastClose)) / 60000) : 0;
+    console.log(`[COOLDOWN CHECK] ${instrument} — ${lastClose ? `last close ${Math.round((Date.now() - lastClose) / 60000)} min ago, ${cooldownMinsLeft > 0 ? cooldownMinsLeft + ' min remaining' : 'CLEAR'}` : 'no recent close'}`);
     if (lastClose && Date.now() - lastClose < POST_CLOSE_COOLDOWN_MS) {
-      const minsLeft = Math.ceil((POST_CLOSE_COOLDOWN_MS - (Date.now() - lastClose)) / 60000);
-      console.log(`[COOLDOWN] ${instrument} — ${minsLeft} min remaining before re-entry allowed`);
+      console.log(`[COOLDOWN] ${instrument} — ${cooldownMinsLeft} min remaining before re-entry allowed`);
       continue;
     }
 
@@ -1992,11 +2008,14 @@ async function serverAutoTrade() {
     const rawSlDist    = atr * slMult;
     const actualSlDist = Math.max(rawSlDist, minStop);
     const atrPips      = (actualSlDist / pip).toFixed(1);
+    const spreadBuffer = spread * 1.5; // push SL away from market to avoid STOP_LOSS_ON_FILL_LOSS
 
-    const sl = signal.direction === 'LONG' ? price - actualSlDist : price + actualSlDist;
+    const sl = signal.direction === 'LONG'
+      ? price - actualSlDist - spreadBuffer
+      : price + actualSlDist + spreadBuffer;
     const tp = signal.direction === 'LONG' ? price + atr * tpMult : price - atr * tpMult;
 
-    console.log(`[SL CHECK] ${instrument} dir:${signal.direction} entry:${formatPrice(price, instrument)} sl:${formatPrice(sl, instrument)} dist:${actualSlDist.toFixed(5)} atr:${atr.toFixed(5)} mult:${slMult} minStop:${minStop} ${rawSlDist < minStop ? '⚠ MIN ENFORCED' : '✓ ATR'}`);
+    console.log(`[SL CHECK] ${instrument} dir:${signal.direction} entry:${formatPrice(price, instrument)} sl:${formatPrice(sl, instrument)} dist:${actualSlDist.toFixed(5)} spread:${spread.toFixed(5)} buf:${spreadBuffer.toFixed(5)} atr:${atr.toFixed(5)} mult:${slMult} minStop:${minStop} ${rawSlDist < minStop ? '⚠ MIN ENFORCED' : '✓ ATR'}`);
 
     // Hard side check before anything else — wrong-side SL caught early
     if (signal.direction === 'LONG' && sl >= price) {
