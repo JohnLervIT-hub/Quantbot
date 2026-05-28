@@ -1,6 +1,7 @@
 require('dotenv').config({ override: true, path: require('path').join(__dirname, '.env') });
 const express = require('express');
-const cors = require('cors');
+const cors    = require('cors');
+const crypto  = require('crypto');
 const app = express();
 app.use(cors({
   origin: [
@@ -11,7 +12,10 @@ app.use(cors({
   ],
   credentials: true,
 }));
-app.use(express.json());
+// Save raw body for Discord signature verification
+app.use(express.json({
+  verify: (req, _res, buf) => { req.rawBody = buf.toString(); },
+}));
 
 const BASE    = 'https://api-fxpractice.oanda.com';
 const TOKEN   = process.env.OANDA_TOKEN;
@@ -445,6 +449,9 @@ let   lastDailySummaryDate = '';
 // Post-close cooldown — blocks re-entry for 15 min after any close on same instrument
 const postCloseCooldown       = new Map(); // instrument → ms timestamp of last close
 const POST_CLOSE_COOLDOWN_MS  = 15 * 60 * 1000; // 15 minutes
+
+// Pending Kill Shot approvals — awaiting Discord EXECUTE/SKIP/WAIT
+const pendingKillShots = new Map(); // instrument → pending signal data
 
 // Adaptive principle weights — updated by frontend when consecutive streak events fire
 let xavierWeights = { scoreThreshold: 65, newsWindowMins: 120, capitalPreservation: 1.0, informationFiltering: 1.0, patience: 1.0 };
@@ -1392,17 +1399,19 @@ async function sendTelegram(message) {
   }
 }
 
-async function sendDiscordEmbed(embed) {
+async function sendDiscordEmbed(embed, components) {
   if (!process.env.DISCORD_WEBHOOK_URL) return;
   try {
+    const payload = {
+      username: 'Xavier | QuantBot Pro',
+      avatar_url: 'https://i.imgur.com/4M34hi2.png',
+      embeds: [embed],
+    };
+    if (components) payload.components = components;
     await fetch(process.env.DISCORD_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'Xavier | QuantBot Pro',
-        avatar_url: 'https://i.imgur.com/4M34hi2.png',
-        embeds: [embed],
-      }),
+      body: JSON.stringify(payload),
     });
   } catch (err) { console.error('[DISCORD EMBED ERROR]', err.message); }
 }
@@ -2691,7 +2700,9 @@ async function serverSwingAutoTrade() {
       const consensus = await runSwingConsensus(consensusParams);
       if (!consensus.passes) continue;
 
-      // ── SL sanity check before swing order ──────────────────────────────────
+      // ── SL/TP sanity check before queuing ───────────────────────────────────
+      const swingUnitSize = SWING_UNITS[instrument] ?? 500;
+      const units = sig.direction === 'LONG' ? swingUnitSize : -swingUnitSize;
       const slSane = sig.direction === 'LONG' ? liveSl < liveEntry : liveSl > liveEntry;
       const tpSane = sig.direction === 'LONG' ? liveTp1 > liveEntry : liveTp1 < liveEntry;
       if (!slSane || !tpSane) {
@@ -2700,97 +2711,323 @@ async function serverSwingAutoTrade() {
       }
 
       // ── Pre-flight margin check ──────────────────────────────────────────────
-      const swingUnitSize = SWING_UNITS[instrument] ?? 500;
-      const units = sig.direction === 'LONG' ? swingUnitSize : -swingUnitSize;
       if (!(await checkMargin(instrument, units, liveEntry)).sufficient) continue;
 
-      // ── Place swing order (500 units, SL + TP1 from live price) ─────────────
-      const order = {
-        type: 'MARKET', instrument, units: String(units),
-        timeInForce: 'FOK', positionFill: 'DEFAULT',
-        stopLossOnFill:   { price: formatPrice(liveSl,   instrument), timeInForce: 'GTC' },
-        takeProfitOnFill: { price: formatPrice(liveTp1,  instrument), timeInForce: 'GTC' },
-      };
-      console.log(`[KILL SHOT] ${instrument} order payload: entry~${formatPrice(liveEntry, instrument)} SL:${formatPrice(liveSl, instrument)} TP1:${formatPrice(liveTp1, instrument)}`);
-
-      let result;
-      try {
-        const or = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify({ order }) });
-        result   = await or.json();
-      } catch (fetchErr) {
-        console.error(`[KILL SHOT ERROR] ${instrument} — fetch failed: ${fetchErr.message}`);
-        continue;
-      }
-
-      if (JSON.stringify(result).includes('MARKET_HALTED')) {
-        console.log(`[KILL SHOT] ${instrument} — market halted, skipping`);
-        continue;
-      }
-
-      // Fix 2: Proper OANDA rejection logging
-      if (result.orderRejectTransaction) {
-        console.error(`[KILL SHOT REJECTED] ${instrument} — ${result.orderRejectTransaction.rejectReason}`);
-        continue;
-      }
-      if (result.errorCode) {
-        console.error(`[KILL SHOT ERROR] ${instrument} — ${result.errorCode}: ${result.errorMessage || ''}`);
-        continue;
-      }
-      if (!result.orderFillTransaction) {
-        console.error(`[KILL SHOT ERROR] ${instrument} — unexpected response: ${JSON.stringify(result).slice(0, 300)}`);
-        continue;
-      }
-
-      const fill    = result.orderFillTransaction.price;
-      const tradeId = result.orderFillTransaction.tradeOpened?.tradeID || null;
-      console.log(`[KILL SHOT SUCCESS] ${instrument} — tradeID: ${tradeId} @ ${fill}`);
-
-      serverTradeLog.unshift({ id: tradeId, pair: instrument, direction: sig.direction, strategy: 'Kill Shot', session, score: sig.score, entry: parseFloat(fill), sl: parseFloat(formatPrice(liveSl, instrument)), tp: parseFloat(formatPrice(liveTp1, instrument)), units, type: 'swing', timestamp: Date.now() });
-      if (serverTradeLog.length > 500) serverTradeLog.pop();
-
-      swingAutoTrades.unshift({
-        id: Date.now(), timestamp: ts, instrument,
-        direction: sig.direction, units, price: fill,
-        sl:  formatPrice(liveSl,  instrument),
-        tp1: formatPrice(liveTp1, instrument),
-        tp2: formatPrice(liveTp2, instrument),
-        tp3: formatPrice(liveTp3, instrument),
-        score: sig.score, session, reasons: sig.reasons,
-        confirms: consensus.confirms,
-        models:   consensus.models,
-        voteLog:  consensus.voteLog,
-        oandaTradeId: tradeId,
-        closed: false,
+      // ── Queue for Discord approval (no auto-execution) ───────────────────────
+      await requestKillShotApproval({
+        instrument, direction: sig.direction, units,
+        liveEntry, liveSl, liveTp1, liveTp2, liveTp3,
+        score: sig.score, reasons: sig.reasons, session,
+        confirms: consensus.confirms, models: consensus.models,
+        voteLog: consensus.voteLog, timestamp: ts,
       });
-      if (swingAutoTrades.length > 50) swingAutoTrades.pop();
-
-      console.log(`[KILL SHOT FIRED] ${instrument} ${sig.direction} @ ${fill} — score:${sig.score}% — ${consensus.confirms}/4 — ${session}`);
-      await sendNotification(
-        `🎯 <b>KILL SHOT FIRED</b>\n${instrument.replace('_', '/')} ${sig.direction}\nEntry: ${fill} · SL: ${formatPrice(liveSl, instrument)} · TP1: ${formatPrice(liveTp1, instrument)}\nScore: ${sig.score}% · ${consensus.confirms}/4 · ${session}`,
-        {
-          color: 0x8B5CF6,
-          title: '🎯 Kill Shot Fired',
-          fields: [
-            { name: 'Pair',      value: instrument.replace('_', '/'), inline: true },
-            { name: 'Direction', value: sig.direction,                inline: true },
-            { name: 'Score',     value: `${sig.score}%`,             inline: true },
-            { name: 'Entry',     value: fill,                         inline: true },
-            { name: 'SL',        value: formatPrice(liveSl,  instrument), inline: true },
-            { name: 'TP1',       value: formatPrice(liveTp1, instrument), inline: true },
-            { name: 'Consensus', value: `${consensus.confirms}/4`, inline: true },
-            { name: 'Session',   value: session,                 inline: true },
-            { name: 'Strategy',  value: 'Kill Shot (H4)',        inline: true },
-          ],
-          timestamp: new Date().toISOString(),
-          footer: { text: sig.reasons.slice(0, 3).join(' · ') },
-        }
-      );
 
     } catch (err) {
       console.error(`[swing-auto] ${instrument} — error: ${err.message}`);
     }
   }
 }
+
+// ─── DISCORD SIGNATURE VERIFICATION (Ed25519) ────────────────────────────────
+function verifyDiscordRequest(req) {
+  const publicKey = process.env.DISCORD_PUBLIC_KEY;
+  if (!publicKey) return true; // dev — skip verification if key not set
+  const signature = req.headers['x-signature-ed25519'];
+  const timestamp  = req.headers['x-signature-timestamp'];
+  if (!signature || !timestamp) return false;
+  try {
+    const raw = req.rawBody || JSON.stringify(req.body);
+    // Ed25519 public key in SubjectPublicKeyInfo DER format (OID 1.3.101.112)
+    const pubDer = Buffer.concat([
+      Buffer.from('302a300506032b6570032100', 'hex'),
+      Buffer.from(publicKey, 'hex'),
+    ]);
+    const key = crypto.createPublicKey({ key: pubDer, format: 'der', type: 'spki' });
+    return crypto.verify(null, Buffer.from(timestamp + raw), key, Buffer.from(signature, 'hex'));
+  } catch { return false; }
+}
+
+// ─── KILL SHOT EXECUTION (called from approval flow) ─────────────────────────
+async function executeKillShot(pending) {
+  const { instrument, direction, units, liveEntry, liveSl, liveTp1, liveTp2, liveTp3, score, reasons, session, confirms, models, voteLog, timestamp: ts } = pending;
+
+  // Final duplicate guard
+  if (await hasOpenPosition(instrument)) {
+    console.log(`[KILL SHOT EXECUTE] ${instrument} — position already open, aborting`);
+    return { ok: false, reason: 'Position already open' };
+  }
+
+  // Margin check
+  if (!(await checkMargin(instrument, units, liveEntry)).sufficient) {
+    console.log(`[KILL SHOT EXECUTE] ${instrument} — insufficient margin, aborting`);
+    return { ok: false, reason: 'Insufficient margin' };
+  }
+
+  const order = {
+    type: 'MARKET', instrument, units: String(units),
+    timeInForce: 'FOK', positionFill: 'DEFAULT',
+    stopLossOnFill:   { price: formatPrice(liveSl,  instrument), timeInForce: 'GTC' },
+    takeProfitOnFill: { price: formatPrice(liveTp1, instrument), timeInForce: 'GTC' },
+  };
+
+  let result;
+  try {
+    const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify({ order }) });
+    result   = await r.json();
+  } catch (e) {
+    console.error(`[KILL SHOT EXECUTE] ${instrument} — fetch error: ${e.message}`);
+    return { ok: false, reason: e.message };
+  }
+
+  if (result.orderRejectTransaction) {
+    const reason = result.orderRejectTransaction.rejectReason;
+    console.error(`[KILL SHOT EXECUTE REJECTED] ${instrument} — ${reason}`);
+    return { ok: false, reason };
+  }
+  if (!result.orderFillTransaction) {
+    console.error(`[KILL SHOT EXECUTE] ${instrument} — no fill: ${JSON.stringify(result).slice(0, 200)}`);
+    return { ok: false, reason: 'No fill transaction' };
+  }
+
+  const fill    = result.orderFillTransaction.price;
+  const tradeId = result.orderFillTransaction.tradeOpened?.tradeID || null;
+  console.log(`[KILL SHOT EXECUTE SUCCESS] ${instrument} ${direction} @ ${fill} — tradeID: ${tradeId}`);
+
+  serverTradeLog.unshift({ id: tradeId, pair: instrument, direction, strategy: 'Kill Shot', session, score, entry: parseFloat(fill), sl: parseFloat(formatPrice(liveSl, instrument)), tp: parseFloat(formatPrice(liveTp1, instrument)), units, type: 'swing', timestamp: Date.now() });
+  if (serverTradeLog.length > 500) serverTradeLog.pop();
+
+  swingAutoTrades.unshift({
+    id: Date.now(), timestamp: ts, instrument,
+    direction, units, price: fill,
+    sl:  formatPrice(liveSl,  instrument),
+    tp1: formatPrice(liveTp1, instrument),
+    tp2: formatPrice(liveTp2, instrument),
+    tp3: formatPrice(liveTp3, instrument),
+    score, session, reasons,
+    confirms, models, voteLog,
+    oandaTradeId: tradeId,
+    closed: false,
+  });
+  if (swingAutoTrades.length > 50) swingAutoTrades.pop();
+
+  await sendNotification(
+    `🎯 <b>KILL SHOT EXECUTED</b>\n${instrument.replace('_', '/')} ${direction} @ ${fill}\nSL: ${formatPrice(liveSl, instrument)} · TP1: ${formatPrice(liveTp1, instrument)}\nScore: ${score}% · ${confirms}/4 · ${session}`,
+    {
+      color: 0x8B5CF6,
+      title: '🎯 Kill Shot Executed',
+      fields: [
+        { name: 'Pair',      value: instrument.replace('_', '/'), inline: true },
+        { name: 'Direction', value: direction,                    inline: true },
+        { name: 'Score',     value: `${score}%`,                  inline: true },
+        { name: 'Entry',     value: fill,                          inline: true },
+        { name: 'SL',        value: formatPrice(liveSl,  instrument), inline: true },
+        { name: 'TP1',       value: formatPrice(liveTp1, instrument), inline: true },
+        { name: 'Consensus', value: `${confirms}/4`,    inline: true },
+        { name: 'Session',   value: session,            inline: true },
+        { name: 'Trade ID',  value: tradeId || '—',    inline: true },
+      ],
+      timestamp: new Date().toISOString(),
+      footer: { text: (reasons || []).slice(0, 3).join(' · ') },
+    }
+  );
+
+  return { ok: true, fill, tradeId };
+}
+
+// ─── KILL SHOT APPROVAL REQUEST ────────────────────────────────────────────────
+async function requestKillShotApproval(signal) {
+  pendingKillShots.set(signal.instrument, signal);
+
+  // Auto-expire after 1 hour
+  setTimeout(() => {
+    if (pendingKillShots.get(signal.instrument) === signal) {
+      pendingKillShots.delete(signal.instrument);
+      console.log(`[KILL SHOT EXPIRED] ${signal.instrument} — approval timeout`);
+    }
+  }, 60 * 60_000);
+
+  await sendDiscordEmbed(
+    {
+      color: 0x8B5CF6,
+      title: '⚔️ Kill Shot — Approval Needed',
+      fields: [
+        { name: 'Pair',      value: signal.instrument.replace('_', '/'),     inline: true },
+        { name: 'Direction', value: signal.direction,                         inline: true },
+        { name: 'Score',     value: `${signal.score}%`,                       inline: true },
+        { name: 'Entry',     value: formatPrice(signal.liveEntry, signal.instrument), inline: true },
+        { name: 'Stop Loss', value: formatPrice(signal.liveSl,    signal.instrument), inline: true },
+        { name: 'TP1',       value: formatPrice(signal.liveTp1,   signal.instrument), inline: true },
+        { name: 'Consensus', value: `${signal.confirms}/4`,   inline: true },
+        { name: 'Session',   value: signal.session,            inline: true },
+        { name: 'Expires',   value: '1 hour',                  inline: true },
+      ],
+      timestamp: new Date().toISOString(),
+      footer: { text: (signal.reasons || []).slice(0, 3).join(' · ') },
+    },
+    [{
+      type: 1,
+      components: [
+        { type: 2, style: 3, label: '✅ EXECUTE', custom_id: `execute_${signal.instrument}` },
+        { type: 2, style: 4, label: '❌ SKIP',    custom_id: `skip_${signal.instrument}`    },
+        { type: 2, style: 2, label: '⏳ WAIT 1H', custom_id: `wait_${signal.instrument}`   },
+      ],
+    }]
+  );
+
+  console.log(`[KILL SHOT PENDING] ${signal.instrument} ${signal.direction} — awaiting Discord approval`);
+}
+
+// ─── DISCORD SLASH COMMAND REGISTRATION ───────────────────────────────────────
+async function registerDiscordCommands() {
+  const appId    = process.env.DISCORD_APP_ID;
+  const botToken = process.env.DISCORD_BOT_TOKEN;
+  if (!appId || !botToken) return;
+  try {
+    await fetch(`https://discord.com/api/v10/applications/${appId}/commands`, {
+      method: 'PUT',
+      headers: { 'Authorization': `Bot ${botToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify([
+        { name: 'killshot',  description: 'Show pending Kill Shot setups' },
+        { name: 'status',    description: 'Xavier trading status' },
+        { name: 'pause',     description: 'Pause auto trading' },
+        { name: 'resume',    description: 'Resume auto trading' },
+        { name: 'trades',    description: 'Show open positions' },
+        { name: 'balance',   description: 'Show account balance' },
+        { name: 'kill',      description: 'Emergency stop — disable auto + close all trades' },
+      ]),
+    });
+    console.log('[DISCORD] slash commands registered');
+  } catch (e) {
+    console.error('[DISCORD] command registration failed:', e.message);
+  }
+}
+
+// ─── DISCORD INTERACTION ENDPOINT ─────────────────────────────────────────────
+app.post('/discord/interaction', async (req, res) => {
+  if (!verifyDiscordRequest(req)) {
+    console.warn('[DISCORD] Invalid signature on interaction');
+    return res.status(401).json({ error: 'Invalid request signature' });
+  }
+
+  const { type, data } = req.body;
+
+  // Discord ping — required for endpoint verification
+  if (type === 1) return res.json({ type: 1 });
+
+  // ── Slash commands ──────────────────────────────────────────────────────────
+  if (type === 2) {
+    const cmd = data?.name;
+
+    if (cmd === 'killshot') {
+      if (pendingKillShots.size === 0) {
+        return res.json({ type: 4, data: { content: '📭 No pending Kill Shot setups right now.', flags: 64 } });
+      }
+      const list = [...pendingKillShots.values()].map(p =>
+        `**${p.instrument.replace('_', '/')}** ${p.direction} — ${p.score}% · ${p.confirms}/4`
+      ).join('\n');
+      return res.json({ type: 4, data: { content: `⚔️ **Pending Kill Shots:**\n${list}`, flags: 64 } });
+    }
+
+    if (cmd === 'status') {
+      const sess = getServerSession();
+      const rule = XAVIER_RULES[sess] || {};
+      let openCount = 0;
+      try { const ot = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H }); openCount = ((await ot.json()).trades || []).length; } catch {}
+      return res.json({ type: 4, data: { embeds: [{
+        color: 0x58a6ff, title: '📊 Xavier Status',
+        fields: [
+          { name: 'Session',     value: sess,           inline: true },
+          { name: 'Auto Mode',   value: process.env.AUTO_MODE_ENABLED === 'true' ? '✅ ON' : '❌ OFF', inline: true },
+          { name: 'Heat',        value: `${(openCount * 1.5).toFixed(1)}R / 4R`, inline: true },
+          { name: 'Open Trades', value: String(openCount),   inline: true },
+          { name: 'Strategy',    value: rule.strategy || 'N/A', inline: true },
+          { name: 'Pairs',       value: (rule.pairs || []).join(', ') || 'None', inline: true },
+        ],
+        timestamp: new Date().toISOString(),
+      }] } });
+    }
+
+    if (cmd === 'pause') {
+      process.env.AUTO_MODE_ENABLED = 'false';
+      console.log('[DISCORD CMD] /pause');
+      return res.json({ type: 4, data: { content: '⏸ **Xavier paused** — send `/resume` to restart.', flags: 64 } });
+    }
+
+    if (cmd === 'resume') {
+      process.env.AUTO_MODE_ENABLED = 'true';
+      console.log('[DISCORD CMD] /resume');
+      return res.json({ type: 4, data: { content: '▶️ **Xavier resumed** — auto-trading active.', flags: 64 } });
+    }
+
+    if (cmd === 'trades') {
+      let openTrades = [];
+      try { const ot = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H }); openTrades = (await ot.json()).trades || []; } catch {}
+      if (openTrades.length === 0) return res.json({ type: 4, data: { content: '📭 No open trades.', flags: 64 } });
+      const fields = openTrades.map(t => {
+        const pnl = parseFloat(t.unrealizedPL || 0);
+        return { name: `${t.instrument.replace('_', '/')} ${parseFloat(t.currentUnits) >= 0 ? 'LONG' : 'SHORT'}`, value: `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`, inline: true };
+      });
+      return res.json({ type: 4, data: { embeds: [{ color: 0x58a6ff, title: '📈 Open Trades', fields, timestamp: new Date().toISOString() }] } });
+    }
+
+    if (cmd === 'balance') {
+      try {
+        const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/summary`, { headers: H });
+        const d = await r.json();
+        const bal = parseFloat(d.account?.balance || 0), nav = parseFloat(d.account?.NAV || 0), unrl = parseFloat(d.account?.unrealizedPL || 0);
+        return res.json({ type: 4, data: { embeds: [{ color: 0x3fb950, title: '💰 Account Balance', fields: [
+          { name: 'Balance', value: `$${bal.toFixed(2)}`, inline: true },
+          { name: 'NAV',     value: `$${nav.toFixed(2)}`, inline: true },
+          { name: 'Unrealized', value: `${unrl >= 0 ? '+' : ''}$${unrl.toFixed(2)}`, inline: true },
+        ], timestamp: new Date().toISOString() }] } });
+      } catch (e) { return res.json({ type: 4, data: { content: `❌ ${e.message}`, flags: 64 } }); }
+    }
+
+    if (cmd === 'kill') {
+      process.env.AUTO_MODE_ENABLED = 'false';
+      let closed = 0;
+      try {
+        const ot = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
+        const trades = (await ot.json()).trades || [];
+        for (const t of trades) { try { await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${t.id}/close`, { method: 'PUT', headers: H }); closed++; } catch {} }
+      } catch {}
+      console.log(`[DISCORD CMD] /kill — ${closed} trade(s) closed`);
+      return res.json({ type: 4, data: { content: `💀 **KILL executed** — auto-trading disabled. ${closed} trade(s) closed.`, flags: 64 } });
+    }
+  }
+
+  // ── Button clicks ────────────────────────────────────────────────────────────
+  if (type === 3) {
+    const customId = data?.custom_id || '';
+
+    if (customId.startsWith('execute_')) {
+      const instrument = customId.replace('execute_', '');
+      const pending    = pendingKillShots.get(instrument);
+      if (!pending) return res.json({ type: 4, data: { content: `⚠️ ${instrument.replace('_', '/')} — setup expired or already handled.`, flags: 64 } });
+      pendingKillShots.delete(instrument);
+      const result = await executeKillShot(pending);
+      return res.json({ type: 4, data: { content: result.ok
+        ? `✅ **Kill Shot executing** — ${instrument.replace('_', '/')} @ ${result.fill}`
+        : `❌ **Execution failed** — ${result.reason}`,
+      } });
+    }
+
+    if (customId.startsWith('skip_')) {
+      const instrument = customId.replace('skip_', '');
+      pendingKillShots.delete(instrument);
+      console.log(`[KILL SHOT SKIPPED] ${instrument}`);
+      return res.json({ type: 4, data: { content: `❌ **Kill Shot skipped** — ${instrument.replace('_', '/')}` } });
+    }
+
+    if (customId.startsWith('wait_')) {
+      const instrument = customId.replace('wait_', '');
+      console.log(`[KILL SHOT WAIT] ${instrument} — held for up to 1h`);
+      return res.json({ type: 4, data: { content: `⏳ **Waiting 1 hour** — ${instrument.replace('_', '/')} setup held.`, flags: 64 } });
+    }
+  }
+
+  res.json({ type: 1 });
+});
 
 // ─── DISCORD TWO-WAY COMMANDS ─────────────────────────────────────────────────
 let lastDiscordMessageId = '0';
@@ -2967,3 +3204,6 @@ setInterval(() => refreshEconomicCalendar().catch(e => console.error('[calendar]
 // Discord two-way command polling — every 30s (requires DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID)
 setTimeout(() => pollDiscordCommands().catch(e => console.error('[discord-poll] Startup:', e.message)), 8_000);
 setInterval(() => pollDiscordCommands().catch(e => console.error('[discord-poll] Loop:', e.message)), 30_000);
+
+// Register Discord slash commands (idempotent — safe to run on every startup)
+registerDiscordCommands().catch(e => console.error('[discord] Command registration failed:', e.message));
