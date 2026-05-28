@@ -7529,7 +7529,7 @@ function useAutonomousBacktest() {
           }
         }
       }
-      if (!cancelRef.current && allCombos.length > 0) {
+      if (!cancelRef.current) {
         const rules = {};
         for (const sess of SESSIONS) {
           const sessR = allCombos.filter(c => c.session === sess).sort((a, b) => b.score - a.score);
@@ -7604,7 +7604,7 @@ function useAutonomousBacktest() {
           }
         }
       }
-      if (!cancelRef.current && allCombos.length > 0) {
+      if (!cancelRef.current) {
         const rules = {};
         for (const sess of SESSIONS) {
           const sessR = allCombos.filter(c => c.session === sess).sort((a, b) => b.score - a.score);
