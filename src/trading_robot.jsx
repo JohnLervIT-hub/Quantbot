@@ -1096,11 +1096,11 @@ function MetricsStrip({ openTrades, signalCount, globalRegime, reinforcement }) 
         if (!adapted) return null;
         const penalty = Object.values(reinforcement.strategyPenalties || {}).find(v => v > 0);
         const label = penalty
-          ? `LEARNING · ${adapted[0].replace("_", "/")} ${adapted[1]}% threshold`
-          : `LEARNING · ${adapted[0].replace("_", "/")} ${adapted[1]}%`;
+          ? `VOLATILE · ${adapted[0].replace("_", "/")} ${adapted[1]}% threshold`
+          : `VOLATILE · ${adapted[0].replace("_", "/")} ${adapted[1]}%`;
         return (
           <div style={{ flex: "0 0 auto", background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.25)", borderRadius: 8, padding: "8px 12px", textAlign: "center" }}>
-            <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>Learning</div>
+            <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>Volatile</div>
             <div style={{ fontSize: 10, fontWeight: 600, color: "#8b5cf6", letterSpacing: "0.03em", whiteSpace: "nowrap" }}>{label}</div>
           </div>
         );
@@ -4775,6 +4775,8 @@ function deriveSession(openTimeStr) {
 
 // Persists a closed trade into xavier_memory localStorage
 function updateXavierMemory(closedTrade) {
+  // Skip near-zero R trades — not meaningful lessons (instant SL, data error, etc.)
+  if (Math.abs(closedTrade.rMultiple || 0) < 0.05) return;
   try {
     const memory = JSON.parse(
       localStorage.getItem('xavier_memory') ||
@@ -8015,6 +8017,28 @@ export default function TradingRobot() {
           setOpenTrades(prev =>
             openTradesFingerprint(prev) === openTradesFingerprint(data.trades) ? prev : data.trades
           );
+          // Reconcile: auto-add any OANDA trade not yet in swingTrades (server-fired Kill Shots)
+          setSwingTrades(prev => {
+            const trackedIds = new Set(prev.map(t => t.oandaId).filter(Boolean));
+            const toAdd = data.trades.filter(o => !trackedIds.has(o.id));
+            if (toAdd.length === 0) return prev;
+            const newTrades = toAdd.map(o => ({
+              id:       `swing_${o.id}`,
+              oandaId:  o.id,
+              pair:     o.instrument?.replace('_', '/'),
+              direction: parseFloat(o.currentUnits) >= 0 ? 'LONG' : 'SHORT',
+              entry:    parseFloat(o.price),
+              sl:       o.stopLossOrder?.price  ? parseFloat(o.stopLossOrder.price)  : null,
+              tp1:      o.takeProfitOrder?.price ? parseFloat(o.takeProfitOrder.price) : null,
+              score:    null,
+              thesis:   `Server Kill Shot — OANDA #${o.id}`,
+              closed:   false,
+              openedAt: new Date(o.openTime).getTime(),
+            }));
+            const next = [...prev, ...newTrades];
+            localStorage.setItem('swing_trades', JSON.stringify(next));
+            return next;
+          });
         }
       } catch {}
     };
