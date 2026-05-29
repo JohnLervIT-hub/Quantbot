@@ -571,8 +571,9 @@ const XAVIER_RULES = {
 };
 
 // Phase 1 — Core forex only (M5 backtest validated 2026-05-27)
+// Phase 1 (active — M5 validated 2026-05-27)
 // Phase 2 (add after 1 week clean execution): XAG_USD, NAS100_USD, UK100_GBP, AU200_AUD, SPX500_USD, JP225_USD
-// Phase 3 (add after Phase 2 validates):      BCO_USD, WTICO_USD
+// Phase 3 (add after Phase 2 validates):      BCO_USD, WTICO_USD — manual Kill Shot only
 const SERVER_PAIRS = new Set([
   'EUR_USD', 'GBP_USD', 'USD_JPY',
   'AUD_USD', 'USD_CAD', 'XAU_USD',
@@ -596,12 +597,13 @@ const MARGIN_RATE = {
 };
 
 // Swing position sizing — high-priced instruments need fewer units to keep margin manageable
+// XAU at ~$3300 × 10 units × 5% margin ≈ $1,650 — fits demo account
 const SWING_UNITS = {
-  XAU_USD:    100,
-  BCO_USD:    100,
-  WTICO_USD:  100,
-  NAS100_USD:  10,
-  SPX500_USD:  10,
+  XAU_USD:    10,
+  BCO_USD:    10,
+  WTICO_USD:  10,
+  NAS100_USD:  1,
+  SPX500_USD:  1,
 }; // default: 500 for all forex pairs
 
 async function getMarginAvailable() {
@@ -2791,7 +2793,8 @@ async function serverAutoTrade() {
 
 // ─── KILL SHOT PAIRS ─────────────────────────────────────────────────────────
 // BCO_USD removed 2026-05-28 — manual trading only
-const KILL_SHOT_PAIRS = ['XAU_USD', 'GBP_USD', 'EUR_USD', 'USD_JPY', 'NAS100_USD'];
+// NAS100_USD / AU200_AUD excluded — Phase 2 pairs, OANDA demo liquidity issues, manual Kill Shot only
+const KILL_SHOT_PAIRS = ['XAU_USD', 'GBP_USD', 'EUR_USD', 'USD_JPY'];
 
 // ─── OANDA CANDLE FETCHER (any granularity) ───────────────────────────────────
 async function fetchOandaCandles(instrument, granularity, count) {
