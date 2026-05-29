@@ -170,32 +170,28 @@ app.post('/order', async (req, res) => {
     console.log(`[ORDER] takeProfitOnFill (${tpMult}R):`, JSON.stringify(order.takeProfitOnFill));
   }
 
-  const body = JSON.stringify({ order });
-  console.log('[ORDER] OANDA payload:', body);
-  const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body });
-  const data = await r.json();
-  console.log('[OANDA RESPONSE]', r.status, JSON.stringify(data));
-  const fillPrice = data?.orderFillTransaction?.price ?? null;
-  if (fillPrice) {
-    console.log(`  ✓ filled @ ${fillPrice}`);
-    console.log(`[DISCORD NOTIFY] attempting send for ${instrument} — manual M5`);
-    await sendNotification(
-      `⚡ <b>TRADE OPENED (Manual)</b>\n${instrument.replace('_', '/')} ${direction}\nEntry: ${formatPrice(parseFloat(fillPrice), instrument)}`,
-      {
-        color: 0x00ff88,
-        title: '⚡ Trade Opened (Manual)',
-        fields: [
-          { name: 'Pair',      value: instrument.replace('_', '/'), inline: true },
-          { name: 'Direction', value: direction,                     inline: true },
-          { name: 'Entry',     value: formatPrice(parseFloat(fillPrice), instrument), inline: true },
-        ],
-        timestamp: new Date().toISOString(),
-      }
-    );
-  } else if (!r.ok) {
-    console.log(`  ✗ rejected — ${JSON.stringify(data?.errorMessage ?? data).slice(0, 200)}`);
+  const result = await placeOrder({
+    instrument, direction,
+    units: Math.abs(Number(units)),
+    entry: entryPrice,
+    stopLoss:   slPrice  ?? undefined,
+    takeProfit: tpPrice  ?? undefined,
+    source: 'M5-Manual', score: null, session: currentSession, strategy: null,
+  });
+
+  if (result.blocked) {
+    const code = result.blocked;
+    if (code === 'COOLDOWN')    return res.status(400).json({ error: 'COOLDOWN_ACTIVE',        message: `${instrument} cooldown active` });
+    if (code === 'DUPLICATE')   return res.status(400).json({ error: 'DUPLICATE_POSITION',     message: `${instrument} already open` });
+    if (code === 'HEAT_LIMIT')  return res.status(400).json({ error: 'MAX_TRADES',             message: 'Max 2 open trades' });
+    if (code === 'NEWS')        return res.status(400).json({ error: 'NEWS_BLOCK',             message: `${instrument} blocked — high-impact news` });
+    if (code === 'MARGIN')      return res.status(400).json({ error: 'INSUFFICIENT_MARGIN',    message: 'Insufficient margin' });
+    if (code === 'SL_SANITY')   return res.status(400).json({ error: 'SL_SANITY',              message: 'Stop loss on wrong side of entry' });
+    if (code === 'OANDA_REJECT') return res.status(400).json({ error: 'OANDA_REJECT',          message: result.reason });
+    return res.status(400).json({ error: code, message: result.reason || 'Order blocked' });
   }
-  res.json(data);
+
+  res.json({ orderFillTransaction: { price: result.fill, tradeOpened: { tradeID: result.tradeId } } });
 });
 
 // ─── SWING ORDER — instrument-calibrated units, explicit SL/TP1 prices ────────
@@ -267,44 +263,30 @@ app.post('/swing/order', async (req, res) => {
   }
 
   console.log(`POST /swing/order — ${instrument} ${direction} ${Math.abs(Number(units))} units`);
-  const order = {
-    type: 'MARKET', instrument, units: String(units),
-    timeInForce: 'FOK', positionFill: 'DEFAULT',
-  };
-  if (slPrice)  order.stopLossOnFill   = { price: formatPrice(slPrice,  instrument), timeInForce: 'GTC' };
-  if (tp1Price) order.takeProfitOnFill = { price: formatPrice(tp1Price, instrument), timeInForce: 'GTC' };
-  try {
-    const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify({ order }) });
-    const data = await r.json();
-    console.log('[SWING ORDER RESULT]', JSON.stringify(data).slice(0, 500));
-    if (data.orderFillTransaction) {
-      const tradeId   = data.orderFillTransaction.tradeOpened?.tradeID ?? data.orderFillTransaction.id;
-      const swingFill = data.orderFillTransaction.price;
-      console.log(`[SWING SUCCESS] ${instrument} ${direction} — tradeID: ${tradeId}, fill: ${swingFill}`);
-      console.log(`[DISCORD NOTIFY] attempting send for ${instrument} — manual swing`);
-      await sendNotification(
-        `⚔️ <b>SWING OPENED (Manual)</b>\n${instrument.replace('_', '/')} ${direction}\nEntry: ${formatPrice(parseFloat(swingFill), instrument)}`,
-        {
-          color: 0x8B5CF6,
-          title: '⚔️ Swing Opened (Manual)',
-          fields: [
-            { name: 'Pair',      value: instrument.replace('_', '/'), inline: true },
-            { name: 'Direction', value: direction,                     inline: true },
-            { name: 'Entry',     value: formatPrice(parseFloat(swingFill), instrument), inline: true },
-          ],
-          timestamp: new Date().toISOString(),
-        }
-      );
-    } else if (data.orderRejectTransaction) {
-      console.error(`[SWING REJECTED] ${instrument} — ${data.orderRejectTransaction.rejectReason}`);
-    } else {
-      console.error(`[SWING UNKNOWN] ${instrument} —`, JSON.stringify(data).slice(0, 200));
-    }
-    res.json(data);
-  } catch (e) {
-    console.error('[SWING ORDER] fetch error:', e.message);
-    res.status(500).json({ error: e.message });
+
+  const estEntry = slPrice && tp1Price ? (parseFloat(slPrice) + parseFloat(tp1Price)) / 2 : parseFloat(tp1Price || slPrice || 0);
+  const result = await placeOrder({
+    instrument, direction,
+    units: Math.abs(Number(units)),
+    entry:      estEntry,
+    stopLoss:   slPrice   ? parseFloat(slPrice)  : undefined,
+    takeProfit: tp1Price  ? parseFloat(tp1Price) : undefined,
+    source: 'Kill-Shot-Manual', score: null, session: getServerSession(), strategy: 'Kill Shot',
+  });
+
+  if (result.blocked) {
+    const code = result.blocked;
+    if (code === 'COOLDOWN')     return res.status(400).json({ error: 'COOLDOWN_ACTIVE',     message: `${instrument} cooldown active` });
+    if (code === 'DUPLICATE')    return res.status(400).json({ error: 'DUPLICATE_POSITION',  message: `${instrument} already open` });
+    if (code === 'HEAT_LIMIT')   return res.status(400).json({ error: 'MAX_TRADES',          message: 'Max 2 open trades' });
+    if (code === 'NEWS')         return res.status(400).json({ error: 'NEWS_BLOCK',          message: `${instrument} blocked — high-impact news` });
+    if (code === 'MARGIN')       return res.status(400).json({ error: 'INSUFFICIENT_MARGIN', message: 'Insufficient margin' });
+    if (code === 'SL_SANITY')    return res.status(400).json({ error: 'SL_SANITY',           message: 'Stop loss on wrong side of entry' });
+    if (code === 'OANDA_REJECT') return res.status(400).json({ error: 'OANDA_REJECT',        message: result.reason });
+    return res.status(400).json({ error: code, message: result.reason || 'Order blocked' });
   }
+
+  res.json({ orderFillTransaction: { price: result.fill, tradeOpened: { tradeID: result.tradeId } } });
 });
 
 app.post('/close/:tradeId', async (req, res) => {
@@ -1669,6 +1651,116 @@ async function hasOpenPosition(instrument) {
   }
 }
 
+async function getOpenTrades() {
+  try {
+    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
+    const data = await r.json();
+    return data.trades || [];
+  } catch {
+    return [];
+  }
+}
+
+async function sendOandaOrder({ instrument, units, stopLoss, takeProfit }) {
+  const order = {
+    type: 'MARKET', instrument, units: String(units),
+    timeInForce: 'FOK', positionFill: 'DEFAULT',
+  };
+  if (stopLoss)   order.stopLossOnFill   = { price: stopLoss,   timeInForce: 'GTC' };
+  if (takeProfit) order.takeProfitOnFill = { price: takeProfit, timeInForce: 'GTC' };
+  const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify({ order }) });
+  return r.json();
+}
+
+async function placeOrder({ instrument, direction, units, entry, stopLoss, takeProfit, source, score, session, strategy }) {
+  const pair = normalizeInstrument(instrument);
+  console.log('[ORDER]', source, pair, direction, units, 'units');
+
+  // Gate 1 — Duplicate check
+  if (await hasOpenPosition(pair)) {
+    console.log('[BLOCKED] duplicate —', pair);
+    return { blocked: 'DUPLICATE' };
+  }
+
+  // Gate 2 — Cooldown check
+  const cooldown = postCloseCooldown.get(pair);
+  if (cooldown && Date.now() - cooldown < 15 * 60 * 1000) {
+    console.log('[BLOCKED] cooldown —', pair);
+    return { blocked: 'COOLDOWN' };
+  }
+
+  // Gate 3 — Heat limit
+  const openTrades = await getOpenTrades();
+  if (openTrades.length >= 2) {
+    console.log('[BLOCKED] heat limit —', openTrades.length, 'open');
+    return { blocked: 'HEAT_LIMIT' };
+  }
+
+  // Gate 4 — News window
+  if (isNewsWindow(pair)) {
+    console.log('[BLOCKED] news —', pair);
+    return { blocked: 'NEWS' };
+  }
+
+  // Gate 5 — Margin check
+  const margin = await checkMargin(pair, units, entry);
+  if (!margin.sufficient) {
+    console.log('[BLOCKED] margin —', pair);
+    return { blocked: 'MARGIN' };
+  }
+
+  // Gate 6 — SL sanity
+  if (stopLoss) {
+    if (direction === 'LONG'  && stopLoss >= entry) { console.log('[BLOCKED] SL wrong side —', pair); return { blocked: 'SL_SANITY' }; }
+    if (direction === 'SHORT' && stopLoss <= entry) { console.log('[BLOCKED] SL wrong side —', pair); return { blocked: 'SL_SANITY' }; }
+  }
+
+  // Gate 7 — Price precision
+  const formattedEntry = formatPrice(entry,      pair);
+  const formattedSL    = stopLoss   ? formatPrice(stopLoss,   pair) : null;
+  const formattedTP    = takeProfit ? formatPrice(takeProfit, pair) : null;
+
+  // Place order
+  const oandaUnits = direction === 'LONG' ? Math.abs(units) : -Math.abs(units);
+  const result = await sendOandaOrder({ instrument: pair, units: oandaUnits, stopLoss: formattedSL, takeProfit: formattedTP });
+
+  if (JSON.stringify(result).includes('MARKET_HALTED')) {
+    console.log('[ORDER] market halted —', pair);
+    return { blocked: 'MARKET_HALTED', raw: result };
+  }
+
+  if (result.orderRejectTransaction) {
+    const reason = result.orderRejectTransaction.rejectReason;
+    console.error('[ORDER REJECTED]', pair, reason);
+    return { blocked: 'OANDA_REJECT', reason };
+  }
+
+  if (!result.orderFillTransaction) {
+    console.error('[ORDER NO FILL]', pair, JSON.stringify(result).slice(0, 200));
+    return { blocked: 'NO_FILL', raw: result };
+  }
+
+  const fill    = result.orderFillTransaction.price;
+  const tradeId = result.orderFillTransaction.tradeOpened?.tradeID || result.orderFillTransaction.id || null;
+  console.log('[ORDER SUCCESS]', pair, 'tradeID:', tradeId);
+
+  await sendDiscordEmbed({
+    title: '⚡ TRADE OPENED',
+    color: 0x00ff88,
+    fields: [
+      { name: 'Pair',      value: pair.replace('_', '/'), inline: true },
+      { name: 'Direction', value: direction,               inline: true },
+      { name: 'Source',    value: source || '—',           inline: true },
+      { name: 'Entry',     value: fill,                    inline: true },
+      { name: 'SL',        value: formattedSL || '—',      inline: true },
+      { name: 'TP',        value: formattedTP || '—',      inline: true },
+    ],
+    timestamp: new Date().toISOString(),
+  });
+
+  return { success: true, tradeId, fill };
+}
+
 async function partialCloseTrade(tradeId, units) {
   try {
     const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/close`, {
@@ -2694,12 +2786,6 @@ async function serverAutoTrade() {
     const intelAgeMins = lastXavierIntel.ts ? Math.round((Date.now() - lastXavierIntel.ts) / 60_000) : null;
     const intelFresh   = intelAgeMins !== null && intelAgeMins < 30;
 
-    // Duplicate guard — fresh OANDA check in case another loop opened this pair since scan started
-    if (await hasOpenPosition(instrument)) {
-      console.log(`[DUPLICATE GUARD] ${instrument} — already open on OANDA, skipping`);
-      continue;
-    }
-
     console.log(`[auto] ${instrument} — calling consensus`);
     let consensus;
     try {
@@ -2758,60 +2844,27 @@ async function serverAutoTrade() {
       : (NORMAL_UNITS[instrument]   || NORMAL_UNITS.default);
     const units = signal.direction === 'LONG' ? unitSize : -unitSize;
 
-    // Pre-flight margin check — prevents INSUFFICIENT_MARGIN rejections
-    if (!(await checkMargin(instrument, units, price)).sufficient) continue;
-
     try {
-      // SL sanity check — wrong-side SL causes STOP_LOSS_ON_FILL_LOSS rejection
-      const orderPayload = {
-        order: {
-          type: 'MARKET', instrument, units: String(units),
-          timeInForce: 'FOK', positionFill: 'DEFAULT',
-          stopLossOnFill:   { price: formatPrice(sl, instrument), timeInForce: 'GTC' },
-          takeProfitOnFill: { price: formatPrice(tp, instrument), timeInForce: 'GTC' },
-        },
-      };
-      const r      = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify(orderPayload) });
-      const result = await r.json();
-      const isHalted = JSON.stringify(result).includes('MARKET_HALTED');
+      const result = await placeOrder({
+        instrument, direction: signal.direction,
+        units: unitSize,
+        entry: price, stopLoss: sl, takeProfit: tp,
+        source: 'M5-Auto', score: signal.score, session, strategy,
+      });
 
-      if (isHalted) {
+      if (result.blocked === 'MARKET_HALTED') {
         paperTrades.unshift({ id: Date.now(), type: 'PAPER', instrument, direction: signal.direction, units, price, session, strategy, score: signal.score, consensus: `${consensus.votes.confirm}/4`, timestamp: ts });
         if (paperTrades.length > 100) paperTrades.pop();
         console.log(`[auto] ${instrument} — PAPER logged (market halted)`);
-      } else {
-        const fill    = result?.orderFillTransaction?.price ?? price.toFixed(5);
-        const oandaId = result.orderFillTransaction?.tradeOpened?.tradeID || result.orderFillTransaction?.id || null;
+      } else if (result.blocked) {
+        console.log(`[auto] ${instrument} — placeOrder blocked: ${result.blocked}`);
+      } else if (result.success) {
+        const { fill, tradeId: oandaId } = result;
         autoTrades.unshift({ id: Date.now(), timestamp: ts, instrument, direction: signal.direction, units, price: fill, session, strategy, score: signal.score, consensus: consensus.votes, models: consensus.models, oandaOrderId: oandaId });
         if (autoTrades.length > 100) autoTrades.pop();
         serverTradeLog.unshift({ id: oandaId, pair: instrument, direction: signal.direction, strategy, session, score: signal.score, entry: parseFloat(fill), sl: parseFloat(formatPrice(sl, instrument)), tp: parseFloat(formatPrice(tp, instrument)), units, type: 'm5', timestamp: Date.now() });
         if (serverTradeLog.length > 500) serverTradeLog.pop();
         console.log(`[auto] ✓ EXECUTED ${instrument} ${signal.direction} @ ${fill} — ${consensus.votes.confirm}/4 — ${strategy} — ${session}`);
-        console.log(`[DISCORD NOTIFY] attempting send for ${instrument}`);
-        await sendNotification(
-          `⚡ <b>TRADE OPENED</b>\n` +
-          `${instrument.replace('_', '/')} ${signal.direction}\n` +
-          `Entry: ${formatPrice(parseFloat(fill), instrument)}\n` +
-          `SL: ${formatPrice(sl, instrument)} · TP: ${formatPrice(tp, instrument)}\n` +
-          `Score: ${signal.score}% · Models: ${consensus.votes.confirm}/4\n` +
-          `Strategy: ${strategy} · Session: ${session}`,
-          {
-            color: 0x00ff88,
-            title: '⚡ Trade Opened',
-            fields: [
-              { name: 'Pair',      value: instrument.replace('_', '/'), inline: true },
-              { name: 'Direction', value: signal.direction,             inline: true },
-              { name: 'Score',     value: `${signal.score}%`,          inline: true },
-              { name: 'Entry',     value: formatPrice(parseFloat(fill), instrument), inline: true },
-              { name: 'SL',        value: formatPrice(sl, instrument),  inline: true },
-              { name: 'TP',        value: formatPrice(tp, instrument),  inline: true },
-              { name: 'Consensus', value: `${consensus.votes.confirm}/4`, inline: true },
-              { name: 'Session',   value: session,   inline: true },
-              { name: 'Strategy',  value: strategy,  inline: true },
-            ],
-            timestamp: new Date().toISOString(),
-          }
-        );
       }
     } catch (e) {
       console.error(`[auto] Order error ${instrument}: ${e.message}`);
@@ -3179,46 +3232,19 @@ function verifyDiscordRequest(req) {
 async function executeKillShot(pending) {
   const { instrument, direction, units, liveEntry, liveSl, liveTp1, liveTp2, liveTp3, score, reasons, session, confirms, models, voteLog, timestamp: ts } = pending;
 
-  // Final duplicate guard
-  if (await hasOpenPosition(instrument)) {
-    console.log(`[KILL SHOT EXECUTE] ${instrument} — position already open, aborting`);
-    return { ok: false, reason: 'Position already open' };
+  const result = await placeOrder({
+    instrument, direction,
+    units: Math.abs(units),
+    entry: liveEntry, stopLoss: liveSl, takeProfit: liveTp1,
+    source: 'Kill-Shot-Auto', score, session, strategy: 'Kill Shot',
+  });
+
+  if (result.blocked) {
+    console.error(`[KILL SHOT EXECUTE] ${instrument} — placeOrder blocked: ${result.blocked} ${result.reason || ''}`);
+    return { ok: false, reason: result.blocked };
   }
 
-  // Margin check
-  if (!(await checkMargin(instrument, units, liveEntry)).sufficient) {
-    console.log(`[KILL SHOT EXECUTE] ${instrument} — insufficient margin, aborting`);
-    return { ok: false, reason: 'Insufficient margin' };
-  }
-
-  const order = {
-    type: 'MARKET', instrument, units: String(units),
-    timeInForce: 'FOK', positionFill: 'DEFAULT',
-    stopLossOnFill:   { price: formatPrice(liveSl,  instrument), timeInForce: 'GTC' },
-    takeProfitOnFill: { price: formatPrice(liveTp1, instrument), timeInForce: 'GTC' },
-  };
-
-  let result;
-  try {
-    const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/orders`, { method: 'POST', headers: H, body: JSON.stringify({ order }) });
-    result   = await r.json();
-  } catch (e) {
-    console.error(`[KILL SHOT EXECUTE] ${instrument} — fetch error: ${e.message}`);
-    return { ok: false, reason: e.message };
-  }
-
-  if (result.orderRejectTransaction) {
-    const reason = result.orderRejectTransaction.rejectReason;
-    console.error(`[KILL SHOT EXECUTE REJECTED] ${instrument} — ${reason}`);
-    return { ok: false, reason };
-  }
-  if (!result.orderFillTransaction) {
-    console.error(`[KILL SHOT EXECUTE] ${instrument} — no fill: ${JSON.stringify(result).slice(0, 200)}`);
-    return { ok: false, reason: 'No fill transaction' };
-  }
-
-  const fill    = result.orderFillTransaction.price;
-  const tradeId = result.orderFillTransaction.tradeOpened?.tradeID || null;
+  const { fill, tradeId } = result;
   console.log(`[KILL SHOT EXECUTE SUCCESS] ${instrument} ${direction} @ ${fill} — tradeID: ${tradeId}`);
 
   serverTradeLog.unshift({ id: tradeId, pair: instrument, direction, strategy: 'Kill Shot', session, score, entry: parseFloat(fill), sl: parseFloat(formatPrice(liveSl, instrument)), tp: parseFloat(formatPrice(liveTp1, instrument)), units, type: 'swing', timestamp: Date.now() });
@@ -3237,28 +3263,6 @@ async function executeKillShot(pending) {
     closed: false,
   });
   if (swingAutoTrades.length > 50) swingAutoTrades.pop();
-
-  console.log(`[DISCORD NOTIFY] attempting send for ${instrument} — kill shot executed`);
-  await sendNotification(
-    `🎯 <b>KILL SHOT EXECUTED</b>\n${instrument.replace('_', '/')} ${direction} @ ${fill}\nSL: ${formatPrice(liveSl, instrument)} · TP1: ${formatPrice(liveTp1, instrument)}\nScore: ${score}% · ${confirms}/4 · ${session}`,
-    {
-      color: 0x8B5CF6,
-      title: '🎯 Kill Shot Executed',
-      fields: [
-        { name: 'Pair',      value: instrument.replace('_', '/'), inline: true },
-        { name: 'Direction', value: direction,                    inline: true },
-        { name: 'Score',     value: `${score}%`,                  inline: true },
-        { name: 'Entry',     value: fill,                          inline: true },
-        { name: 'SL',        value: formatPrice(liveSl,  instrument), inline: true },
-        { name: 'TP1',       value: formatPrice(liveTp1, instrument), inline: true },
-        { name: 'Consensus', value: `${confirms}/4`,    inline: true },
-        { name: 'Session',   value: session,            inline: true },
-        { name: 'Trade ID',  value: tradeId || '—',    inline: true },
-      ],
-      timestamp: new Date().toISOString(),
-      footer: { text: (reasons || []).slice(0, 3).join(' · ') },
-    }
-  );
 
   return { ok: true, fill, tradeId };
 }
