@@ -571,7 +571,7 @@ const XAVIER_RULES = {
   TOKYO:  { strategy: 'Mean Revert', pairs: ['EUR_GBP', 'EUR_USD', 'AUD_USD'],    minScore: 65 },
   LONDON: { strategy: 'Momentum',    pairs: ['GBP_USD', 'EUR_USD'],              minScore: 65 },
   PRIME:  { strategy: 'Breakout',    pairs: ['EUR_GBP', 'USD_CAD', 'XAU_USD'],    minScore: 65 },
-  NY:     { strategy: 'Mean Revert', pairs: ['USD_CAD', 'AU200_AUD', 'NZD_USD'],  minScore: 65 },
+  NY:     { strategy: 'Mean Revert', pairs: ['USD_CAD', 'NZD_USD', 'EUR_USD'],    minScore: 65 },
   SYDNEY: { strategy: 'Mean Revert', pairs: ['GBP_USD', 'NZD_USD', 'AUD_USD'],   minScore: 65 },
   AVOID:  { strategy: null,          pairs: [],                                    minScore: 999 },
 };
@@ -655,7 +655,6 @@ const ATR_SL_MULTIPLIER = { XAG_USD: 3.0, BCO_USD: 2.5, WTICO_USD: 2.5 };
 const ATR_TP_MULTIPLIER = { XAG_USD: 6.0, BCO_USD: 5.0, WTICO_USD: 5.0 };
 
 const INDEX_HOME_SESSION = {
-  SPX500_USD: 'NY',     NAS100_USD: 'NY',
   JP225_USD:  'TOKYO',
   UK100_GBP:  'LONDON',
   AU200_AUD:  'SYDNEY',
