@@ -981,8 +981,12 @@ async function askGPT(prompt, sys) {
   });
   const d = await r.json();
   if (!r.ok) throw new Error(apiErr(d, `OpenAI HTTP ${r.status}`));
-  const text = d.choices?.[0]?.message?.content;
-  if (!text) throw new Error('GPT empty response');
+  const msg = d.choices?.[0]?.message;
+  const text = msg?.content || msg?.refusal;
+  if (!text) {
+    console.error('[GPT-5.5 RAW]', JSON.stringify(d).slice(0, 500));
+    throw new Error('GPT empty response');
+  }
   return { name: 'GPT-5.5', ...parseVerdict(text) };
 }
 
