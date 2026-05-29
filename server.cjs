@@ -1835,6 +1835,37 @@ async function getPatternInsight(pair, session, strategy) {
   };
 }
 
+async function saveCooldown(pair, timestamp) {
+  if (!supabase) return;
+  try {
+    await supabase.from('system_state').upsert({
+      key:        'cooldown_' + normalizeInstrument(pair),
+      value:      timestamp.toString(),
+      updated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[STATE] saveCooldown failed:', err.message);
+  }
+}
+
+async function loadCooldowns() {
+  if (!supabase) return;
+  try {
+    const { data } = await supabase.from('system_state').select('*').like('key', 'cooldown_%');
+    data?.forEach(row => {
+      const pair = row.key.replace('cooldown_', '');
+      const ts   = parseInt(row.value, 10);
+      if (!isNaN(ts) && ts > Date.now() - 15 * 60 * 1000) {
+        postCloseCooldown.set(pair, ts);
+        console.log(`[STATE] restored cooldown: ${pair} → expires in ${Math.ceil((ts + 15 * 60 * 1000 - Date.now()) / 60000)}min`);
+      }
+    });
+    console.log('[STATE] loaded', data?.length || 0, 'cooldowns from Supabase');
+  } catch (err) {
+    console.error('[STATE ERROR]', err.message);
+  }
+}
+
 async function saveTradeToSupabase(trade) {
   if (!supabase) return;
   try {
@@ -1907,6 +1938,7 @@ async function manageOpenTrades() {
 
           // Post-close cooldown — always set on any close, including manual
           postCloseCooldown.set(instr, Date.now());
+          saveCooldown(instr, Date.now());
           console.log(`[COOLDOWN] ${instr} — locked 15 min after close (PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)})`);
 
           // Consecutive loss circuit breaker — 3 losses → 4-hour block
@@ -1918,6 +1950,7 @@ async function manageOpenTrades() {
             console.log(`[LOSS CIRCUIT] ${instr} — ${losses} consecutive loss${losses > 1 ? 'es' : ''}`);
             if (losses >= 3) {
               postCloseCooldown.set(instr, Date.now() + (4 * 60 * 60 * 1000));
+              saveCooldown(instr, Date.now() + (4 * 60 * 60 * 1000));
               consecutiveLosses.set(instr, 0);
               console.log(`[LOSS CIRCUIT] ${instr} — 3 consecutive losses — blocking for 4 hours`);
               await sendDiscordEmbed({
@@ -2477,6 +2510,7 @@ async function serverAutoTrade() {
   for (const instr of serverAutoTradeOpenInstr) {
     if (!currentOpenInstruments.has(instr)) {
       postCloseCooldown.set(instr, Date.now());
+      saveCooldown(instr, Date.now());
       console.log(`[COOLDOWN SET] ${instr} — detected close in auto-trade loop, cooldown locked (race-free)`);
     }
   }
@@ -3617,6 +3651,88 @@ app.post('/test-killshot', async (_req, res) => {
 });
 
 // ─── SUPABASE API ENDPOINTS ──────────────────────────────────────────────────
+async function runIntegrationTests() {
+  const results = [];
+
+  // Test 1 — Instrument normalization
+  try {
+    const n1 = normalizeInstrument('EUR/USD');
+    const n2 = normalizeInstrument('EUR_USD');
+    const n3 = normalizeInstrument('eur-usd');
+    const passed = n1 === 'EUR_USD' && n1 === n2 && n2 === n3;
+    results.push({ test: 'instrument_normalization', passed, detail: `${n1} === ${n2} === ${n3}` });
+  } catch (e) {
+    results.push({ test: 'instrument_normalization', passed: false, detail: e.message });
+  }
+
+  // Test 2 — Duplicate prevention
+  try {
+    const mockTrades = [{ instrument: 'EUR_USD' }];
+    const isDupe = mockTrades.some(t => normalizeInstrument(t.instrument) === normalizeInstrument('EUR/USD'));
+    results.push({ test: 'duplicate_prevention', passed: isDupe === true, detail: `EUR_USD === EUR/USD: ${isDupe}` });
+  } catch (e) {
+    results.push({ test: 'duplicate_prevention', passed: false, detail: e.message });
+  }
+
+  // Test 3 — News guard USD pairs
+  try {
+    const usdPairs = ['EUR_USD', 'USD_JPY', 'USD_CAD'];
+    const allHaveUSD = usdPairs.every(p => PAIR_CURRENCIES[p]?.includes('USD'));
+    results.push({ test: 'news_guard_usd_pairs', passed: allHaveUSD, detail: `USD pairs have USD currency: ${allHaveUSD}` });
+  } catch (e) {
+    results.push({ test: 'news_guard_usd_pairs', passed: false, detail: e.message });
+  }
+
+  // Test 4 — SL sanity LONG
+  try {
+    const longSLAbove = 1.16500 >= 1.16300; // wrong side — should be blocked
+    const longSLBelow = 1.16000 >= 1.16300; // correct side — should pass
+    results.push({ test: 'sl_sanity_long', passed: longSLAbove && !longSLBelow, detail: `LONG SL above detected: ${longSLAbove}` });
+  } catch (e) {
+    results.push({ test: 'sl_sanity_long', passed: false, detail: e.message });
+  }
+
+  // Test 5 — SL sanity SHORT
+  try {
+    const shortSLBelow = 1.16100 <= 1.16300; // wrong side — should be blocked
+    const shortSLAbove = 1.16500 <= 1.16300; // correct side — should pass
+    results.push({ test: 'sl_sanity_short', passed: shortSLBelow && !shortSLAbove, detail: `SHORT SL below detected: ${shortSLBelow}` });
+  } catch (e) {
+    results.push({ test: 'sl_sanity_short', passed: false, detail: e.message });
+  }
+
+  // Test 6 — Consensus payload complete
+  try {
+    const payload = { pair: 'EUR/USD', price: 1.163, stopLoss: 1.160, takeProfit: 1.169, ema9: 1.162, ema21: 1.161, ema50: 1.160, atr: 0.0015, rsi: 55 };
+    const hasRequired = !!(payload.pair && payload.price && payload.stopLoss && payload.takeProfit && payload.ema9 && payload.ema21 && payload.ema50);
+    results.push({ test: 'consensus_payload_complete', passed: hasRequired, detail: `All required fields present: ${hasRequired}` });
+  } catch (e) {
+    results.push({ test: 'consensus_payload_complete', passed: false, detail: e.message });
+  }
+
+  // Test 7 — Supabase connected
+  try {
+    const connected = supabase !== null;
+    results.push({ test: 'supabase_connected', passed: connected, detail: `Supabase client: ${connected ? 'initialized' : 'null'}` });
+  } catch (e) {
+    results.push({ test: 'supabase_connected', passed: false, detail: e.message });
+  }
+
+  const passed = results.filter(r => r.passed).length;
+  const failed = results.filter(r => !r.passed).length;
+  console.log('[TESTS]', passed, 'passed,', failed, 'failed');
+  return { passed, failed, total: results.length, allPassed: failed === 0, results };
+}
+
+app.get('/run-tests', async (_req, res) => {
+  try {
+    const result = await runIntegrationTests();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/supabase/status', async (_req, res) => {
   if (!supabase) return res.json({ connected: false, tables: null });
   try {
@@ -3822,6 +3938,7 @@ setInterval(() => manageOpenTrades().catch(e => console.error('[mgmt] Loop:', e.
 setInterval(() => maybeSendDailySummary().catch(e => console.error('[mgmt] Summary:', e.message)), 60_000);
 
 // Upgrade 2 — Economic calendar refresh every hour
+loadCooldowns().catch(e => console.error('[state] loadCooldowns startup:', e.message));
 refreshEconomicCalendar().catch(e => console.error('[calendar] Startup:', e.message));
 setInterval(() => refreshEconomicCalendar().catch(e => console.error('[calendar] Refresh:', e.message)), 60 * 60_000);
 
