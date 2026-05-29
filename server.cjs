@@ -1358,6 +1358,19 @@ app.get('/recovery-status', (_req, res) => {
   });
 });
 
+// ─── RECOVERY MODE TEST TRIGGER ──────────────────────────────────────────────
+app.get('/test-recovery-trigger', async (req, res) => {
+  const realPeak = peakBalance;
+  peakBalance = peakBalance * 1.031; // inflate peak so current balance looks 3%+ below
+  await monitorDrawdown();
+  setTimeout(() => {
+    peakBalance    = realPeak;
+    recoveryMode   = false;
+    console.log('[RECOVERY TEST] reset complete');
+  }, 60_000);
+  res.json({ test: true, message: 'Recovery mode triggered — resets in 60 seconds', recoveryMode });
+});
+
 // ─── AUTO TRADES ENDPOINT ─────────────────────────────────────────────────────
 app.get('/auto-trades', (_req, res) => {
   res.json({ autoMode: process.env.AUTO_MODE_ENABLED === 'true', count: autoTrades.length, trades: autoTrades });
