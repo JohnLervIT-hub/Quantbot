@@ -1448,7 +1448,10 @@ async function sendTelegram(message) {
 }
 
 async function sendDiscordEmbed(embed, components) {
-  if (!process.env.DISCORD_WEBHOOK_URL) return;
+  if (!process.env.DISCORD_WEBHOOK_URL) {
+    console.warn('[DISCORD EMBED] DISCORD_WEBHOOK_URL not set — skipping');
+    return;
+  }
   try {
     const payload = {
       username: 'Xavier | QuantBot Pro',
@@ -1456,11 +1459,15 @@ async function sendDiscordEmbed(embed, components) {
       embeds: [embed],
     };
     if (components) payload.components = components;
-    await fetch(process.env.DISCORD_WEBHOOK_URL, {
+    const dr = await fetch(process.env.DISCORD_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    if (!dr.ok) {
+      const body = await dr.text();
+      console.error(`[DISCORD EMBED ERROR] HTTP ${dr.status} — ${body.slice(0, 300)}`);
+    }
   } catch (err) { console.error('[DISCORD EMBED ERROR]', err.message); }
 }
 
