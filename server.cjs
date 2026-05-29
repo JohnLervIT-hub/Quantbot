@@ -121,6 +121,14 @@ app.post('/order', async (req, res) => {
     return res.status(400).json({ error: `${instrument} not allowed in ${currentSession} — only London/Prime/NY` });
   }
 
+  // Post-close cooldown hard block — applies to manual orders too
+  const _orderLastClose = postCloseCooldown.get(instrument);
+  if (_orderLastClose && Date.now() - _orderLastClose < 15 * 60 * 1000) {
+    const minsLeft = Math.ceil((15 * 60 * 1000 - (Date.now() - _orderLastClose)) / 60000);
+    console.log(`[COOLDOWN HARD BLOCK] ${instrument} — ${minsLeft} min remaining — ABORTING`);
+    return res.status(400).json({ error: 'COOLDOWN_ACTIVE', message: `${instrument} cooldown: ${minsLeft} min remaining`, minsLeft });
+  }
+
   const entryPrice = parseFloat(price) || 0;
   const atrVal     = parseFloat(atr)   || 0;
   const slMult     = ATR_SL_MULTIPLIER[instrument] ?? 1.5;
@@ -170,6 +178,14 @@ app.post('/swing/order', async (req, res) => {
   const { instrument, slPrice, tp1Price } = req.body;
   let { units } = req.body;
   if (!instrument || !units) return res.status(400).json({ error: 'instrument and units required' });
+
+  // Post-close cooldown hard block — applies to manual swing orders too
+  const _swingLastClose = postCloseCooldown.get(instrument);
+  if (_swingLastClose && Date.now() - _swingLastClose < 15 * 60 * 1000) {
+    const minsLeft = Math.ceil((15 * 60 * 1000 - (Date.now() - _swingLastClose)) / 60000);
+    console.log(`[COOLDOWN HARD BLOCK] ${instrument} swing — ${minsLeft} min remaining — ABORTING`);
+    return res.status(400).json({ error: 'COOLDOWN_ACTIVE', message: `${instrument} cooldown: ${minsLeft} min remaining`, minsLeft });
+  }
 
   if (swingInFlight.has(instrument)) {
     console.log(`[SWING SKIP] ${instrument} already in flight — duplicate request blocked`);
@@ -1656,6 +1672,7 @@ async function manageOpenTrades() {
       const moved   = await updateTradeSL(tradeId, bePrice, instrument);
       if (moved) {
         state.movedToBreakeven = true;
+        console.log(`[DISCORD NOTIFY] attempting send for ${instrument} — breakeven`);
         await sendNotification(
           `🛡 <b>BREAKEVEN</b>\n` +
           `${instrument.replace('_', '/')} ${dir}\n` +
@@ -1683,6 +1700,7 @@ async function manageOpenTrades() {
         const result = await partialCloseTrade(tradeId, thirdUnits);
         if (result) {
           state.partialClosed = true;
+          console.log(`[DISCORD NOTIFY] attempting send for ${instrument} — partial close`);
           await sendNotification(
             `💰 <b>PARTIAL CLOSE 33%</b>\n` +
             `${instrument.replace('_', '/')} ${dir}\n` +
@@ -2028,7 +2046,7 @@ async function serverAutoTrade() {
     const cooldownMinsLeft = lastClose ? Math.ceil((POST_CLOSE_COOLDOWN_MS - (Date.now() - lastClose)) / 60000) : 0;
     console.log(`[COOLDOWN CHECK] ${instrument} — ${lastClose ? `last close ${Math.round((Date.now() - lastClose) / 60000)} min ago, ${cooldownMinsLeft > 0 ? cooldownMinsLeft + ' min remaining' : 'CLEAR'}` : 'no recent close'}`);
     if (lastClose && Date.now() - lastClose < POST_CLOSE_COOLDOWN_MS) {
-      console.log(`[COOLDOWN] ${instrument} — ${cooldownMinsLeft} min remaining before re-entry allowed`);
+      console.log(`[COOLDOWN HARD BLOCK] ${instrument} — ${cooldownMinsLeft} min remaining — ABORTING`);
       continue;
     }
 
@@ -2383,6 +2401,7 @@ async function serverAutoTrade() {
         serverTradeLog.unshift({ id: oandaId, pair: instrument, direction: signal.direction, strategy, session, score: signal.score, entry: parseFloat(fill), sl: parseFloat(formatPrice(sl, instrument)), tp: parseFloat(formatPrice(tp, instrument)), units, type: 'm5', timestamp: Date.now() });
         if (serverTradeLog.length > 500) serverTradeLog.pop();
         console.log(`[auto] ✓ EXECUTED ${instrument} ${signal.direction} @ ${fill} — ${consensus.votes.confirm}/4 — ${strategy} — ${session}`);
+        console.log(`[DISCORD NOTIFY] attempting send for ${instrument}`);
         await sendNotification(
           `⚡ <b>TRADE OPENED</b>\n` +
           `${instrument.replace('_', '/')} ${signal.direction}\n` +
@@ -2455,7 +2474,7 @@ async function fetchLivePrice(instrument) {
 // ─── H4 SWING SIGNAL GENERATOR ───────────────────────────────────────────────
 // Produces a Kill Shot setup if EMA50 bias + EMA21 pullback + RSI zone align.
 // Score must reach 75 to qualify. Weekly candles provide optional bonus (+10).
-function serverGenerateSwingSignal(h4Candles, weeklyCandles, instrument) {
+function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
   if (h4Candles.length < 50) return null;
 
   const closes = h4Candles.map(c => c.c);
@@ -2619,7 +2638,7 @@ async function serverSwingAutoTrade() {
     const lastClose = postCloseCooldown.get(instrument);
     if (lastClose && Date.now() - lastClose < POST_CLOSE_COOLDOWN_MS) {
       const minsLeft = Math.ceil((POST_CLOSE_COOLDOWN_MS - (Date.now() - lastClose)) / 60000);
-      console.log(`[COOLDOWN] ${instrument} swing — ${minsLeft} min remaining before re-entry allowed`);
+      console.log(`[COOLDOWN HARD BLOCK] ${instrument} swing — ${minsLeft} min remaining — ABORTING`);
       continue;
     }
 
@@ -2810,6 +2829,7 @@ async function executeKillShot(pending) {
   });
   if (swingAutoTrades.length > 50) swingAutoTrades.pop();
 
+  console.log(`[DISCORD NOTIFY] attempting send for ${instrument} — kill shot executed`);
   await sendNotification(
     `🎯 <b>KILL SHOT EXECUTED</b>\n${instrument.replace('_', '/')} ${direction} @ ${fill}\nSL: ${formatPrice(liveSl, instrument)} · TP1: ${formatPrice(liveTp1, instrument)}\nScore: ${score}% · ${confirms}/4 · ${session}`,
     {
