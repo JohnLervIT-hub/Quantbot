@@ -508,6 +508,31 @@ const POST_CLOSE_COOLDOWN_MS  = 15 * 60 * 1000; // 15 minutes
 // Pending Kill Shot approvals — awaiting Discord EXECUTE/SKIP/WAIT
 const pendingKillShots = new Map(); // instrument → pending signal data
 
+// ─── DRAWDOWN RECOVERY MODE ───────────────────────────────────────────────────
+let peakBalance       = 0;
+let recoveryMode      = false;
+let currentBalance    = 0; // updated by monitorDrawdown()
+const DRAWDOWN_TRIGGER = 0.03;  // 3% drawdown activates recovery
+const RECOVERY_EXIT    = 0.015; // 1.5% drawdown deactivates recovery
+
+const NORMAL_UNITS = {
+  default:    1000,
+  XAU_USD:    100,
+  BCO_USD:    100,
+  WTICO_USD:  100,
+  NAS100_USD: 10,
+  SPX500_USD: 10,
+};
+
+const RECOVERY_UNITS = {
+  default:    500,
+  XAU_USD:    50,
+  BCO_USD:    50,
+  WTICO_USD:  50,
+  NAS100_USD: 5,
+  SPX500_USD: 5,
+};
+
 // Adaptive principle weights — updated by frontend when consecutive streak events fire
 let xavierWeights = { scoreThreshold: 65, newsWindowMins: 120, capitalPreservation: 1.0, informationFiltering: 1.0, patience: 1.0 };
 
@@ -1320,6 +1345,19 @@ app.post('/auto-mode', (req, res) => {
   res.json({ autoMode: enabled });
 });
 
+// ─── RECOVERY STATUS ENDPOINT ────────────────────────────────────────────────
+app.get('/recovery-status', (_req, res) => {
+  const drawdown = peakBalance > 0 ? parseFloat(((peakBalance - currentBalance) / peakBalance * 100).toFixed(2)) : 0;
+  res.json({
+    recoveryMode,
+    peakBalance:     parseFloat(peakBalance.toFixed(2)),
+    currentBalance:  parseFloat(currentBalance.toFixed(2)),
+    drawdown,
+    triggerAt:       parseFloat((DRAWDOWN_TRIGGER * 100).toFixed(1)),
+    exitAt:          parseFloat((RECOVERY_EXIT    * 100).toFixed(1)),
+  });
+});
+
 // ─── AUTO TRADES ENDPOINT ─────────────────────────────────────────────────────
 app.get('/auto-trades', (_req, res) => {
   res.json({ autoMode: process.env.AUTO_MODE_ENABLED === 'true', count: autoTrades.length, trades: autoTrades });
@@ -1823,6 +1861,59 @@ async function maybeSendDailySummary() {
   );
 }
 
+// ─── DRAWDOWN RECOVERY MONITOR ────────────────────────────────────────────────
+async function monitorDrawdown() {
+  try {
+    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/summary`, { headers: H });
+    const data = await r.json();
+    const balance = parseFloat(data.account?.balance || 0);
+    if (!balance) return;
+
+    currentBalance = balance;
+    if (balance > peakBalance) {
+      peakBalance = balance;
+    }
+    if (peakBalance === 0) return;
+
+    const drawdown = (peakBalance - balance) / peakBalance;
+
+    if (!recoveryMode && drawdown >= DRAWDOWN_TRIGGER) {
+      recoveryMode = true;
+      console.log(`[RECOVERY MODE] ACTIVATED — drawdown: ${(drawdown * 100).toFixed(2)}%`);
+      await sendDiscordEmbed({
+        title: '⚠️ RECOVERY MODE ACTIVATED',
+        color: 0xff4444,
+        fields: [
+          { name: 'Peak Balance',   value: `$${peakBalance.toFixed(2)}`,           inline: true },
+          { name: 'Current Balance',value: `$${balance.toFixed(2)}`,               inline: true },
+          { name: 'Drawdown',       value: `${(drawdown * 100).toFixed(2)}%`,      inline: true },
+          { name: 'Position Size',  value: 'Cut to 50%',                           inline: true },
+          { name: 'Threshold',      value: 'Raised to 75%',                        inline: true },
+          { name: 'Status',         value: 'Protecting capital',                   inline: true },
+        ],
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    if (recoveryMode && drawdown <= RECOVERY_EXIT) {
+      recoveryMode = false;
+      console.log('[RECOVERY MODE] DEACTIVATED — account recovered');
+      await sendDiscordEmbed({
+        title: '✅ RECOVERY MODE DEACTIVATED',
+        color: 0x00ff88,
+        fields: [
+          { name: 'Balance',  value: `$${balance.toFixed(2)}`,  inline: true },
+          { name: 'Recovery', value: 'Account stabilized',       inline: true },
+          { name: 'Status',   value: 'Normal trading resumed',   inline: true },
+        ],
+        timestamp: new Date().toISOString(),
+      });
+    }
+  } catch (err) {
+    console.error('[DRAWDOWN MONITOR]', err.message);
+  }
+}
+
 // ─── SERVER-SIDE AUTO TRADE ENGINE ────────────────────────────────────────────
 function getServerSession() {
   const now = new Date();
@@ -2198,9 +2289,15 @@ async function serverAutoTrade() {
       continue;
     }
 
-    // High-threshold pairs (commodities + indices) require 75% conviction
-    if (HIGH_THRESHOLD_PAIRS.has(instrument) && signal.score < 75) {
-      console.log(`[HIGH-THRESH] ${instrument} — score ${signal.score}% < 75% required for volatile asset`);
+    // Recovery mode — raised threshold for all pairs
+    const scoreThresholdEffective = recoveryMode ? 75
+      : (HIGH_THRESHOLD_PAIRS.has(instrument) ? 75 : 65);
+    if (signal.score < scoreThresholdEffective) {
+      if (recoveryMode) {
+        console.log(`[RECOVERY MODE] ${instrument} — score ${signal.score}% < 75% required in recovery — skipping`);
+      } else {
+        console.log(`[HIGH-THRESH] ${instrument} — score ${signal.score}% < 75% required for volatile asset`);
+      }
       continue;
     }
 
@@ -2440,7 +2537,14 @@ async function serverAutoTrade() {
       continue;
     }
 
-    const units = signal.direction === 'LONG' ? 1000 : -1000;
+    // Recovery mode — halved position sizing
+    if (recoveryMode) {
+      console.log(`[RECOVERY MODE] active — using reduced sizing for ${instrument}`);
+    }
+    const unitSize = recoveryMode
+      ? (RECOVERY_UNITS[instrument] || RECOVERY_UNITS.default)
+      : (NORMAL_UNITS[instrument]   || NORMAL_UNITS.default);
+    const units = signal.direction === 'LONG' ? unitSize : -unitSize;
 
     // Pre-flight margin check — prevents INSUFFICIENT_MARGIN rejections
     if (!(await checkMargin(instrument, units, price)).sufficient) continue;
@@ -3043,15 +3147,20 @@ app.post('/discord/interaction', async (req, res) => {
       const rule = XAVIER_RULES[sess] || {};
       let openCount = 0;
       try { const ot = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H }); openCount = ((await ot.json()).trades || []).length; } catch {}
+      const drawdownPct = peakBalance > 0 ? ((peakBalance - currentBalance) / peakBalance * 100).toFixed(2) : '0.00';
       return res.json({ type: 4, data: { embeds: [{
-        color: 0x58a6ff, title: '📊 Xavier Status',
+        color: recoveryMode ? 0xff4444 : 0x58a6ff,
+        title: recoveryMode ? '⚠️ Xavier Status — RECOVERY MODE' : '📊 Xavier Status',
         fields: [
-          { name: 'Session',     value: sess,           inline: true },
-          { name: 'Auto Mode',   value: process.env.AUTO_MODE_ENABLED === 'true' ? '✅ ON' : '❌ OFF', inline: true },
-          { name: 'Heat',        value: `${(openCount * 1.5).toFixed(1)}R / 4R`, inline: true },
-          { name: 'Open Trades', value: String(openCount),   inline: true },
-          { name: 'Strategy',    value: rule.strategy || 'N/A', inline: true },
-          { name: 'Pairs',       value: (rule.pairs || []).join(', ') || 'None', inline: true },
+          { name: 'Session',       value: sess,           inline: true },
+          { name: 'Auto Mode',     value: process.env.AUTO_MODE_ENABLED === 'true' ? '✅ ON' : '❌ OFF', inline: true },
+          { name: 'Heat',          value: `${(openCount * 1.5).toFixed(1)}R / 4R`, inline: true },
+          { name: 'Open Trades',   value: String(openCount),   inline: true },
+          { name: 'Strategy',      value: rule.strategy || 'N/A', inline: true },
+          { name: 'Pairs',         value: (rule.pairs || []).join(', ') || 'None', inline: true },
+          { name: 'Recovery Mode', value: recoveryMode ? '⚠️ ACTIVE — reduced sizing' : '✅ Normal', inline: true },
+          { name: 'Peak Balance',  value: `$${peakBalance.toFixed(2)}`,  inline: true },
+          { name: 'Drawdown',      value: `${drawdownPct}%`,             inline: true },
         ],
         timestamp: new Date().toISOString(),
       }] } });
@@ -3317,3 +3426,7 @@ setInterval(() => pollDiscordCommands().catch(e => console.error('[discord-poll]
 
 // Register Discord slash commands (idempotent — safe to run on every startup)
 registerDiscordCommands().catch(e => console.error('[discord] Command registration failed:', e.message));
+
+// Drawdown recovery monitor — every 5 minutes + startup
+monitorDrawdown().catch(e => console.error('[drawdown] Startup:', e.message));
+setInterval(() => monitorDrawdown().catch(e => console.error('[drawdown] Loop:', e.message)), 5 * 60 * 1000);

@@ -7942,6 +7942,7 @@ export default function TradingRobot() {
   const [autoMode, setAutoMode] = useState(() => localStorage.getItem("autoMode") === "true");
   const [autoTradeLog, setAutoTradeLog] = useState([]);
   const [autoModeLoading, setAutoModeLoading] = useState(false);
+  const [recoveryStatus, setRecoveryStatus] = useState({ recoveryMode: false, peakBalance: 0, currentBalance: 0, drawdown: 0, triggerAt: 3, exitAt: 1.5 });
   const [showAutoSettings, setShowAutoSettings] = useState(false);
   const [autoSettings, setAutoSettings] = useState({
     minConfidence: 65,
@@ -8521,6 +8522,19 @@ export default function TradingRobot() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    const fetchRecovery = async () => {
+      try {
+        const r = await fetch(`${BRIDGE}/recovery-status`);
+        const data = await r.json();
+        setRecoveryStatus(data);
+      } catch {}
+    };
+    fetchRecovery();
+    const id = setInterval(fetchRecovery, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const closeTrade = useCallback(async (tradeId, pair) => {
     if (!window.confirm(`Close ${pair} position?`)) return;
     try {
@@ -8975,6 +8989,11 @@ export default function TradingRobot() {
                 <div style={{ fontSize: 9, color: "#484f58", letterSpacing: "0.4px", lineHeight: 1, marginBottom: 2 }}>NAV</div>
                 <div style={{ fontFamily: FONT_MONO, fontSize: 13, fontWeight: 700, color: displayUPL >= 0 ? "#1D9E75" : "#E24B4A", lineHeight: 1 }}>{navShort}</div>
               </div>
+              {recoveryStatus.recoveryMode && (
+                <span style={{ padding: "4px 8px", borderRadius: 5, fontSize: 10, fontWeight: 700, background: "rgba(248,81,73,0.15)", color: "#f85149", border: "1px solid rgba(248,81,73,0.4)", whiteSpace: "nowrap", fontFamily: "inherit", letterSpacing: "0.02em" }}>
+                  ⚠️ RECOVERY
+                </span>
+              )}
               <button
                 onClick={toggleAutoMode}
                 disabled={autoModeLoading}
