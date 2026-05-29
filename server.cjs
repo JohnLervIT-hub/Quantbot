@@ -3089,9 +3089,10 @@ async function serverSwingAutoTrade() {
       }
 
       const consensus = await runSwingConsensus(consensusParams);
-      if (!consensus.passes) continue;
+
+      // Hard gate — Discord notification ONLY fires after 3/4 consensus confirmed
       if (consensus.confirms < 3) {
-        console.log(`[KILL SHOT BLOCKED] ${instrument} — only ${consensus.confirms}/4 confirm, need 3/4`);
+        console.log(`[SWING] consensus failed ${consensus.confirms}/4 — not sending Discord notification`);
         continue;
       }
 
@@ -3108,7 +3109,7 @@ async function serverSwingAutoTrade() {
       // ── Pre-flight margin check ──────────────────────────────────────────────
       if (!(await checkMargin(instrument, units, liveEntry)).sufficient) continue;
 
-      // ── Queue for Discord approval (no auto-execution) ───────────────────────
+      // ── 3/4 confirmed — queue for Discord approval ──────────────────────────
       await requestKillShotApproval({
         instrument, direction: sig.direction, units,
         liveEntry, liveSl, liveTp1, liveTp2, liveTp3,
