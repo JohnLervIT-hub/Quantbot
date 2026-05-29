@@ -4453,24 +4453,17 @@ function AICoachTab({ trades, closedTrades = [], isMobile, session = "AVOID", st
 
   const heat = (openTrades.length * 1.5).toFixed(1);
 
-  // ── Performance metrics — real OANDA closed trades + xavier_memory ──────────
+  // ── Performance metrics — single source of truth: closedTrades prop ─────────
   const perfData = useMemo(() => {
     // Primary: closedTrades prop (live from OANDA polling)
     // Backup:  qb_closed_trades in localStorage (survives page refresh)
     let stored = [];
     try { stored = JSON.parse(localStorage.getItem('qb_closed_trades') || '[]'); } catch {}
-    const effective = closedTrades.length > 0 ? closedTrades : stored;
+    const all = closedTrades.length > 0 ? closedTrades : stored;
 
-    // Xavier memory — adds trades from before this session (e.g. seeded history)
-    let memTrades = [];
-    try { memTrades = JSON.parse(localStorage.getItem('xavier_memory') || '{"trades":[]}').trades || []; } catch {}
-    const closedIds = new Set(effective.map(t => String(t.oandaId || t.id)));
-    const extra = memTrades.filter(t => !closedIds.has(String(t.id)));
-
-    const all = [...effective, ...extra];
     if (all.length === 0) return { total: 0, wins: 0, winRate: "0.0", avgR: "0.00", bestR: null, worstR: null };
 
-    const wins    = all.filter(t => (t.realizedPL != null ? t.realizedPL : t.outcome === 'WIN' ? 1 : -1) > 0).length;
+    const wins    = all.filter(t => (t.realizedPL ?? 0) > 0).length;
     const rVals   = all.map(t => t.rMultiple).filter(r => r != null && !isNaN(r));
     const avgR    = rVals.length > 0 ? (rVals.reduce((s, r) => s + r, 0) / rVals.length).toFixed(2) : "0.00";
     const bestR   = rVals.length > 0 ? Math.max(...rVals).toFixed(2) : null;
@@ -6254,14 +6247,14 @@ function BacktestTab({ closedTrades = [], trades = [], isMobile }) {
   });
   const maxSessTrades = Math.max(...Object.values(sessionStats).map(s => s.total), 1);
 
-  // Strategy stats from journal
+  // Strategy stats from closed trades
   const stratStats = {};
-  trades.forEach(t => {
+  data.forEach(t => {
     const key = t.strategy || "Unknown";
     if (!stratStats[key]) stratStats[key] = { wins: 0, total: 0, pnl: 0 };
     stratStats[key].total++;
-    stratStats[key].pnl += t.pnl || 0;
-    if ((t.pnl || 0) > 0) stratStats[key].wins++;
+    stratStats[key].pnl += getPL(t);
+    if (getPL(t) > 0) stratStats[key].wins++;
   });
 
   // SVG equity curve
@@ -7031,12 +7024,12 @@ function PerformanceDashboard({ trades, closedTrades = [], balance, isMobile }) 
   const maxAbsPnl = Math.max(...pairRows.map(([, s]) => Math.abs(s.pnl)), 0.001);
 
   const stratStats = {};
-  trades.forEach(t => {
+  analyticsData.forEach(t => {
     const key = t.strategy || "Unknown";
     if (!stratStats[key]) stratStats[key] = { wins: 0, total: 0, pnl: 0 };
     stratStats[key].total++;
-    stratStats[key].pnl += t.pnl || 0;
-    if ((t.pnl || 0) > 0) stratStats[key].wins++;
+    stratStats[key].pnl += getPL(t);
+    if (getPL(t) > 0) stratStats[key].wins++;
   });
 
   const sessionStats = {};
