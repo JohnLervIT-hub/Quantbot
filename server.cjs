@@ -3558,6 +3558,23 @@ async function pollDiscordCommands() {
   }
 }
 
+// ─── TEST KILL SHOT NOTIFICATION ────────────────────────────────────────────
+app.post('/test-killshot', async (_req, res) => {
+  const fakePair = _req.body?.pair || 'XAU_USD';
+  const fakeSignal = {
+    instrument: fakePair,
+    direction:  'LONG',
+    score:      87,
+    liveEntry:  3320.50,
+    liveSl:     3310.00,
+    liveTp1:    3340.00,
+    confirms:   3,
+    session:    getServerSession(),
+  };
+  await requestKillShotApproval(fakeSignal);
+  res.json({ ok: true, message: `Kill Shot notification sent for ${fakePair}`, signal: fakeSignal });
+});
+
 // ─── SUPABASE API ENDPOINTS ──────────────────────────────────────────────────
 app.get('/supabase/status', async (_req, res) => {
   if (!supabase) return res.json({ connected: false, tables: null });
