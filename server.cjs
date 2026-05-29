@@ -1363,6 +1363,17 @@ app.get('/recovery-status', (_req, res) => {
 });
 
 // ─── RECOVERY MODE TEST TRIGGER ──────────────────────────────────────────────
+app.get('/test-gpt-raw', async (_req, res) => {
+  if (!OPENAI_KEY) return res.status(500).json({ error: 'No OPENAI_KEY' });
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_KEY}` },
+    body: JSON.stringify({ model: 'gpt-5.5', max_completion_tokens: 120, messages: [{ role: 'system', content: 'You are a trading assistant.' }, { role: 'user', content: 'Reply CONFIRM or REJECT for a LONG EUR/USD trade.' }] }),
+  });
+  const d = await r.json();
+  res.json({ status: r.status, ok: r.ok, raw: d });
+});
+
 app.get('/test-recovery-trigger', async (req, res) => {
   const realPeak = peakBalance;
   peakBalance = peakBalance * 1.031; // inflate peak so current balance looks 3%+ below
