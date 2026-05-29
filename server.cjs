@@ -3257,13 +3257,16 @@ async function executeKillShot(pending) {
 async function requestKillShotApproval(signal) {
   pendingKillShots.set(signal.instrument, signal);
 
-  // Auto-expire after 1 hour
+  // Auto-expire after 2 hours
   setTimeout(() => {
     if (pendingKillShots.get(signal.instrument) === signal) {
       pendingKillShots.delete(signal.instrument);
       console.log(`[KILL SHOT EXPIRED] ${signal.instrument} — approval timeout`);
     }
-  }, 60 * 60_000);
+  }, 2 * 60 * 60_000);
+
+  const expiryTime = new Date(Date.now() + 2 * 60 * 60 * 1000)
+    .toLocaleTimeString('en-CA', { timeZone: 'America/Edmonton', hour: '2-digit', minute: '2-digit' });
 
   await sendDiscordEmbed({
     color: 0x8B5CF6,
@@ -3277,7 +3280,7 @@ async function requestKillShotApproval(signal) {
       { name: 'TP1',       value: formatPrice(signal.liveTp1,   signal.instrument),  inline: true },
       { name: 'Consensus', value: `${signal.confirms}/4`,  inline: true },
       { name: 'Session',   value: signal.session,           inline: true },
-      { name: 'Expires',   value: '1 hour',                 inline: true },
+      { name: '⏰ Expires', value: `${expiryTime} Calgary`, inline: true },
     ],
     timestamp: new Date().toISOString(),
     footer: { text: `Reply: !execute ${signal.instrument}  or  !skip ${signal.instrument}` },
