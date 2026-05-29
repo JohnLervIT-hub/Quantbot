@@ -222,6 +222,12 @@ app.post('/swing/order', async (req, res) => {
     return res.json({ skipped: true, reason: 'already in flight' });
   }
 
+  // News window guard — block Kill Shot if affected currency has HIGH-impact event ±window
+  if (isNewsWindow(instrument)) {
+    console.log(`[SWING NEWS BLOCK] ${instrument} — high-impact event within news window`);
+    return res.status(400).json({ error: 'NEWS_BLOCK', message: `${instrument} blocked — high-impact news event within ±${xavierWeights.newsWindowMins || 120}min` });
+  }
+
   // Max 2 open trades (Rule 3) — check before placing
   try {
     const ot = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
@@ -1582,7 +1588,8 @@ const PAIR_CURRENCIES = {
   AUD_USD: ['AUD', 'USD'], NZD_USD: ['NZD', 'USD'], USD_CAD: ['USD', 'CAD'],
   XAU_USD: ['USD'],        XAG_USD: ['USD'],         EUR_GBP: ['EUR', 'GBP'],
   SPX500_USD: ['USD'],     NAS100_USD: ['USD'],       UK100_GBP: ['GBP'],
-  AU200_AUD:  ['AUD'],
+  AU200_AUD:  ['AUD'],     JP225_USD: ['JPY'],        BCO_USD: ['USD'],
+  WTICO_USD:  ['USD'],
 };
 
 async function refreshEconomicCalendar() {
@@ -1613,7 +1620,10 @@ function isNewsWindow(instrument) {
     const diff = ev.time - now;
     if (diff > windowMs) continue;        // event is beyond current news window
     if (diff < -60 * 60_000) continue;    // event was > 1h ago — dust settled
-    if (currencies.includes(ev.currency)) return true;
+    if (currencies.includes(ev.currency)) {
+      console.log(`[NEWS BLOCK] ${instrument} — blocked due to "${ev.title}" affecting ${ev.currency} (${Math.round(diff / 60000)}min)`);
+      return true;
+    }
   }
   return false;
 }
