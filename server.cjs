@@ -3241,33 +3241,23 @@ async function requestKillShotApproval(signal) {
     }
   }, 60 * 60_000);
 
-  await sendDiscordEmbed(
-    {
-      color: 0x8B5CF6,
-      title: '⚔️ Kill Shot — Approval Needed',
-      fields: [
-        { name: 'Pair',      value: signal.instrument.replace('_', '/'),     inline: true },
-        { name: 'Direction', value: signal.direction,                         inline: true },
-        { name: 'Score',     value: `${signal.score}%`,                       inline: true },
-        { name: 'Entry',     value: formatPrice(signal.liveEntry, signal.instrument), inline: true },
-        { name: 'Stop Loss', value: formatPrice(signal.liveSl,    signal.instrument), inline: true },
-        { name: 'TP1',       value: formatPrice(signal.liveTp1,   signal.instrument), inline: true },
-        { name: 'Consensus', value: `${signal.confirms}/4`,   inline: true },
-        { name: 'Session',   value: signal.session,            inline: true },
-        { name: 'Expires',   value: '1 hour',                  inline: true },
-      ],
-      timestamp: new Date().toISOString(),
-      footer: { text: (signal.reasons || []).slice(0, 3).join(' · ') },
-    },
-    [{
-      type: 1,
-      components: [
-        { type: 2, style: 3, label: '✅ EXECUTE', custom_id: `execute_${signal.instrument}` },
-        { type: 2, style: 4, label: '❌ SKIP',    custom_id: `skip_${signal.instrument}`    },
-        { type: 2, style: 2, label: '⏳ WAIT 1H', custom_id: `wait_${signal.instrument}`   },
-      ],
-    }]
-  );
+  await sendDiscordEmbed({
+    color: 0x8B5CF6,
+    title: '⚔️ KILL SHOT APPROVAL NEEDED',
+    fields: [
+      { name: 'Pair',      value: signal.instrument.replace('_', '/'),              inline: true },
+      { name: 'Direction', value: signal.direction,                                  inline: true },
+      { name: 'Score',     value: `${signal.score}%`,                                inline: true },
+      { name: 'Entry',     value: formatPrice(signal.liveEntry, signal.instrument),  inline: true },
+      { name: 'Stop Loss', value: formatPrice(signal.liveSl,    signal.instrument),  inline: true },
+      { name: 'TP1',       value: formatPrice(signal.liveTp1,   signal.instrument),  inline: true },
+      { name: 'Consensus', value: `${signal.confirms}/4`,  inline: true },
+      { name: 'Session',   value: signal.session,           inline: true },
+      { name: 'Expires',   value: '1 hour',                 inline: true },
+    ],
+    timestamp: new Date().toISOString(),
+    footer: { text: `Reply: !execute ${signal.instrument}  or  !skip ${signal.instrument}` },
+  });
 
   console.log(`[KILL SHOT PENDING] ${signal.instrument} ${signal.direction} — awaiting Discord approval`);
 }
@@ -3540,6 +3530,27 @@ async function pollDiscordCommands() {
         } catch {}
         console.log(`[DISCORD CMD] /kill — auto-trading disabled, ${closedCount} trade(s) closed`);
         await sendDiscordChannelMessage(`💀 **KILL executed** — auto-trading disabled. ${closedCount} trade(s) closed.`);
+
+      } else if (msg.content.startsWith('!execute ')) {
+        const instrument = msg.content.slice('!execute '.length).trim().toUpperCase();
+        const pending = pendingKillShots.get(instrument);
+        if (!pending) {
+          await sendDiscordChannelMessage(`⚠️ No pending Kill Shot for **${instrument.replace('_', '/')}** — expired or already handled.`);
+        } else {
+          pendingKillShots.delete(instrument);
+          console.log(`[DISCORD CMD] !execute ${instrument}`);
+          const result = await executeKillShot(pending);
+          await sendDiscordChannelMessage(result.ok
+            ? `✅ **Kill Shot executing** — ${instrument.replace('_', '/')} @ ${result.fill}`
+            : `❌ **Execution failed** — ${result.reason}`
+          );
+        }
+
+      } else if (msg.content.startsWith('!skip ')) {
+        const instrument = msg.content.slice('!skip '.length).trim().toUpperCase();
+        pendingKillShots.delete(instrument);
+        console.log(`[DISCORD CMD] !skip ${instrument}`);
+        await sendDiscordChannelMessage(`❌ **Kill Shot skipped** — ${instrument.replace('_', '/')}`);
       }
     }
   } catch (e) {
