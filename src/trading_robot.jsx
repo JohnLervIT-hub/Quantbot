@@ -114,12 +114,12 @@ const PAIR_DISPLAY_NAMES = {
 const STRATEGIES = ["Trend Follow", "Mean Revert", "Breakout", "Momentum", "Range Scalp"];
 
 const STRATEGY_SESSION_MATRIX = {
-  SYDNEY: { primary: "Mean Revert",  fallback: "Trend Follow"  },
-  TOKYO:  { primary: "Mean Revert",  fallback: "Range Scalp"  },
-  LONDON: { primary: "Trend Follow", fallback: "Breakout"     },
-  PRIME:  { primary: "Trend Follow", fallback: "Breakout"    },
-  NY:     { primary: "Momentum",     fallback: "Trend Follow" },
-  AVOID:  { primary: null,           fallback: null           },
+  SYDNEY: { primary: "Mean Revert", fallback: "Trend Follow" },
+  TOKYO:  { primary: "Mean Revert", fallback: "Range Scalp"  },
+  LONDON: { primary: "Momentum",   fallback: "Breakout"      },
+  PRIME:  { primary: "Breakout",   fallback: "Mean Revert"   },
+  NY:     { primary: "Mean Revert", fallback: "Momentum"     },
+  AVOID:  { primary: null,          fallback: null            },
 };
 
 const TABLE_COLS = "110px 110px 180px 100px 110px 100px";
@@ -177,11 +177,11 @@ function getNextSessionInfo() {
   // UTC open hours for each tradeable session (AVOID has no strategy — skip it)
   // SYDNEY 22-04, TOKYO 04-08, LONDON 08-13, PRIME 13-17, NY 17-20, AVOID 20-22
   const BOUNDARIES = [
-    { h: 4,  session: "TOKYO",  strategy: "Mean Revert"  },
-    { h: 8,  session: "LONDON", strategy: "Trend Follow" },
-    { h: 13, session: "PRIME",  strategy: "Trend Follow" },
-    { h: 17, session: "NY",     strategy: "Momentum"     },
-    { h: 22, session: "SYDNEY", strategy: "Breakout"     },
+    { h: 4,  session: "TOKYO",  strategy: "Mean Revert" },
+    { h: 8,  session: "LONDON", strategy: "Momentum"    },
+    { h: 13, session: "PRIME",  strategy: "Breakout"    },
+    { h: 17, session: "NY",     strategy: "Mean Revert" },
+    { h: 22, session: "SYDNEY", strategy: "Mean Revert" },
   ];
   const now = new Date();
   const nowMins = now.getUTCHours() * 60 + now.getUTCMinutes();
@@ -5582,7 +5582,7 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
   };
 
   const XAVIER_SCHEDULE = [
-    { window: "4pm – 10pm",  label: "Sydney",  color: "#0EA5E9", startH: 16, endH: 22, pairs: ["AUD/USD", "XAU/USD"],            note: "Sydney's open. Low-volatility breakout session — wait for a clean break of the Asian range. AUD/USD and gold carry the best directional edge here. No NZD/USD, no EUR/USD — spreads are ugly and volume thin on those. Strategy: Breakout. Expectancy +0.97R." },
+    { window: "4pm – 10pm",  label: "Sydney",  color: "#0EA5E9", startH: 16, endH: 22, pairs: ["AUD/USD", "XAU/USD"],            note: "Sydney's open. Low-volatility ranging session — fade the extremes on AUD/USD and gold. No NZD/USD, no EUR/USD — spreads are ugly and volume thin on those. Strategy: Mean Revert. Expectancy +0.97R." },
     { window: "10pm – 2am",  label: "Tokyo",   color: "#F97316", startH: 22, endH: 2,  pairs: ["USD/JPY", "AUD/USD"],            note: "Tokyo's running. Range-bound, low volume — Mean Revert only, half size. JPY pairs have the most structure here. BOJ can surprise you without warning, so stops stay tighter than normal. AUD/USD also carries when RBA isn't in play." },
     { window: "2am – 7am",   label: "London",  color: "#8B5CF6", startH: 2,  endH: 7,  pairs: ["EUR/USD", "GBP/USD", "XAU/USD"], note: "London's just opened. Wait 15–20 minutes before touching anything — let it find direction first. Trend follow and breakout setups on EUR/USD, GBP/USD, gold. ECB or BOE headlines can spike these fast, so stops stay tight. Spreads are wide right at the open." },
     { window: "7am – 11am",  label: "Prime",   color: "#3fb950", startH: 7,  endH: 11, pairs: ["All pairs"],                     note: "This is the window I've been waiting for. London and New York overlap — volume's there, signals are clean, spreads tight. Full allocation, all models running. If I'm going to make money this week, it happens here. Don't miss this window." },
@@ -5591,11 +5591,11 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
   ];
 
   const SESSION_POPUP_DATA = {
-    London: { pairs: ["EUR/USD","GBP/USD","XAU/USD"], strategy: "Trend Follow", size: "Full", note: "BOE and ECB headlines drive this session hard. I wait for the first 15 minutes to play out before sizing in. Trend follow setups on a clean direction candle. Spreads widen right at the open — don't get filled wide." },
-    Prime:  { pairs: ["EUR/USD","GBP/USD","USD/CAD","XAU/USD","USD/JPY"], strategy: "All Strategies", size: "Full", note: "Both London and New York running at the same time — spreads are tight, volume is there. All four models running, full allocation. This window is the reason I'm watching at all." },
-    NY:     { pairs: ["EUR/USD","USD/CAD","USD/JPY"], strategy: "Momentum", size: "Full", note: "US data at 8:30 ET can move EUR/USD 40-50 pips instantly — I'm out 30 minutes before any release. After the number drops, momentum continuation setups are where I focus. I ride what London started." },
+    London: { pairs: ["EUR/USD","GBP/USD","XAU/USD"], strategy: "Momentum", size: "Full", note: "BOE and ECB headlines drive this session hard. I wait for the first 15 minutes to play out before sizing in. Momentum setups on a clean direction candle. Spreads widen right at the open — don't get filled wide." },
+    Prime:  { pairs: ["EUR/USD","GBP/USD","USD/CAD","XAU/USD","USD/JPY"], strategy: "Breakout", size: "Full", note: "Both London and New York running at the same time — spreads are tight, volume is there. All four models running, full allocation. This window is the reason I'm watching at all." },
+    NY:     { pairs: ["EUR/USD","USD/CAD","USD/JPY"], strategy: "Mean Revert", size: "Full", note: "US data at 8:30 ET can move EUR/USD 40-50 pips instantly — I'm out 30 minutes before any release. After the number drops, mean revert setups on EUR/USD and USD/CAD are where I focus." },
     Tokyo:  { pairs: ["USD/JPY","AUD/USD"], strategy: "Mean Revert", size: "Half", note: "Range-bound, low volume. Mean Revert only, half size. BOJ can surprise you on USD/JPY, so watch the headlines. I keep stops tighter than normal here." },
-    Sydney: { pairs: ["AUD/USD","XAU/USD"], strategy: "Breakout", size: "Half", note: "Sydney's open. Low-volatility breakout session — wait for a clean break of the Asian range. AUD/USD and gold carry the best directional edge here. No NZD/USD — spreads are ugly and volume thin." },
+    Sydney: { pairs: ["AUD/USD","XAU/USD"], strategy: "Mean Revert", size: "Half", note: "Sydney's open. Low-volatility ranging session — fade the extremes on AUD/USD and gold. Mean Revert only, half size. No NZD/USD — spreads are ugly and volume thin." },
     Avoid:  { pairs: [], strategy: "None", size: "None", note: "Dead zone — nothing worth trading. Volume dries up, spreads widen, signals are noise. Use this time to review the journal and prep for the Sydney open at 4pm." },
   };
 
