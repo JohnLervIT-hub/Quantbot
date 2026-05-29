@@ -8149,6 +8149,17 @@ export default function TradingRobot() {
         const data = await r.json();
         if (!Array.isArray(data.trades)) return;
 
+        // Build strategy lookup from server trade log (keyed by OANDA trade ID)
+        // Server-side auto-trades log the real strategy; use it over the UI's active_strategy
+        let serverStrategyMap = {};
+        try {
+          const tlr = await fetch(`${BRIDGE}/trade-log`);
+          const tld = await tlr.json();
+          if (Array.isArray(tld.trades)) {
+            tld.trades.forEach(tl => { if (tl.id) serverStrategyMap[String(tl.id)] = tl.strategy; });
+          }
+        } catch {}
+
         const newEntries = [];
         for (const t of data.trades) {
           if (seenClosedIdsRef.current.has(t.id)) continue;
@@ -8205,7 +8216,7 @@ export default function TradingRobot() {
             rMultiple,
             duration,
             session:    deriveSession(t.openTime),
-            strategy:   localStorage.getItem('active_strategy') || 'Unknown',
+            strategy:   serverStrategyMap[String(t.id)] || localStorage.getItem('active_strategy') || 'Mean Revert',
             openTime:   t.openTime,
             closeTime:  t.closeTime,
             timestamp:  new Date(t.closeTime || Date.now()).getTime(),
@@ -8222,7 +8233,7 @@ export default function TradingRobot() {
               pair:      entry.pair,
               direction: entry.dir,
               session:   deriveSession(entry.openTime),
-              strategy:  localStorage.getItem('active_strategy') || 'UNKNOWN',
+              strategy:  entry.strategy,
               score:     0,
               pnl:       entry.realizedPL,
               rMultiple: entry.rMultiple || 0,
