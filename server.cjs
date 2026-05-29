@@ -2730,12 +2730,16 @@ async function serverAutoTrade() {
       // USD strong = price below EMA50 on EUR/GBP/AUD/NZD vs USD
       const usdStrong = USD_SENSITIVE_PAIRS.has(instrument) && !c1_ema50Up;
 
-      if (condsMet < 3 || usdStrong) {
+      // Indices require all 3 conditions; forex requires 2/3
+      const STRICT_PAIRS = ['NAS100_USD', 'SPX500_USD', 'JP225_USD'];
+      const required     = STRICT_PAIRS.includes(instrument) ? 3 : 2;
+
+      if (condsMet < required || usdStrong) {
         const reason = usdStrong
           ? `USD strength regime — ${instrument} below EMA50, LONG blocked`
           : `LONG macro filter: ${condsMet}/3 bullish (EMA50up:${c1_ema50Up} LTbias:${c2_weeklyBull} XavierBull:${c3_xavierBull})`;
         console.log(`[LONG FILTER] ${instrument} LONG blocked — ${reason}`);
-        serverRejections.unshift({ ts, instrument, direction: 'LONG', score: signal.score, session, strategy, rejections: [{ condition: 'Macro Long Filter', actual: reason, threshold: '3/3 conditions required (or USD strength override)' }] });
+        serverRejections.unshift({ ts, instrument, direction: 'LONG', score: signal.score, session, strategy, rejections: [{ condition: 'Macro Long Filter', actual: reason, threshold: `${required}/3 conditions required (or USD strength override)` }] });
         if (serverRejections.length > 50) serverRejections.pop();
         await sendDiscordEmbed({
           title: '🚫 Signal Blocked — USD Strength',
@@ -2749,7 +2753,7 @@ async function serverAutoTrade() {
         });
         continue;
       }
-      console.log(`[LONG FILTER] ${instrument} LONG cleared — ${condsMet}/3 (EMA50up:${c1_ema50Up} LTbias:${c2_weeklyBull} XavierBull:${c3_xavierBull})`);
+      console.log(`[LONG FILTER] ${instrument} LONG cleared — ${condsMet}/3 meets ${required}/3 required (EMA50up:${c1_ema50Up} LTbias:${c2_weeklyBull} XavierBull:${c3_xavierBull})`);
     }
 
     // ── Supabase pattern insight — block negative historical edge ──────────────
