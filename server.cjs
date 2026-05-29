@@ -192,9 +192,15 @@ app.post('/order', async (req, res) => {
 
 // ─── SWING ORDER — instrument-calibrated units, explicit SL/TP1 prices ────────
 app.post('/swing/order', async (req, res) => {
-  const { instrument, slPrice, tp1Price } = req.body;
+  const { instrument, slPrice, tp1Price, consensusConfirms } = req.body;
   let { units } = req.body;
   if (!instrument || !units) return res.status(400).json({ error: 'instrument and units required' });
+
+  // Swing consensus gate — require 3/4 confirms
+  if (consensusConfirms !== undefined && consensusConfirms < 3) {
+    console.log(`[SWING BLOCKED] ${instrument} — consensus ${consensusConfirms}/4, need 3/4`);
+    return res.status(400).json({ error: 'CONSENSUS_INSUFFICIENT', message: `${consensusConfirms}/4 — need 3/4 to execute Kill Shot` });
+  }
 
   // Post-close cooldown hard block — applies to manual swing orders too
   const _swingLastClose = postCloseCooldown.get(instrument);
@@ -1278,20 +1284,19 @@ app.post('/swing-consensus', async (req, res) => {
       return { name: NAMES[i], verdict: 'REJECT', reason };
     });
     const confirms = models.filter(m => m.verdict === 'CONFIRM').length;
-    // Weighted rule: Claude MUST confirm AND at least 1 other model confirms
+    // Weighted rule: Claude MUST confirm AND total confirms >= 3
     const claudeConfirmed = models[0]?.verdict === 'CONFIRM';
-    const otherConfirmed  = models.slice(1).filter(m => m.verdict === 'CONFIRM');
-    const executeAllowed  = claudeConfirmed && otherConfirmed.length >= 1;
+    const executeAllowed  = claudeConfirmed && confirms >= 3;
     const voteLog = models.map(m => {
       const tag  = MODEL_TAG[m.name] || m.name.toUpperCase();
       const icon = m.verdict === 'CONFIRM' ? '✓' : '✗';
       return `[${tag}] ${m.verdict} — ${m.reason} ${icon}`;
     });
     const resultLine = executeAllowed
-      ? `Result: Claude + ${otherConfirmed[0].name.split(' ')[0]} confirmed → KILL SHOT EXECUTE`
+      ? `Result: ${confirms}/4 confirmed → KILL SHOT EXECUTE`
       : !claudeConfirmed
         ? `Result: BLOCKED — Claude rejected`
-        : `Result: BLOCKED — Claude confirmed but no supporting model`;
+        : `Result: BLOCKED — only ${confirms}/4 confirm, need 3/4`;
     voteLog.push(resultLine);
     res.json({
       votes: { confirm: confirms, reject: models.length - confirms },
@@ -2751,25 +2756,41 @@ async function serverSwingAutoTrade() {
       const ts    = now.toISOString();
       const swingIntelAgeMins = lastXavierIntel.ts ? Math.round((Date.now() - lastXavierIntel.ts) / 60_000) : null;
       const swingIntelFresh   = swingIntelAgeMins !== null && swingIntelAgeMins < 30;
+
+      // Derived fields for consensus payload
+      const h4Closes  = h4Candles.map(c => c.c);
+      const ema9H4    = h4Closes.slice(-9).reduce((a, b) => a + b, 0) / 9;
+      const rrNum     = sig.direction === 'LONG' ? liveTp1 - liveEntry : liveEntry - liveTp1;
+      const rrDen     = sig.direction === 'LONG' ? liveEntry - liveSl  : liveSl - liveEntry;
+      const riskReward = rrDen > 0 ? (rrNum / rrDen).toFixed(2) : '1.50';
+
       const consensusParams = {
+        pair:       instrument,
         instrument,
-        direction: sig.direction,
-        score:     sig.score,
-        entry:     formatPrice(liveEntry, instrument),
-        price:     formatPrice(liveEntry, instrument),
-        sl:        formatPrice(liveSl,    instrument),
-        tp1:       formatPrice(liveTp1,   instrument),
-        tp2:       formatPrice(liveTp2,   instrument),
-        tp3:       formatPrice(liveTp3,   instrument),
-        ema21:     formatPrice(sig.ema21, instrument),
-        ema50:     formatPrice(sig.ema50, instrument),
-        rsi:       sig.rsi.toFixed(1),
-        atr:       sig.atr.toFixed(instrument.includes('JPY') ? 3 : 5),
+        direction:  sig.direction,
+        score:      sig.score,
         session,
-        strategy:  'Kill Shot',
-        regime:    'SWING',
-        xavierSentiment:   swingIntelFresh ? lastXavierIntel.sentiment : null,
-        xavierKeyRisk:     swingIntelFresh ? lastXavierIntel.keyRisk   : null,
+        strategy:   'Kill Shot Swing',
+        type:       'swing',
+        price:      formatPrice(liveEntry, instrument),
+        entry:      formatPrice(liveEntry, instrument),
+        stopLoss:   formatPrice(liveSl,    instrument),
+        takeProfit: formatPrice(liveTp1,   instrument),
+        sl:         formatPrice(liveSl,    instrument),
+        tp1:        formatPrice(liveTp1,   instrument),
+        tp2:        formatPrice(liveTp2,   instrument),
+        tp3:        formatPrice(liveTp3,   instrument),
+        riskReward,
+        ema9:       formatPrice(ema9H4,    instrument),
+        ema21:      formatPrice(sig.ema21, instrument),
+        ema50:      formatPrice(sig.ema50, instrument),
+        rsi:        sig.rsi.toFixed(1),
+        atr:        sig.atr.toFixed(instrument.includes('JPY') ? 3 : 5),
+        regime:     'SWING',
+        reason:     sig.reasons.join(', '),
+        xavierIntel:       swingIntelFresh ? lastXavierIntel.brief      : null,
+        xavierSentiment:   swingIntelFresh ? lastXavierIntel.sentiment  : null,
+        xavierKeyRisk:     swingIntelFresh ? lastXavierIntel.keyRisk    : null,
         xavierBrief:       swingIntelFresh ? lastXavierIntel.brief      : null,
         freshNews:         swingIntelFresh ? lastXavierIntel.freshNews  : null,
         xavierIntelAgeMin: swingIntelAgeMins,
@@ -2783,6 +2804,10 @@ async function serverSwingAutoTrade() {
 
       const consensus = await runSwingConsensus(consensusParams);
       if (!consensus.passes) continue;
+      if (consensus.confirms < 3) {
+        console.log(`[KILL SHOT BLOCKED] ${instrument} — only ${consensus.confirms}/4 confirm, need 3/4`);
+        continue;
+      }
 
       // ── SL/TP sanity check before queuing ───────────────────────────────────
       const swingUnitSize = SWING_UNITS[instrument] ?? 500;
