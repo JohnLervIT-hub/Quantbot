@@ -2550,7 +2550,7 @@ async function serverAutoTrade() {
       continue;
     }
 
-    // Trend confirmation — 2/3 for forex, 1/3 for indices (mixed candles normal)
+    // Trend confirmation — 3/3 for forex LONG, 1/3 for indices (mixed candles normal)
     const m5Candles = await getM5Candles(instrument);
     const trendOk   = confirmTrend(
       [...m5Candles, { open: price, close: price }],
@@ -2604,12 +2604,12 @@ async function serverAutoTrade() {
       // USD strong = price below EMA50 on EUR/GBP/AUD/NZD vs USD
       const usdStrong = USD_SENSITIVE_PAIRS.has(instrument) && !c1_ema50Up;
 
-      if (condsMet < 2 || usdStrong) {
+      if (condsMet < 3 || usdStrong) {
         const reason = usdStrong
           ? `USD strength regime — ${instrument} below EMA50, LONG blocked`
           : `LONG macro filter: ${condsMet}/3 bullish (EMA50up:${c1_ema50Up} LTbias:${c2_weeklyBull} XavierBull:${c3_xavierBull})`;
         console.log(`[LONG FILTER] ${instrument} LONG blocked — ${reason}`);
-        serverRejections.unshift({ ts, instrument, direction: 'LONG', score: signal.score, session, strategy, rejections: [{ condition: 'Macro Long Filter', actual: reason, threshold: '2/3 conditions required (or USD strength override)' }] });
+        serverRejections.unshift({ ts, instrument, direction: 'LONG', score: signal.score, session, strategy, rejections: [{ condition: 'Macro Long Filter', actual: reason, threshold: '3/3 conditions required (or USD strength override)' }] });
         if (serverRejections.length > 50) serverRejections.pop();
         await sendDiscordEmbed({
           title: '🚫 Signal Blocked — USD Strength',
@@ -3148,6 +3148,7 @@ async function serverSwingAutoTrade() {
         confirms: consensus.confirms, models: consensus.models,
         voteLog: consensus.voteLog, timestamp: ts,
       });
+      return; // HARD STOP — no execution without Discord approval
 
     } catch (err) {
       console.error(`[swing-auto] ${instrument} — error: ${err.message}`);
