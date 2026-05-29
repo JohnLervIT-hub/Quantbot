@@ -496,6 +496,7 @@ let   lastDailySummaryDate = '';
 
 // Post-close cooldown — blocks re-entry for 15 min after any close on same instrument
 const postCloseCooldown       = new Map(); // instrument → ms timestamp of last close
+const consecutiveLosses       = new Map(); // instrument → consecutive loss count
 const POST_CLOSE_COOLDOWN_MS  = 15 * 60 * 1000; // 15 minutes
 
 // Pending Kill Shot approvals — awaiting Discord EXECUTE/SKIP/WAIT
@@ -1621,6 +1622,31 @@ async function manageOpenTrades() {
           // Post-close cooldown — always set on any close, including manual
           postCloseCooldown.set(instr, Date.now());
           console.log(`[COOLDOWN] ${instr} — locked 15 min after close (PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)})`);
+
+          // Consecutive loss circuit breaker — 3 losses → 4-hour block
+          if (won) {
+            consecutiveLosses.set(instr, 0);
+          } else {
+            const losses = (consecutiveLosses.get(instr) || 0) + 1;
+            consecutiveLosses.set(instr, losses);
+            console.log(`[LOSS CIRCUIT] ${instr} — ${losses} consecutive loss${losses > 1 ? 'es' : ''}`);
+            if (losses >= 3) {
+              postCloseCooldown.set(instr, Date.now() + (4 * 60 * 60 * 1000));
+              consecutiveLosses.set(instr, 0);
+              console.log(`[LOSS CIRCUIT] ${instr} — 3 consecutive losses — blocking for 4 hours`);
+              await sendDiscordEmbed({
+                title: '⚠️ LOSS CIRCUIT BREAKER',
+                color: 0xff4444,
+                fields: [
+                  { name: 'Pair',               value: instr.replace('_', '/'), inline: true },
+                  { name: 'Consecutive Losses',  value: '3',                     inline: true },
+                  { name: 'Blocked For',         value: '4 hours',               inline: true },
+                  { name: 'Reason',              value: 'Signal not working in current regime', inline: false },
+                ],
+                timestamp: new Date().toISOString(),
+              });
+            }
+          }
 
           // Update daily stats (only for Xavier-managed closes)
           if (tradeManagementState.has(id)) {
