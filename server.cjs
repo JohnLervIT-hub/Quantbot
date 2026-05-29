@@ -168,8 +168,25 @@ app.post('/order', async (req, res) => {
   const data = await r.json();
   console.log('[OANDA RESPONSE]', r.status, JSON.stringify(data));
   const fillPrice = data?.orderFillTransaction?.price ?? null;
-  if (fillPrice) console.log(`  ✓ filled @ ${fillPrice}`);
-  else if (!r.ok) console.log(`  ✗ rejected — ${JSON.stringify(data?.errorMessage ?? data).slice(0, 200)}`);
+  if (fillPrice) {
+    console.log(`  ✓ filled @ ${fillPrice}`);
+    console.log(`[DISCORD NOTIFY] attempting send for ${instrument} — manual M5`);
+    await sendNotification(
+      `⚡ <b>TRADE OPENED (Manual)</b>\n${instrument.replace('_', '/')} ${direction}\nEntry: ${formatPrice(parseFloat(fillPrice), instrument)}`,
+      {
+        color: 0x00ff88,
+        title: '⚡ Trade Opened (Manual)',
+        fields: [
+          { name: 'Pair',      value: instrument.replace('_', '/'), inline: true },
+          { name: 'Direction', value: direction,                     inline: true },
+          { name: 'Entry',     value: formatPrice(parseFloat(fillPrice), instrument), inline: true },
+        ],
+        timestamp: new Date().toISOString(),
+      }
+    );
+  } else if (!r.ok) {
+    console.log(`  ✗ rejected — ${JSON.stringify(data?.errorMessage ?? data).slice(0, 200)}`);
+  }
   res.json(data);
 });
 
@@ -240,8 +257,23 @@ app.post('/swing/order', async (req, res) => {
     const data = await r.json();
     console.log('[SWING ORDER RESULT]', JSON.stringify(data).slice(0, 500));
     if (data.orderFillTransaction) {
-      const tradeId = data.orderFillTransaction.tradeOpened?.tradeID ?? data.orderFillTransaction.id;
-      console.log(`[SWING SUCCESS] ${instrument} ${direction} — tradeID: ${tradeId}, fill: ${data.orderFillTransaction.price}`);
+      const tradeId   = data.orderFillTransaction.tradeOpened?.tradeID ?? data.orderFillTransaction.id;
+      const swingFill = data.orderFillTransaction.price;
+      console.log(`[SWING SUCCESS] ${instrument} ${direction} — tradeID: ${tradeId}, fill: ${swingFill}`);
+      console.log(`[DISCORD NOTIFY] attempting send for ${instrument} — manual swing`);
+      await sendNotification(
+        `⚔️ <b>SWING OPENED (Manual)</b>\n${instrument.replace('_', '/')} ${direction}\nEntry: ${formatPrice(parseFloat(swingFill), instrument)}`,
+        {
+          color: 0x8B5CF6,
+          title: '⚔️ Swing Opened (Manual)',
+          fields: [
+            { name: 'Pair',      value: instrument.replace('_', '/'), inline: true },
+            { name: 'Direction', value: direction,                     inline: true },
+            { name: 'Entry',     value: formatPrice(parseFloat(swingFill), instrument), inline: true },
+          ],
+          timestamp: new Date().toISOString(),
+        }
+      );
     } else if (data.orderRejectTransaction) {
       console.error(`[SWING REJECTED] ${instrument} — ${data.orderRejectTransaction.rejectReason}`);
     } else {
