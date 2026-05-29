@@ -984,15 +984,16 @@ async function askGPT(prompt, sys) {
   const r = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_KEY}` },
-    body: JSON.stringify({ model: 'gpt-5.5', max_completion_tokens: 500, messages: [{ role: 'system', content: sys || SYS_GPT }, { role: 'user', content: prompt }] }),
+    body: JSON.stringify({ model: 'gpt-5.5', max_completion_tokens: 1500, messages: [{ role: 'system', content: sys || SYS_GPT }, { role: 'user', content: prompt }] }),
   });
   const d = await r.json();
   if (!r.ok) throw new Error(apiErr(d, `OpenAI HTTP ${r.status}`));
   const msg = d.choices?.[0]?.message;
   const text = msg?.content || msg?.refusal;
   if (!text) {
-    console.error('[GPT-5.5 RAW]', JSON.stringify(d).slice(0, 500));
-    throw new Error('GPT empty response');
+    const reason = d.choices?.[0]?.finish_reason || 'unknown';
+    console.warn(`[GPT-5.5] Empty response — finish_reason: ${reason} — using REJECT as safe fallback`);
+    return { name: 'GPT-5.5', verdict: 'REJECT', reason: `Model response empty — ${reason}` };
   }
   return { name: 'GPT-5.5', ...parseVerdict(text) };
 }
