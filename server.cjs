@@ -2,6 +2,13 @@ require('dotenv').config({ override: true, path: require('path').join(__dirname,
 const express = require('express');
 const cors    = require('cors');
 const crypto  = require('crypto');
+
+const { createClient } = require('@supabase/supabase-js');
+const supabase = process.env.SUPABASE_URL
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
+  : null;
+console.log('[SUPABASE]', supabase ? '✅ Connected' : '❌ Not configured');
+
 const app = express();
 app.use(cors({
   origin: [
@@ -1661,6 +1668,87 @@ async function partialCloseTrade(tradeId, units) {
   }
 }
 
+// ─── SUPABASE PERSISTENCE ─────────────────────────────────────────────────────
+async function saveLesson(trade) {
+  if (!supabase) return;
+  await supabase
+    .from('lessons')
+    .insert({
+      id:         `lesson_${Date.now()}`,
+      pair:       trade.pair,
+      session:    trade.session,
+      strategy:   trade.strategy,
+      lesson:     `${trade.pair} ${trade.session} ${trade.strategy} lost ${trade.rMultiple}R — review setup conditions`,
+      severity:   Math.abs(trade.rMultiple) > 1 ? 'CRITICAL' : 'WARNING',
+      trade_id:   trade.id,
+      created_at: new Date().toISOString(),
+    });
+  console.log('[SUPABASE] lesson saved:', trade.pair);
+}
+
+async function updatePattern(trade) {
+  if (!supabase) return;
+  const patternId = `${trade.pair}_${trade.session}_${trade.strategy}`;
+  const { data } = await supabase.from('patterns').select('*').eq('id', patternId).single();
+  const existing = data || { id: patternId, pair: trade.pair, session: trade.session, strategy: trade.strategy, attempts: 0, wins: 0, total_r: 0 };
+  const attempts = existing.attempts + 1;
+  const wins     = existing.wins + (trade.pnl > 0 ? 1 : 0);
+  const totalR   = existing.total_r + (trade.rMultiple || 0);
+  await supabase.from('patterns').upsert({
+    id:           patternId,
+    pair:         trade.pair,
+    session:      trade.session,
+    strategy:     trade.strategy,
+    attempts,
+    wins,
+    total_r:      totalR,
+    avg_r:        totalR / attempts,
+    win_rate:     (wins / attempts) * 100,
+    last_updated: new Date().toISOString(),
+  });
+}
+
+async function saveTradeToSupabase(trade) {
+  if (!supabase) return;
+  try {
+    const { error } = await supabase.from('trades').upsert({
+      id:            trade.id,
+      pair:          trade.pair,
+      direction:     trade.direction,
+      session:       trade.session,
+      strategy:      trade.strategy,
+      entry:         trade.entry,
+      exit_price:    trade.exitPrice,
+      stop_loss:     trade.stopLoss,
+      take_profit:   trade.takeProfit,
+      pnl:           trade.pnl,
+      r_multiple:    trade.rMultiple,
+      score:         trade.score,
+      consensus:     trade.consensus,
+      units:         trade.units,
+      duration_mins: trade.durationMins,
+      outcome:       trade.pnl > 0 ? 'WIN' : trade.pnl < 0 ? 'LOSS' : 'BREAKEVEN',
+      market_regime: trade.regime,
+      ema50_above:   trade.ema50Above,
+      rsi_at_entry:  trade.rsiAtEntry,
+      open_time:     trade.openTime,
+      close_time:    new Date().toISOString(),
+      created_at:    new Date().toISOString(),
+    });
+    if (error) {
+      console.error('[SUPABASE ERROR]', error.message);
+    } else {
+      console.log('[SUPABASE] trade saved:', trade.pair, trade.pnl);
+    }
+    await updatePattern(trade);
+    if (trade.pnl < 0 && Math.abs(trade.rMultiple) >= 0.10) {
+      await saveLesson(trade);
+    }
+  } catch (err) {
+    console.error('[SUPABASE ERROR]', err.message);
+  }
+}
+
 // ─── OPEN TRADE MANAGER (runs every 10s) ─────────────────────────────────────
 async function manageOpenTrades() {
   if (process.env.AUTO_MODE_ENABLED !== 'true') return;
@@ -1754,6 +1842,39 @@ async function manageOpenTrades() {
               ),
             ],
             timestamp: new Date().toISOString(),
+          });
+
+          // Persist closed trade to Supabase for Xavier's memory
+          const _entry      = parseFloat(trade.price || 0);
+          const _sl         = trade.stopLossOrder?.price ? parseFloat(trade.stopLossOrder.price) : null;
+          const _tp         = trade.takeProfitOrder?.price ? parseFloat(trade.takeProfitOrder.price) : null;
+          const _exitPrice  = parseFloat(trade.averageClosePrice || 0);
+          const _units      = parseFloat(trade.initialUnits || 0);
+          const _riskPerUnit = _sl ? Math.abs(_entry - _sl) : 0;
+          const _riskTotal   = _riskPerUnit * Math.abs(_units);
+          const _rMult       = _riskTotal > 0 ? pnl / _riskTotal : null;
+          const _durMins     = trade.openTime ? Math.round((Date.now() - new Date(trade.openTime).getTime()) / 60000) : null;
+          const _closeSess   = getServerSession();
+          await saveTradeToSupabase({
+            id:           trade.id,
+            pair:         instr,
+            direction:    dir,
+            session:      _closeSess,
+            strategy:     (XAVIER_RULES[_closeSess] || {}).strategy || null,
+            entry:        _entry,
+            exitPrice:    _exitPrice,
+            stopLoss:     _sl,
+            takeProfit:   _tp,
+            pnl,
+            rMultiple:    _rMult,
+            score:        null,
+            consensus:    null,
+            units:        _units,
+            durationMins: _durMins,
+            regime:       null,
+            ema50Above:   null,
+            rsiAtEntry:   null,
+            openTime:     trade.openTime,
           });
         }
       } catch (e) {
