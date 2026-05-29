@@ -3645,6 +3645,64 @@ app.get('/supabase/lessons', async (_req, res) => {
   }
 });
 
+async function getSessionAnalysis() {
+  if (!supabase) return null;
+  const { data: trades } = await supabase.from('trades').select('*').order('created_at', { ascending: false });
+  if (!trades || trades.length === 0) return { message: 'No trades yet' };
+
+  const analyze = (group) => ({
+    trades:    group.length,
+    wins:      group.filter(t => t.pnl > 0).length,
+    losses:    group.filter(t => t.pnl < 0).length,
+    winRate:   ((group.filter(t => t.pnl > 0).length / group.length) * 100).toFixed(1) + '%',
+    avgR:      (group.reduce((s, t) => s + (t.r_multiple || 0), 0) / group.length).toFixed(3),
+    totalPnl:  '$' + group.reduce((s, t) => s + (t.pnl || 0), 0).toFixed(2),
+    verdict:   group.reduce((s, t) => s + (t.r_multiple || 0), 0) > 0 ? '✅ PROFITABLE' : '❌ LOSING',
+  });
+
+  const groupBy = (key) => {
+    const map = {};
+    trades.forEach(t => { if (!map[t[key]]) map[t[key]] = []; map[t[key]].push(t); });
+    return map;
+  };
+
+  const sessions      = groupBy('session');
+  const pairs         = groupBy('pair');
+  const pairDirection = {};
+  trades.forEach(t => {
+    const key = `${t.pair}_${t.direction}`;
+    if (!pairDirection[key]) pairDirection[key] = [];
+    pairDirection[key].push(t);
+  });
+
+  return {
+    overall: analyze(trades),
+    bySessions: Object.entries(sessions)
+      .map(([session, data]) => ({ session, ...analyze(data) }))
+      .sort((a, b) => parseFloat(b.avgR) - parseFloat(a.avgR)),
+    byPairs: Object.entries(pairs)
+      .map(([pair, data]) => ({ pair, ...analyze(data) }))
+      .sort((a, b) => parseFloat(b.avgR) - parseFloat(a.avgR)),
+    byDirection: {
+      LONG:  analyze(trades.filter(t => t.direction === 'LONG')),
+      SHORT: analyze(trades.filter(t => t.direction === 'SHORT')),
+    },
+    byPairDirection: Object.entries(pairDirection)
+      .map(([key, data]) => ({ setup: key, ...analyze(data) }))
+      .sort((a, b) => parseFloat(b.avgR) - parseFloat(a.avgR)),
+  };
+}
+
+app.get('/supabase/session-analysis', async (_req, res) => {
+  try {
+    if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
+    const analysis = await getSessionAnalysis();
+    res.json(analysis);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/supabase/performance', async (_req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
   try {
