@@ -1708,6 +1708,19 @@ async function updatePattern(trade) {
   });
 }
 
+async function getPatternInsight(pair, session, strategy) {
+  if (!supabase) return null;
+  const patternId = `${pair}_${session}_${strategy}`;
+  const { data } = await supabase.from('patterns').select('*').eq('id', patternId).single();
+  if (!data || data.attempts < 5) return null;
+  return {
+    attempts:  data.attempts,
+    winRate:   data.win_rate,
+    avgR:      data.avg_r,
+    note:      data.xavier_note,
+  };
+}
+
 async function saveTradeToSupabase(trade) {
   if (!supabase) return;
   try {
@@ -2582,6 +2595,24 @@ async function serverAutoTrade() {
       console.log(`[LONG FILTER] ${instrument} LONG cleared — ${condsMet}/3 (EMA50up:${c1_ema50Up} LTbias:${c2_weeklyBull} XavierBull:${c3_xavierBull})`);
     }
 
+    // ── Supabase pattern insight — block negative historical edge ──────────────
+    let patternInsight = null;
+    try {
+      const insight = await getPatternInsight(instrument, session, strategy);
+      if (insight) {
+        console.log(`[SUPABASE INSIGHT] ${instrument} historical: ${insight.attempts} trades win rate: ${insight.winRate.toFixed(1)}% avg R: ${insight.avgR.toFixed(3)}`);
+        if (insight.attempts >= 10 && insight.avgR < -0.1) {
+          console.log(`[SUPABASE BLOCK] ${instrument} — negative historical edge, skipping`);
+          serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Historical Edge', actual: `avg R: ${insight.avgR.toFixed(3)} over ${insight.attempts} trades`, threshold: 'avg R >= -0.1 required' }] });
+          if (serverRejections.length > 50) serverRejections.pop();
+          continue;
+        }
+        patternInsight = insight;
+      }
+    } catch (e) {
+      console.error('[SUPABASE INSIGHT] fetch failed:', e.message);
+    }
+
     lastConsensus.set(instrument, Date.now());
 
     const bars      = liveHistory.slice(-21);
@@ -2672,6 +2703,7 @@ async function serverAutoTrade() {
         xavierBestPair:     intelFresh ? lastXavierIntel.bestPair   : null,
         freshNews:          intelFresh ? lastXavierIntel.freshNews  : null,
         xavierIntelAgeMin:  intelAgeMins,
+        historicalInsight:  patternInsight,
       });
     } catch (e) {
       console.error(`[auto] Consensus error ${instrument}: ${e.message}`);
@@ -3514,6 +3546,103 @@ async function pollDiscordCommands() {
     console.error('[DISCORD POLL]', e.message);
   }
 }
+
+// ─── SUPABASE API ENDPOINTS ──────────────────────────────────────────────────
+app.get('/supabase/status', async (_req, res) => {
+  if (!supabase) return res.json({ connected: false, tables: null });
+  try {
+    const [t1, t2, t3] = await Promise.all([
+      supabase.from('trades').select('*', { count: 'exact', head: true }),
+      supabase.from('patterns').select('*', { count: 'exact', head: true }),
+      supabase.from('lessons').select('*', { count: 'exact', head: true }),
+    ]);
+    res.json({
+      connected: true,
+      tables: {
+        trades:   t1.count ?? 0,
+        patterns: t2.count ?? 0,
+        lessons:  t3.count ?? 0,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ connected: false, error: e.message });
+  }
+});
+
+app.get('/supabase/patterns', async (_req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const { data, error } = await supabase.from('patterns').select('*').order('avg_r', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ count: (data || []).length, patterns: data || [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/supabase/lessons', async (_req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const { data, error } = await supabase.from('lessons').select('*').order('created_at', { ascending: false }).limit(20);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ count: (data || []).length, lessons: data || [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/supabase/performance', async (_req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const { data, error } = await supabase.from('trades').select('*');
+    if (error) return res.status(500).json({ error: error.message });
+    const trades = data || [];
+    if (trades.length === 0) return res.json({ totalTrades: 0, wins: 0, losses: 0, winRate: 0, avgR: 0, totalPnl: 0, bestPair: null, worstPair: null, bestSession: null });
+
+    const wins   = trades.filter(t => t.outcome === 'WIN').length;
+    const losses = trades.filter(t => t.outcome === 'LOSS').length;
+    const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+    const validR   = trades.filter(t => t.r_multiple !== null && t.r_multiple !== undefined);
+    const avgR     = validR.length > 0 ? validR.reduce((s, t) => s + t.r_multiple, 0) / validR.length : 0;
+
+    // Best / worst pair by avg R
+    const pairMap = {};
+    for (const t of trades) {
+      if (!t.pair || t.r_multiple == null) continue;
+      if (!pairMap[t.pair]) pairMap[t.pair] = { total: 0, count: 0 };
+      pairMap[t.pair].total += t.r_multiple;
+      pairMap[t.pair].count++;
+    }
+    const pairAvgs = Object.entries(pairMap).map(([pair, d]) => ({ pair, avg: d.total / d.count }));
+    const bestPair  = pairAvgs.sort((a, b) => b.avg - a.avg)[0]?.pair || null;
+    const worstPair = pairAvgs.sort((a, b) => a.avg - b.avg)[0]?.pair || null;
+
+    // Best session by win rate
+    const sessMap = {};
+    for (const t of trades) {
+      if (!t.session) continue;
+      if (!sessMap[t.session]) sessMap[t.session] = { wins: 0, total: 0 };
+      sessMap[t.session].total++;
+      if (t.outcome === 'WIN') sessMap[t.session].wins++;
+    }
+    const sessRates  = Object.entries(sessMap).map(([s, d]) => ({ session: s, rate: d.wins / d.total }));
+    const bestSession = sessRates.sort((a, b) => b.rate - a.rate)[0]?.session || null;
+
+    res.json({
+      totalTrades: trades.length,
+      wins,
+      losses,
+      winRate:     parseFloat(((wins / trades.length) * 100).toFixed(1)),
+      avgR:        parseFloat(avgR.toFixed(3)),
+      totalPnl:    parseFloat(totalPnl.toFixed(2)),
+      bestPair,
+      worstPair,
+      bestSession,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ─── START ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
