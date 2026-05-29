@@ -122,6 +122,10 @@ const STRATEGY_SESSION_MATRIX = {
   AVOID:  { primary: null,          fallback: null            },
 };
 
+function deriveStrategyFromSession(session) {
+  return STRATEGY_SESSION_MATRIX[session]?.primary || 'Mean Revert';
+}
+
 const TABLE_COLS = "110px 110px 180px 100px 110px 100px";
 const TABLE_GAP  = 0;
 const TABLE_PAD  = "10px 16px";
@@ -6250,7 +6254,9 @@ function BacktestTab({ closedTrades = [], trades = [], isMobile }) {
   // Strategy stats from closed trades
   const stratStats = {};
   data.forEach(t => {
-    const key = t.strategy || "Unknown";
+    const key = (t.strategy && t.strategy !== 'Unknown' && t.strategy !== 'UNKNOWN' && t.strategy !== '—')
+      ? t.strategy
+      : deriveStrategyFromSession(t.session) || 'Mean Revert';
     if (!stratStats[key]) stratStats[key] = { wins: 0, total: 0, pnl: 0 };
     stratStats[key].total++;
     stratStats[key].pnl += getPL(t);
@@ -7025,7 +7031,9 @@ function PerformanceDashboard({ trades, closedTrades = [], balance, isMobile }) 
 
   const stratStats = {};
   analyticsData.forEach(t => {
-    const key = t.strategy || "Unknown";
+    const key = (t.strategy && t.strategy !== 'Unknown' && t.strategy !== 'UNKNOWN' && t.strategy !== '—')
+      ? t.strategy
+      : deriveStrategyFromSession(t.session) || 'Mean Revert';
     if (!stratStats[key]) stratStats[key] = { wins: 0, total: 0, pnl: 0 };
     stratStats[key].total++;
     stratStats[key].pnl += getPL(t);
@@ -7889,7 +7897,9 @@ function useTradeReinforcement(closedTrades) {
     const strategyPenalties = {};
     const byStrategy = {};
     recent.forEach(t => {
-      const s = t.strategy || "Unknown";
+      const s = (t.strategy && t.strategy !== 'Unknown' && t.strategy !== 'UNKNOWN' && t.strategy !== '—')
+        ? t.strategy
+        : deriveStrategyFromSession(t.session) || 'Mean Revert';
       if (!byStrategy[s]) byStrategy[s] = [];
       byStrategy[s].push(t);
     });
@@ -7975,6 +7985,28 @@ export default function TradingRobot() {
   const seenClosedIdsRef = useRef(new Set(
     (() => { try { return JSON.parse(localStorage.getItem("qb_closed_trades") || "[]").map(t => t.oandaId); } catch { return []; } })()
   ));
+
+  // One-time heal: replace Unknown/blank strategy on stored closed trades
+  useEffect(() => {
+    try {
+      const stratMap = JSON.parse(localStorage.getItem('qb_trade_strategies') || '{}');
+      const stored   = JSON.parse(localStorage.getItem('qb_closed_trades') || '[]');
+      const UNKNOWN  = new Set(['Unknown', 'UNKNOWN', '—', '', null, undefined]);
+      let changed = false;
+      const healed = stored.map(t => {
+        if (!UNKNOWN.has(t.strategy)) return t;
+        const fixed = stratMap[String(t.oandaId || t.id)]
+          || deriveStrategyFromSession(deriveSession(t.openTime))
+          || 'Mean Revert';
+        changed = true;
+        return { ...t, strategy: fixed };
+      });
+      if (changed) {
+        localStorage.setItem('qb_closed_trades', JSON.stringify(healed));
+        setClosedTrades(healed);
+      }
+    } catch {}
+  }, []); // eslint-disable-line
 
   // One-time seed: XAG/USD LONDON loss (2026-05-27) — occurred before xavier_memory existed
   useEffect(() => {
@@ -8149,14 +8181,16 @@ export default function TradingRobot() {
         const data = await r.json();
         if (!Array.isArray(data.trades)) return;
 
-        // Build strategy lookup from server trade log (keyed by OANDA trade ID)
-        // Server-side auto-trades log the real strategy; use it over the UI's active_strategy
+        // Build strategy lookup — merge persisted map + live server trade log
+        // Persisted map survives Railway restarts; server log fills in the latest entries
         let serverStrategyMap = {};
+        try { serverStrategyMap = JSON.parse(localStorage.getItem('qb_trade_strategies') || '{}'); } catch {}
         try {
           const tlr = await fetch(`${BRIDGE}/trade-log`);
           const tld = await tlr.json();
           if (Array.isArray(tld.trades)) {
             tld.trades.forEach(tl => { if (tl.id) serverStrategyMap[String(tl.id)] = tl.strategy; });
+            localStorage.setItem('qb_trade_strategies', JSON.stringify(serverStrategyMap));
           }
         } catch {}
 
@@ -8216,7 +8250,7 @@ export default function TradingRobot() {
             rMultiple,
             duration,
             session:    deriveSession(t.openTime),
-            strategy:   serverStrategyMap[String(t.id)] || localStorage.getItem('active_strategy') || 'Mean Revert',
+            strategy:   serverStrategyMap[String(t.id)] || localStorage.getItem('active_strategy') || deriveStrategyFromSession(deriveSession(t.openTime)),
             openTime:   t.openTime,
             closeTime:  t.closeTime,
             timestamp:  new Date(t.closeTime || Date.now()).getTime(),
