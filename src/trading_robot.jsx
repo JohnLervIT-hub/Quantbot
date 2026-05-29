@@ -7749,10 +7749,10 @@ function useAutonomousBacktest() {
 function useXavierStrategy(session) {
   const XAVIER_RULES = {
     TOKYO:  "Mean Revert",
-    SYDNEY: "Breakout",
-    LONDON: "Trend Follow",
-    PRIME:  "Trend Follow",
-    NY:     "Momentum",
+    SYDNEY: "Mean Revert",
+    LONDON: "Momentum",
+    PRIME:  "Breakout",
+    NY:     "Mean Revert",
     AVOID:  null,
   };
   return XAVIER_RULES[session] || "Mean Revert";
