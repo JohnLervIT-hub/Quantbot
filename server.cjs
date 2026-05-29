@@ -983,7 +983,7 @@ async function askGPT(prompt, sys) {
   if (!r.ok) throw new Error(apiErr(d, `OpenAI HTTP ${r.status}`));
   const text = d.choices?.[0]?.message?.content;
   if (!text) throw new Error('GPT empty response');
-  return { name: 'GPT-4o', ...parseVerdict(text) };
+  return { name: 'GPT-5.5', ...parseVerdict(text) };
 }
 
 async function askDeepSeek(prompt, sys) {
@@ -1020,7 +1020,7 @@ async function askGemini(prompt, sys) {
   return { name: 'Gemini 2.5 Flash', ...parseVerdict(text) };
 }
 
-const MODEL_TAG = { 'Claude Sonnet': 'CLAUDE', 'GPT-4o': 'GPT4', 'DeepSeek': 'DEEPSEEK', 'Gemini 2.5 Flash': 'GEMINI' };
+const MODEL_TAG = { 'Claude Sonnet': 'CLAUDE', 'GPT-5.5': 'GPT4', 'DeepSeek': 'DEEPSEEK', 'Gemini 2.5 Flash': 'GEMINI' };
 
 async function runConsensus(rawParams) {
   // Normalize field names — accept both server-style (sl/tp/rr/instrument) and
@@ -1038,7 +1038,7 @@ async function runConsensus(rawParams) {
     askDeepSeek(buildDeepSeekPrompt(params),SYS_DEEP),
     askGemini(buildGeminiPrompt(params),    SYS_GEM),
   ]);
-  const NAMES = ['Claude Sonnet', 'GPT-4o', 'DeepSeek', 'Gemini 2.5 Flash'];
+  const NAMES = ['Claude Sonnet', 'GPT-5.5', 'DeepSeek', 'Gemini 2.5 Flash'];
   const models = settled.map((r, i) => {
     if (r.status === 'fulfilled') return r.value;
     const raw = r.reason?.message || 'Model unreachable';
@@ -1299,7 +1299,7 @@ app.post('/swing-consensus', async (req, res) => {
       askDeepSeek(buildDeepSeekSwingPrompt(p),SYS_DEEP_SWING),
       askGemini(buildGeminiSwingPrompt(p),    SYS_GEM_SWING),
     ]);
-    const NAMES = ['Claude Sonnet', 'GPT-4o', 'DeepSeek', 'Gemini 2.5 Flash'];
+    const NAMES = ['Claude Sonnet', 'GPT-5.5', 'DeepSeek', 'Gemini 2.5 Flash'];
     const models = settled.map((r, i) => {
       if (r.status === 'fulfilled') return r.value;
       const raw = r.reason?.message || 'Model unreachable';
@@ -2751,7 +2751,7 @@ async function runSwingConsensus(p) {
     askDeepSeek(buildDeepSeekSwingPrompt(p), SYS_DEEP_SWING),
     askGemini(buildGeminiSwingPrompt(p),     SYS_GEM_SWING),
   ]);
-  const NAMES = ['Claude Sonnet', 'GPT-4o', 'DeepSeek', 'Gemini 2.5 Flash'];
+  const NAMES = ['Claude Sonnet', 'GPT-5.5', 'DeepSeek', 'Gemini 2.5 Flash'];
   const models = settled.map((r, i) => {
     if (r.status === 'fulfilled') return r.value;
     const raw = r.reason?.message || 'Model unreachable';

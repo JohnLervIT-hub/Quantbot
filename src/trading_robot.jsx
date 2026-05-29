@@ -1282,7 +1282,7 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
           strategy: signal.strategy || "Mean Revert",
           // Risk Guardian (Claude)
           session, sessionQuality, rr: "2.0", heat, newsRisk, atr, atrPips, sl, tp,
-          // Pattern Analyst (GPT-4o)
+          // Pattern Analyst (GPT-5.5)
           ema9, ema21, ema50side, closes, regime: regimeData?.regime || "RANGING", momentum,
           // Quantitative Validator (DeepSeek)
           deviation, slDistance, tpDistance, riskAmount, balance: (balance || 100).toFixed(2),
@@ -1316,7 +1316,7 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
         confidence: "0%",
         models: [
           { name: "Claude Sonnet",    verdict: "REJECT", reason: msg },
-          { name: "GPT-4o",           verdict: "REJECT", reason: msg },
+          { name: "GPT-5.5",           verdict: "REJECT", reason: msg },
           { name: "DeepSeek",         verdict: "REJECT", reason: msg },
           { name: "Gemini 2.5 Flash", verdict: "REJECT", reason: msg },
         ],
@@ -1334,7 +1334,7 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
   const total = consensus?.models?.length ?? 4;
   const accentColor = confirms >= 3 ? "#3fb950" : confirms === 2 ? "#d29922" : "#f85149";
 
-  const MODEL_PLACEHOLDERS = ["Claude Sonnet", "GPT-4o", "DeepSeek", "Gemini 2.5 Flash"];
+  const MODEL_PLACEHOLDERS = ["Claude Sonnet", "GPT-5.5", "DeepSeek", "Gemini 2.5 Flash"];
 
   return (
     <motion.div
@@ -3019,7 +3019,7 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
   const claudeOk       = consensus?.claudeConfirmed ?? (consensus?.models?.[0]?.verdict === "CONFIRM");
   const otherOk        = consensus?.models?.slice(1).filter(m => m.verdict === "CONFIRM") ?? [];
   const accent         = executeAllowed ? "#F97316" : claudeOk ? "#d29922" : "#f85149";
-  const MODEL_PLACEHOLDERS = ["Claude Sonnet", "GPT-4o", "DeepSeek", "Gemini 2.5 Flash"];
+  const MODEL_PLACEHOLDERS = ["Claude Sonnet", "GPT-5.5", "DeepSeek", "Gemini 2.5 Flash"];
 
   return (
     <div style={{ marginTop: 8, padding: 12, borderRadius: 8, background: "#0d1117", border: `1px solid ${accent}40`, borderLeft: `3px solid ${accent}` }}>
@@ -4409,7 +4409,7 @@ const FUNDAMENTALS = [
   { q: "WHAT IS R-MULTIPLE?", plain: "Profit measured in units of your risk", a: "R is your risk amount per trade. If you risk $15 per trade: +1R = made $15, +2R = made $30, +3R = made $45. Xavier targets +0.583R average across all trades. This means you don't need to win every trade — just let winners run and cut losers short." },
   { q: "WHAT IS PORTFOLIO HEAT?", plain: "Total risk across all open trades at once", a: "Heat = combined risk of all open positions. At 1.5% risk per trade, 4 open trades = 6R heat. Xavier stops taking new trades at 6R to protect the account. If all open trades hit their stop loss at the same time, 6R is the maximum possible loss." },
   { q: "WHAT IS A MEAN REVERT SIGNAL?", plain: "Trading the snap-back after an extreme move", a: "When price moves too far from its average in a short period, it tends to snap back — like a rubber band. Xavier measures this deviation statistically and trades the return to normal. This works best in quiet sessions (Tokyo, Sydney) when markets are ranging rather than trending." },
-  { q: "WHAT IS AI CONSENSUS?", plain: "Four AI models voting before every trade", a: "Before any trade, 4 AI models each cast a vote: Claude (risk guardian), GPT-4o (pattern analyst), DeepSeek (quant validator), and Gemini (macro analyst). At least 3 of 4 must vote CONFIRM before Xavier executes. This acts as four independent second opinions and filters out low-quality setups." },
+  { q: "WHAT IS AI CONSENSUS?", plain: "Four AI models voting before every trade", a: "Before any trade, 4 AI models each cast a vote: Claude (risk guardian), GPT-5.5 (pattern analyst), DeepSeek (quant validator), and Gemini (macro analyst). At least 3 of 4 must vote CONFIRM before Xavier executes. This acts as four independent second opinions and filters out low-quality setups." },
 ];
 
 const COACH_TIMELINE = [
