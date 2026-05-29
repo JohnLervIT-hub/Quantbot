@@ -1939,7 +1939,16 @@ async function manageOpenTrades() {
     const trail = TRAIL_SETTINGS[instrument] || TRAIL_SETTINGS.default;
 
     // ── 1R reached: move to breakeven ────────────────────────────────────────
-    if (currentR >= 1.0 && !state.movedToBreakeven) {
+    // Minimum pip distance prevents breakeven firing on tiny 0.2-pip moves
+    // that immediately reverse (small position sizes make 1R = near-zero dollars)
+    const MIN_BREAKEVEN_PIPS = {
+      EUR_USD: 0.0010, GBP_USD: 0.0012, USD_JPY: 0.10,
+      AUD_USD: 0.0010, USD_CAD: 0.0010, NZD_USD: 0.0010,
+      EUR_GBP: 0.0010, XAU_USD: 2.00,
+    };
+    const minPips   = MIN_BREAKEVEN_PIPS[instrument] ?? 0.0010;
+    const pipsMoved = Math.abs(price - entry);
+    if (currentR >= 1.0 && pipsMoved >= minPips && !state.movedToBreakeven) {
       const pip     = SERVER_PIP_SIZE[instrument] || 0.0001;
       const bePrice = dir === 'LONG' ? entry + pip : entry - pip;
       const moved   = await updateTradeSL(tradeId, bePrice, instrument);
