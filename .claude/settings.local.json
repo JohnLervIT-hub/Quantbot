@@ -6,7 +6,8 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(pkill -f \"node server.cjs\")",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(git commit *)"
     ]
   }
 }
