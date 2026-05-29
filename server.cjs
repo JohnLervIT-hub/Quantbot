@@ -112,7 +112,8 @@ app.get('/closed-trades', async (req, res) => {
 app.post('/order', async (req, res) => {
   console.log('[ORDER] body:', JSON.stringify(req.body));
   console.log('[ORDER] BASE:', BASE, '| ACCOUNT:', ACCOUNT ? ACCOUNT.slice(0, 8) + '…' : 'MISSING');
-  const { instrument, units, atr, price } = req.body;
+  const { units, atr, price } = req.body;
+  const instrument = normalizeInstrument(req.body.instrument);
   const direction = Number(units) >= 0 ? 'LONG' : 'SHORT';
   console.log(`POST /order — ${instrument} ${direction} ${Math.abs(Number(units))} units`);
 
@@ -199,7 +200,8 @@ app.post('/order', async (req, res) => {
 
 // ─── SWING ORDER — instrument-calibrated units, explicit SL/TP1 prices ────────
 app.post('/swing/order', async (req, res) => {
-  const { instrument, slPrice, tp1Price, consensusConfirms } = req.body;
+  const { slPrice, tp1Price, consensusConfirms } = req.body;
+  const instrument = normalizeInstrument(req.body.instrument);
   let { units } = req.body;
   if (!instrument || !units) return res.status(400).json({ error: 'instrument and units required' });
 
@@ -1649,11 +1651,19 @@ async function updateTradeSL(tradeId, newSLPrice, instrument) {
 }
 
 // Fresh OANDA check — used as a final duplicate guard before any order is placed
+function normalizeInstrument(inst) {
+  return inst?.replace('/', '_')?.replace('-', '_')?.toUpperCase() || inst;
+}
+
 async function hasOpenPosition(instrument) {
   try {
     const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
     const data = await r.json();
-    return (data.trades || []).some(t => t.instrument === instrument);
+    const norm = normalizeInstrument(instrument);
+    const open = (data.trades || []).map(t => normalizeInstrument(t.instrument));
+    const exists = open.includes(norm);
+    console.log(`[PAIR CHECK] checking:${norm} open:[${open.join(',')}] duplicate:${exists}`);
+    return exists;
   } catch {
     return false; // fail open — OANDA is the final backstop
   }
@@ -2395,7 +2405,7 @@ async function serverAutoTrade() {
     }
 
     // Cross-system pair lock — one position per instrument across M5 + swing
-    if (openTrades.some(t => t.instrument === instrument)) {
+    if (openTrades.some(t => normalizeInstrument(t.instrument) === normalizeInstrument(instrument))) {
       console.log(`[PAIR LOCK] ${instrument} already open in another timeframe — skipping M5`);
       serverRejections.unshift({ ts, instrument, direction: '?', score: 0, session, strategy, rejections: [{ condition: 'Pair Lock', actual: `${instrument} already open`, threshold: 'One position per pair across all systems' }] });
       if (serverRejections.length > 50) serverRejections.pop();
@@ -3032,7 +3042,7 @@ async function serverSwingAutoTrade() {
       if (!sig) continue;
 
       // Cross-system pair lock — block if OANDA already has ANY open trade on this instrument
-      if (openTrades.some(t => t.instrument === instrument)) {
+      if (openTrades.some(t => normalizeInstrument(t.instrument) === normalizeInstrument(instrument))) {
         console.log(`[SWING PAIR LOCK] ${instrument} already open in another timeframe — skipping swing`);
         serverRejections.unshift({ ts: now.toISOString(), instrument, direction: '?', score: 0, session, strategy: 'Kill Shot', rejections: [{ condition: 'Pair Lock', actual: `${instrument} already open`, threshold: 'One position per pair across all systems' }] });
         if (serverRejections.length > 50) serverRejections.pop();
