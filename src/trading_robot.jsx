@@ -1659,6 +1659,33 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
     setBriefLoading(false);
   };
 
+  const getXavierContext = async () => {
+    try {
+      const [tradesRes, accountRes, recoveryRes] = await Promise.all([
+        fetch(`${BRIDGE}/trades`).then(r => r.json()).catch(() => ({ trades: [] })),
+        fetch(`${BRIDGE}/account`).then(r => r.json()).catch(() => ({})),
+        fetch(`${BRIDGE}/recovery-status`).then(r => r.json()).catch(() => ({})),
+      ]);
+      const liveTrades = tradesRes.trades || [];
+      const tradeLines = liveTrades.length > 0
+        ? liveTrades.map(t => `  ${t.instrument} ${parseFloat(t.currentUnits) >= 0 ? "LONG" : "SHORT"} P&L: ${parseFloat(t.unrealizedPL || 0).toFixed(2)}`).join("\n")
+        : "  None";
+      return `LIVE SYSTEM STATE (use this, not any cached data):
+Session: ${session}
+Open trades: ${liveTrades.length}
+${tradeLines}
+Account balance: $${parseFloat(accountRes.balance || accountRes.account?.balance || 0).toFixed(2)}
+Recovery mode: ${recoveryRes.recoveryMode ?? false}
+Peak balance: $${parseFloat(recoveryRes.peakBalance || 0).toFixed(2)}
+Auto mode: ${accountRes.autoMode ?? "unknown"}
+OANDA status: ${tradesRes.error ? "MAINTENANCE" : "ONLINE"}
+
+`;
+    } catch {
+      return "";
+    }
+  };
+
   const askQuestion = async (override) => {
     const text = (override ?? question).trim();
     if (!text || chatLoading) return;
@@ -1679,6 +1706,7 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
         });
       }
     } catch { /* fall back to props prices */ }
+    const liveContext = await getXavierContext();
     const snap = Object.entries(freshPrices || prices).map(([p, v]) => `${p}: ${v}`).join(", ");
     const freshNews = Date.now() - newsLastFetchedAt < 30 * 60 * 1000 ? headlines : [];
     const newsCtx = freshNews.length > 0
@@ -1687,7 +1715,7 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
     try {
       const result = await callClaude(
         `Market context: ${snap}\n${newsCtx}\n\nTrader question: ${text}`,
-        buildSystemPrompt(freshPrices),
+        liveContext + buildSystemPrompt(freshPrices),
         400
       );
       setChatHistory(h => [...h, { role: "ai", text: result, ts: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
