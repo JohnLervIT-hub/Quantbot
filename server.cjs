@@ -4132,43 +4132,45 @@ const OPTIONS_MAP = {
 };
 
 async function scanOptionsChain(instrument) {
-  if (!process.env.POLYGON_API_KEY) return null;
+  if (!process.env.MARKETDATA_API_KEY) return null;
   const ticker = OPTIONS_MAP[instrument];
   if (!ticker) return null;
 
   try {
     const response = await fetch(
-      `https://api.polygon.io/v3/snapshot/options/${ticker}?apiKey=${process.env.POLYGON_API_KEY}&limit=250&sort=expiration_date`,
+      `https://api.marketdata.app/v1/options/chain/${ticker}/?token=${process.env.MARKETDATA_API_KEY}`,
+      { headers: { 'Accept': 'application/json' } },
     );
     const data = await response.json();
-    const options = data.results || [];
+
+    // Marketdata.app returns columnar arrays — zip into row objects
+    const options = data.optionSymbol
+      ? data.optionSymbol.map((_, i) => ({
+          type:               data.side?.[i],
+          strike:             data.strike?.[i],
+          volume:             data.volume?.[i]       ?? 0,
+          openInterest:       data.openInterest?.[i] ?? 0,
+          implied_volatility: data.iv?.[i]           ?? 0,
+        }))
+      : [];
 
     if (options.length === 0) {
-      console.log('[OPTIONS]', ticker, '— no data available');
+      console.log('[OPTIONS]', ticker, '— no data from Marketdata.app');
       return null;
     }
 
-    // Normalise Polygon field structure
-    const norm = options.map(r => ({
-      type:             r.details?.contract_type,
-      strike:           r.details?.strike_price,
-      volume:           r.day?.volume        ?? 0,
-      open_interest:    r.open_interest      ?? 0,
-      implied_volatility: r.implied_volatility ?? 0,
-    }));
-
-    const calls = norm.filter(o => o.type === 'call');
-    const puts  = norm.filter(o => o.type === 'put');
+    const calls = options.filter(o => o.type === 'call');
+    const puts  = options.filter(o => o.type === 'put');
 
     const callVolume   = calls.reduce((s, o) => s + (o.volume || 0), 0);
     const putVolume    = puts.reduce( (s, o) => s + (o.volume || 0), 0);
     const putCallRatio = callVolume > 0 ? putVolume / callVolume : 1;
 
-    const avgIV = norm.reduce((s, o) => s + (o.implied_volatility || 0), 0) / norm.length;
+    const avgIV = options.reduce((s, o) => s + (o.implied_volatility || 0), 0) / options.length;
 
-    const unusualOptions = norm
-      .filter(o => o.volume > (o.open_interest || 0) * 0.5)
-      .sort((a, b) => b.volume - a.volume)
+    const unusualOptions = options
+      .filter(o => (o.volume || 0) > (o.openInterest || 0) * 0.5)
+      .sort((a, b) => (b.volume || 0) - (a.volume || 0))
       .slice(0, 3);
 
     const institutionalBias =
@@ -4180,14 +4182,14 @@ async function scanOptionsChain(instrument) {
 
     return {
       ticker,
-      putCallRatio:      putCallRatio.toFixed(2),
-      avgIV:             (avgIV * 100).toFixed(1) + '%',
+      putCallRatio:    putCallRatio.toFixed(2),
+      avgIV:           (avgIV * 100).toFixed(1) + '%',
       institutionalBias,
-      unusualActivity:   unusualOptions.map(o => ({
+      unusualActivity: unusualOptions.map(o => ({
         type:         o.type,
         strike:       o.strike,
         volume:       o.volume,
-        openInterest: o.open_interest,
+        openInterest: o.openInterest,
         iv:           o.implied_volatility,
       })),
       signal: institutionalBias === 'BEARISH' ? 'SHORT'
