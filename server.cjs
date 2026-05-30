@@ -464,7 +464,11 @@ app.post('/auth/login', (req, res) => {
   }
 
   if (email === validEmail && password === validPassword) {
-    const token = jwt.sign({ email, role: 'admin' }, secret, { expiresIn: '7d' });
+    const token = jwt.sign(
+      { email, role: 'admin', device: Date.now() },
+      secret,
+      { expiresIn: '30d' },
+    );
     console.log('[AUTH] Login success:', email);
     return res.json({ token });
   }
