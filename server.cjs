@@ -730,6 +730,14 @@ function buildClaudePrompt(p) {
   const freshnessBlock = (p.newsAgeMin !== undefined || p.xavierIntelAgeMin !== undefined)
     ? `\nData freshness: News ${p.newsAgeMin ?? '?'} min old | Xavier intel ${p.xavierIntelAgeMin ?? '?'} min old`
     : '';
+  const optionsBlock = p.optionsData
+    ? `\nOPTIONS MARKET INTELLIGENCE:
+Put/Call Ratio: ${p.optionsData.putCallRatio} (>1.5 bearish, <0.7 bullish)
+Institutional Bias: ${p.optionsData.institutionalBias}
+Average IV: ${p.optionsData.avgIV}
+Confirms direction: ${p.optionsData.confirmsTrade}
+Factor institutional positioning into your CONFIRM/REJECT decision.`
+    : '';
   return `You are the Risk Guardian. Protect capital. Most likely to reject.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
@@ -739,7 +747,7 @@ Portfolio Heat: ${p.heat || '0'}R / 6R max
 News risk: ${p.newsRisk || 'LOW'}
 ATR: ${p.atr || '?'} (${p.atrPips || '?'} pips)
 Stop Loss: ${p.sl || '?'} | Take Profit: ${p.tp || '?'}
-Signal reason: ${p.reason}${xavierBlock}${freshnessBlock}
+Signal reason: ${p.reason}${xavierBlock}${freshnessBlock}${optionsBlock}
 
 WEIGHTING RULE — M5 TRADES (apply this before any other check):
 Trend alignment carries 70% of your decision weight.
@@ -777,6 +785,14 @@ function buildGPTPrompt(p) {
   const ema50side = p.ema50side || (p.ema50 && p.price
     ? (p.direction === 'LONG' ? (parseFloat(p.price) > parseFloat(p.ema50) ? 'ABOVE' : 'BELOW') : (parseFloat(p.price) < parseFloat(p.ema50) ? 'BELOW' : 'ABOVE'))
     : '?');
+  const gptOptionsBlock = p.optionsData
+    ? `\nOPTIONS MARKET INTELLIGENCE:
+Put/Call Ratio: ${p.optionsData.putCallRatio} (>1.5 bearish, <0.7 bullish)
+Institutional Bias: ${p.optionsData.institutionalBias}
+Average IV: ${p.optionsData.avgIV}
+Confirms direction: ${p.optionsData.confirmsTrade}
+Factor institutional positioning into your CONFIRM/REJECT decision.`
+    : '';
   return `You are the Pattern Analyst. Validate price action and trend structure only.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
@@ -785,7 +801,7 @@ EMA9: ${p.ema9 || '?'} | EMA21: ${p.ema21 || '?'} | EMA50: ${p.ema50 || '?'} | P
 Last 5 closes: ${p.closes || p.price}
 Trend regime: ${p.regime || 'UNKNOWN'}
 Momentum: ${p.momentum || '0'}%
-RSI: ${p.rsi}
+RSI: ${p.rsi}${gptOptionsBlock}
 
 WEIGHTING RULE — M5 TRADES:
 Trend alignment carries 70% of your decision weight.
@@ -2954,6 +2970,43 @@ async function serverAutoTrade() {
     const intelAgeMins = lastXavierIntel.ts ? Math.round((Date.now() - lastXavierIntel.ts) / 60_000) : null;
     const intelFresh   = intelAgeMins !== null && intelAgeMins < 30;
 
+    // ── Options chain scan — institutional positioning check ──────────────────
+    const optionsData = await scanOptionsChain(instrument);
+    if (optionsData) {
+      console.log(`[OPTIONS] ${instrument} PCR: ${optionsData.putCallRatio} IV: ${optionsData.avgIV} Bias: ${optionsData.institutionalBias}`);
+
+      // Hard block: extreme PCR contradicts signal direction
+      if (parseFloat(optionsData.putCallRatio) > 3.0 && signal.direction === 'LONG') {
+        console.log(`[OPTIONS BLOCK] ${instrument} — PCR ${optionsData.putCallRatio} strongly bearish — blocking LONG`);
+        serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Options PCR Block', actual: `PCR ${optionsData.putCallRatio} > 3.0`, threshold: 'Strongly bearish positioning — LONG blocked' }] });
+        if (serverRejections.length > 50) serverRejections.pop();
+        continue;
+      }
+      if (parseFloat(optionsData.putCallRatio) < 0.5 && signal.direction === 'SHORT') {
+        console.log(`[OPTIONS BLOCK] ${instrument} — PCR ${optionsData.putCallRatio} strongly bullish — blocking SHORT`);
+        serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Options PCR Block', actual: `PCR ${optionsData.putCallRatio} < 0.5`, threshold: 'Strongly bullish positioning — SHORT blocked' }] });
+        if (serverRejections.length > 50) serverRejections.pop();
+        continue;
+      }
+
+      // Discord alert when options bias conflicts with direction (non-blocking moderate conflict)
+      const confirmsTrade = optionsData.signal === signal.direction;
+      if (!confirmsTrade && optionsData.institutionalBias !== 'NEUTRAL') {
+        await sendDiscordEmbed({
+          title: '⚠️ Options Conflict Detected',
+          color: 0xffaa00,
+          fields: [
+            { name: 'Pair',          value: instrument.replace('_', '/'),    inline: true },
+            { name: 'Signal',        value: signal.direction,                inline: true },
+            { name: 'Options Bias',  value: optionsData.institutionalBias,   inline: true },
+            { name: 'Put/Call Ratio',value: optionsData.putCallRatio,        inline: true },
+            { name: 'Action',        value: 'Consensus reviewing…',          inline: false },
+          ],
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
     console.log(`[auto] ${instrument} — calling consensus`);
     let consensus;
     try {
@@ -2989,6 +3042,12 @@ async function serverAutoTrade() {
         freshNews:          intelFresh ? lastXavierIntel.freshNews  : null,
         xavierIntelAgeMin:  intelAgeMins,
         historicalInsight:  patternInsight,
+        optionsData:        optionsData ? {
+          putCallRatio:      optionsData.putCallRatio,
+          institutionalBias: optionsData.institutionalBias,
+          avgIV:             optionsData.avgIV,
+          confirmsTrade:     optionsData.signal === signal.direction,
+        } : null,
       });
     } catch (e) {
       console.error(`[auto] Consensus error ${instrument}: ${e.message}`);
@@ -3340,6 +3399,40 @@ async function serverSwingAutoTrade() {
       if (await hasOpenPosition(instrument)) {
         console.log(`[DUPLICATE GUARD] ${instrument} — already open on OANDA, skipping swing`);
         continue;
+      }
+
+      // Options chain scan — institutional positioning check
+      const swingOptionsData = await scanOptionsChain(instrument);
+      if (swingOptionsData) {
+        console.log(`[OPTIONS] ${instrument} swing PCR: ${swingOptionsData.putCallRatio} Bias: ${swingOptionsData.institutionalBias}`);
+        if (parseFloat(swingOptionsData.putCallRatio) > 3.0 && sig.direction === 'LONG') {
+          console.log(`[OPTIONS BLOCK] ${instrument} swing — PCR ${swingOptionsData.putCallRatio} strongly bearish — blocking LONG`);
+          continue;
+        }
+        if (parseFloat(swingOptionsData.putCallRatio) < 0.5 && sig.direction === 'SHORT') {
+          console.log(`[OPTIONS BLOCK] ${instrument} swing — PCR ${swingOptionsData.putCallRatio} strongly bullish — blocking SHORT`);
+          continue;
+        }
+        if (swingOptionsData.signal !== sig.direction && swingOptionsData.institutionalBias !== 'NEUTRAL') {
+          await sendDiscordEmbed({
+            title: '⚠️ Options Conflict Detected (Swing)',
+            color: 0xffaa00,
+            fields: [
+              { name: 'Pair',          value: instrument.replace('_', '/'),        inline: true },
+              { name: 'Signal',        value: sig.direction,                        inline: true },
+              { name: 'Options Bias',  value: swingOptionsData.institutionalBias,   inline: true },
+              { name: 'Put/Call Ratio',value: swingOptionsData.putCallRatio,        inline: true },
+              { name: 'Action',        value: 'Consensus reviewing…',               inline: false },
+            ],
+            timestamp: new Date().toISOString(),
+          });
+        }
+        consensusParams.optionsData = {
+          putCallRatio:      swingOptionsData.putCallRatio,
+          institutionalBias: swingOptionsData.institutionalBias,
+          avgIV:             swingOptionsData.avgIV,
+          confirmsTrade:     swingOptionsData.signal === sig.direction,
+        };
       }
 
       const consensus = await runSwingConsensus(consensusParams);
@@ -4039,57 +4132,40 @@ const OPTIONS_MAP = {
 };
 
 async function scanOptionsChain(instrument) {
-  if (!process.env.TRADIER_API_KEY) return null;
+  if (!process.env.ALPHA_VANTAGE_KEY) return null;
   const ticker = OPTIONS_MAP[instrument];
   if (!ticker) return null;
 
   try {
     const response = await fetch(
-      `https://api.tradier.com/v1/markets/options/chains?symbol=${ticker}&expiration=next&greeks=true`,
-      {
-        headers: {
-          'Authorization': `Bearer ${process.env.TRADIER_API_KEY}`,
-          'Accept': 'application/json',
-        },
-      },
+      `https://www.alphavantage.co/query?function=REALTIME_OPTIONS&symbol=${ticker}&apikey=${process.env.ALPHA_VANTAGE_KEY}`,
     );
     const data = await response.json();
-    const options = data.options?.option || [];
-    if (options.length === 0) return null;
 
-    const calls = options.filter(o => o.option_type === 'call');
-    const puts  = options.filter(o => o.option_type === 'put');
+    if (!data.data || data.data.length === 0) {
+      console.log('[OPTIONS]', ticker, '— no data available');
+      return null;
+    }
 
-    const callVolume  = calls.reduce((s, o) => s + (o.volume || 0), 0);
-    const putVolume   = puts.reduce((s, o) => s + (o.volume || 0), 0);
+    const options = data.data;
+    const calls = options.filter(o => o.type === 'call');
+    const puts  = options.filter(o => o.type === 'put');
+
+    const callVolume   = calls.reduce((s, o) => s + parseInt(o.volume  || 0), 0);
+    const putVolume    = puts.reduce( (s, o) => s + parseInt(o.volume  || 0), 0);
     const putCallRatio = callVolume > 0 ? putVolume / callVolume : 1;
 
-    const avgIV = options.reduce((s, o) => s + (o.greeks?.mid_iv || 0), 0) / options.length;
+    const avgIV = options.reduce((s, o) => s + parseFloat(o.implied_volatility || 0), 0) / options.length;
 
     const unusualOptions = options
-      .filter(o => o.volume > (o.open_interest || 0) * 0.5)
-      .sort((a, b) => b.volume - a.volume)
+      .filter(o => parseInt(o.volume) > parseInt(o.open_interest || 0) * 0.5)
+      .sort((a, b) => parseInt(b.volume) - parseInt(a.volume))
       .slice(0, 3);
 
     const institutionalBias =
       putCallRatio > 1.5 ? 'BEARISH' :
       putCallRatio < 0.7 ? 'BULLISH' :
       'NEUTRAL';
-
-    // Max pain calculation
-    const strikes = [...new Set(options.map(o => o.strike))];
-    let maxPainStrike = strikes[0];
-    let minPain = Infinity;
-    strikes.forEach(strike => {
-      const callPain = calls
-        .filter(c => c.strike < strike)
-        .reduce((s, c) => s + (strike - c.strike) * (c.open_interest || 0), 0);
-      const putPain = puts
-        .filter(p => p.strike > strike)
-        .reduce((s, p) => s + (p.strike - strike) * (p.open_interest || 0), 0);
-      const totalPain = callPain + putPain;
-      if (totalPain < minPain) { minPain = totalPain; maxPainStrike = strike; }
-    });
 
     console.log(`[OPTIONS] ${instrument} (${ticker}) — bias: ${institutionalBias}, P/C: ${putCallRatio.toFixed(2)}, IV: ${(avgIV * 100).toFixed(1)}%`);
 
@@ -4098,20 +4174,19 @@ async function scanOptionsChain(instrument) {
       putCallRatio:      putCallRatio.toFixed(2),
       avgIV:             (avgIV * 100).toFixed(1) + '%',
       institutionalBias,
-      maxPain:           maxPainStrike,
       unusualActivity:   unusualOptions.map(o => ({
-        type:         o.option_type,
+        type:         o.type,
         strike:       o.strike,
         volume:       o.volume,
         openInterest: o.open_interest,
-        ratio:        ((o.volume || 0) / (o.open_interest || 1)).toFixed(2),
+        iv:           o.implied_volatility,
       })),
       signal: institutionalBias === 'BEARISH' ? 'SHORT'
             : institutionalBias === 'BULLISH' ? 'LONG'
             : 'NEUTRAL',
     };
   } catch (err) {
-    console.error('[OPTIONS]', err.message);
+    console.error('[OPTIONS ERROR]', err.message);
     return null;
   }
 }
