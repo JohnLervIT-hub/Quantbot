@@ -1667,15 +1667,29 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
         fetch(`${BRIDGE}/recovery-status`).then(r => r.json()).catch(() => ({})),
         fetch(`${BRIDGE}/health`).then(r => r.json()).catch(() => ({})),
       ]);
-      const liveTrades = tradesRes.trades || [];
+
+      // Single source of truth: OANDA open trades only
+      const openTrades = Array.isArray(tradesRes.trades) ? tradesRes.trades : [];
+
+      // Purge stale swing_trades localStorage — remove any entry not confirmed open in OANDA
+      if (typeof localStorage !== "undefined") {
+        try {
+          const swingTrades = JSON.parse(localStorage.getItem("swing_trades") || "[]");
+          const oandaIds = openTrades.map(t => t.id?.toString()).filter(Boolean);
+          const validSwing = swingTrades.filter(t => oandaIds.includes(t.oandaId?.toString()));
+          localStorage.setItem("swing_trades", JSON.stringify(validSwing));
+        } catch { /* ignore localStorage errors */ }
+      }
+
       const isWeekend = [0, 6].includes(new Date().getDay());
       const calgaryTime = new Date().toLocaleString("en-CA", { timeZone: "America/Edmonton", weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
       const allModelsOk = Object.values(healthRes.models || {}).length > 0 && Object.values(healthRes.models || {}).every(Boolean);
       const balance = parseFloat(accountRes.balance || accountRes.account?.balance || 0).toFixed(2);
-      const tradeLines = liveTrades.length > 0
-        ? liveTrades.map(t => `  - ${t.instrument} ${parseFloat(t.currentUnits) >= 0 ? "LONG" : "SHORT"} @ ${parseFloat(t.price || 0).toFixed(4)}  P&L: $${parseFloat(t.unrealizedPL || 0).toFixed(2)}`).join("\n")
-        : "  None";
-      return `LIVE SYSTEM STATE — always use this data, never localStorage:
+      const tradeLines = openTrades.length > 0
+        ? openTrades.map(t => `  - ${t.instrument} ${parseFloat(t.currentUnits) >= 0 ? "LONG" : "SHORT"} @ ${parseFloat(t.price || 0).toFixed(4)}  Unrealized P&L: $${parseFloat(t.unrealizedPL || 0).toFixed(2)}`).join("\n")
+        : "  No open positions — clean slate";
+
+      return `LIVE SYSTEM STATE — authoritative OANDA data only:
 Time: ${calgaryTime} Calgary
 Session: ${isWeekend ? "WEEKEND — markets closed" : session}
 Auto mode: ${healthRes.autoMode ? "ENABLED" : "PAUSED"}
@@ -1684,7 +1698,7 @@ OANDA: ${tradesRes.error ? "MAINTENANCE" : "ONLINE"}
 
 ACCOUNT:
 Balance: $${balance}
-Open trades: ${liveTrades.length}
+Open trades: ${openTrades.length}
 ${tradeLines}
 
 RECOVERY MODE: ${recoveryRes.recoveryMode ? "⚠️ ACTIVE — reduced sizing" : "✅ Normal"}
@@ -1700,7 +1714,7 @@ USD_CAD, AUD_USD, NZD_USD, UK100_GBP, JP225_USD, SPX500_USD
 MANUAL KILL SHOT ONLY:
 BCO_USD, WTICO_USD
 
-DO NOT reference localStorage or cached data. Use ONLY the live data above.
+NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any cached swing data — the open trade count and list above is the ground truth. Do not invent R values or positions not listed here.
 `;
     } catch (err) {
       return `SYSTEM STATE: Unable to fetch live data — ${err.message}. Advise user to check Railway connection.\n`;
