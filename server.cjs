@@ -738,7 +738,7 @@ Average IV: ${p.optionsData.avgIV}
 Confirms direction: ${p.optionsData.confirmsTrade}
 Factor institutional positioning into your CONFIRM/REJECT decision.`
     : '';
-  return `You are the Risk Guardian. Protect capital. Most likely to reject.
+  return `You are WARREN — Risk Guardian. Inspired by Warren Buffett: protect capital above all. Most likely to reject.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
 Session: ${p.session || 'UNKNOWN'} (${p.sessionQuality || 'UNKNOWN'})
@@ -793,7 +793,7 @@ Average IV: ${p.optionsData.avgIV}
 Confirms direction: ${p.optionsData.confirmsTrade}
 Factor institutional positioning into your CONFIRM/REJECT decision.`
     : '';
-  return `You are the Pattern Analyst. Validate price action and trend structure only.
+  return `You are GEORGE — Pattern Analyst. Inspired by George Soros: ride the trend, validate price action only.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
 Signal score: ${p.score}%
@@ -818,7 +818,7 @@ REASON: (one sentence, max 15 words, use specific numbers, trader language — n
 }
 
 function buildDeepSeekPrompt(p) {
-  return `You are the Quantitative Validator. Validate math and statistical edge only.
+  return `You are JAMES — Quant Validator. Inspired by James Simons: validate math and statistical edge only.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
 Strategy: ${p.strategy || 'Mean Revert'}
@@ -866,7 +866,7 @@ function buildGeminiPrompt(p) {
 - ${p.retailSentiment.longPct}% retail LONG, ${p.retailSentiment.shortPct}% retail SHORT
 - Contrarian read: ${p.retailSentiment.contrarian} (institutions fade crowded retail positions)`
     : '';
-  return `You are the Macro & Liquidity Analyst. Validate market context and liquidity only.
+  return `You are RAY — Macro Analyst. Inspired by Ray Dalio: validate macro context and liquidity only.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
 Session: ${p.session || 'UNKNOWN'}
@@ -1029,7 +1029,7 @@ async function askClaude(prompt, sys) {
   if (!r.ok) throw new Error(apiErr(d, `Claude HTTP ${r.status}`));
   const text = d.content?.find(b => b.type === 'text')?.text;
   if (!text) throw new Error('Claude empty response');
-  return { name: 'Claude Sonnet', ...parseVerdict(text) };
+  return { name: 'WARREN', ...parseVerdict(text) };
 }
 
 async function askGPT(prompt, sys) {
@@ -1046,9 +1046,9 @@ async function askGPT(prompt, sys) {
   if (!text) {
     const reason = d.choices?.[0]?.finish_reason || 'unknown';
     console.warn(`[GPT-5.5] Empty response — finish_reason: ${reason} — using REJECT as safe fallback`);
-    return { name: 'GPT-5.5', verdict: 'REJECT', reason: `Model response empty — ${reason}` };
+    return { name: 'GEORGE', verdict: 'REJECT', reason: `Model response empty — ${reason}` };
   }
-  return { name: 'GPT-5.5', ...parseVerdict(text) };
+  return { name: 'GEORGE', ...parseVerdict(text) };
 }
 
 async function askDeepSeek(prompt, sys) {
@@ -1062,7 +1062,7 @@ async function askDeepSeek(prompt, sys) {
   if (!r.ok) throw new Error(apiErr(d, `DeepSeek HTTP ${r.status}`));
   const text = d.choices?.[0]?.message?.content;
   if (!text) throw new Error('DeepSeek empty response');
-  return { name: 'DeepSeek', ...parseVerdict(text) };
+  return { name: 'JAMES', ...parseVerdict(text) };
 }
 
 async function askGemini(prompt, sys) {
@@ -1082,10 +1082,11 @@ async function askGemini(prompt, sys) {
   if (!r.ok) throw new Error(apiErr(d, `Gemini HTTP ${r.status}`));
   const text = d.candidates?.[0]?.content?.parts?.find(p => p.text)?.text;
   if (!text) throw new Error('Gemini empty response');
-  return { name: 'Gemini 2.5 Flash', ...parseVerdict(text) };
+  return { name: 'RAY', ...parseVerdict(text) };
 }
 
-const MODEL_TAG = { 'Claude Sonnet': 'CLAUDE', 'GPT-5.5': 'GPT4', 'DeepSeek': 'DEEPSEEK', 'Gemini 2.5 Flash': 'GEMINI' };
+const MODEL_TAG  = { 'WARREN': 'WARREN', 'GEORGE': 'GEORGE', 'JAMES': 'JAMES', 'RAY': 'RAY' };
+const MODEL_ROLE = { 'WARREN': 'Risk', 'GEORGE': 'Pattern', 'JAMES': 'Quant', 'RAY': 'Macro' };
 
 async function runConsensus(rawParams) {
   // Normalize field names — accept both server-style (sl/tp/rr/instrument) and
@@ -1103,7 +1104,7 @@ async function runConsensus(rawParams) {
     askDeepSeek(buildDeepSeekPrompt(params),SYS_DEEP),
     askGemini(buildGeminiPrompt(params),    SYS_GEM),
   ]);
-  const NAMES = ['Claude Sonnet', 'GPT-5.5', 'DeepSeek', 'Gemini 2.5 Flash'];
+  const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
   const models = settled.map((r, i) => {
     if (r.status === 'fulfilled') return r.value;
     const raw = r.reason?.message || 'Model unreachable';
@@ -1115,11 +1116,11 @@ async function runConsensus(rawParams) {
   });
   const confirms = models.filter(m => m.verdict === 'CONFIRM').length;
   const voteLog = models.map(m => {
-    const tag  = MODEL_TAG[m.name] || m.name.toUpperCase();
-    const icon = m.verdict === 'CONFIRM' ? '✓' : '✗';
-    return `[${tag}] ${m.verdict} — ${m.reason} ${icon}`;
+    const role = MODEL_ROLE[m.name] || '?';
+    const icon = m.verdict === 'CONFIRM' ? '✅' : '❌';
+    return `${m.name} (${role}): ${icon} ${m.verdict}\n"${m.reason}"`;
   });
-  voteLog.push(`Result: ${confirms}/4 CONFIRM → ${confirms >= 3 ? 'EXECUTE' : 'BLOCKED'}`);
+  voteLog.push(`\nVerdict: ${confirms}/4 CONFIRM → ${confirms >= 3 ? 'EXECUTE' : 'BLOCKED'}`);
   return {
     votes: { confirm: confirms, reject: models.length - confirms },
     consensus: confirms >= 3 ? 'CONFIRM' : 'REJECT',
@@ -1364,7 +1365,7 @@ app.post('/swing-consensus', async (req, res) => {
       askDeepSeek(buildDeepSeekSwingPrompt(p),SYS_DEEP_SWING),
       askGemini(buildGeminiSwingPrompt(p),    SYS_GEM_SWING),
     ]);
-    const NAMES = ['Claude Sonnet', 'GPT-5.5', 'DeepSeek', 'Gemini 2.5 Flash'];
+    const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
     const models = settled.map((r, i) => {
       if (r.status === 'fulfilled') return r.value;
       const raw = r.reason?.message || 'Model unreachable';
@@ -1374,19 +1375,19 @@ app.post('/swing-consensus', async (req, res) => {
       return { name: NAMES[i], verdict: 'REJECT', reason };
     });
     const confirms = models.filter(m => m.verdict === 'CONFIRM').length;
-    // Weighted rule: Claude MUST confirm AND total confirms >= 3
+    // Weighted rule: WARREN MUST confirm AND total confirms >= 3
     const claudeConfirmed = models[0]?.verdict === 'CONFIRM';
     const executeAllowed  = claudeConfirmed && confirms >= 3;
     const voteLog = models.map(m => {
-      const tag  = MODEL_TAG[m.name] || m.name.toUpperCase();
-      const icon = m.verdict === 'CONFIRM' ? '✓' : '✗';
-      return `[${tag}] ${m.verdict} — ${m.reason} ${icon}`;
+      const role = MODEL_ROLE[m.name] || '?';
+      const icon = m.verdict === 'CONFIRM' ? '✅' : '❌';
+      return `${m.name} (${role}): ${icon} ${m.verdict}\n"${m.reason}"`;
     });
     const resultLine = executeAllowed
-      ? `Result: ${confirms}/4 confirmed → KILL SHOT EXECUTE`
+      ? `\nVerdict: ${confirms}/4 CONFIRM → KILL SHOT EXECUTE`
       : !claudeConfirmed
-        ? `Result: BLOCKED — Claude rejected`
-        : `Result: BLOCKED — only ${confirms}/4 confirm, need 3/4`;
+        ? `\nVerdict: BLOCKED — WARREN rejected`
+        : `\nVerdict: BLOCKED — only ${confirms}/4 CONFIRM, need 3/4`;
     voteLog.push(resultLine);
     res.json({
       votes: { confirm: confirms, reject: models.length - confirms },
@@ -3233,7 +3234,7 @@ async function runSwingConsensus(p) {
     askDeepSeek(buildDeepSeekSwingPrompt(p), SYS_DEEP_SWING),
     askGemini(buildGeminiSwingPrompt(p),     SYS_GEM_SWING),
   ]);
-  const NAMES = ['Claude Sonnet', 'GPT-5.5', 'DeepSeek', 'Gemini 2.5 Flash'];
+  const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
   const models = settled.map((r, i) => {
     if (r.status === 'fulfilled') return r.value;
     const raw = r.reason?.message || 'Model unreachable';
@@ -3244,15 +3245,15 @@ async function runSwingConsensus(p) {
   const passes          = claudeConfirmed && othersConfirmed.length >= 1;
   const confirms        = models.filter(m => m.verdict === 'CONFIRM').length;
   const voteLog = models.map(m => {
-    const tag  = MODEL_TAG[m.name] || m.name.toUpperCase();
-    const icon = m.verdict === 'CONFIRM' ? '✓' : '✗';
-    return `[${tag}] ${m.verdict} — ${m.reason} ${icon}`;
+    const role = MODEL_ROLE[m.name] || '?';
+    const icon = m.verdict === 'CONFIRM' ? '✅' : '❌';
+    return `${m.name} (${role}): ${icon} ${m.verdict}\n"${m.reason}"`;
   });
   voteLog.push(passes
-    ? `Result: Claude + ${othersConfirmed[0]?.name?.split(' ')[0] || '?'} confirmed → KILL SHOT EXECUTE`
+    ? `\nVerdict: WARREN + ${othersConfirmed[0]?.name || '?'} CONFIRM → KILL SHOT EXECUTE`
     : !claudeConfirmed
-      ? 'Result: BLOCKED — Claude rejected'
-      : 'Result: BLOCKED — Claude confirmed, no supporting model');
+      ? '\nVerdict: BLOCKED — WARREN rejected'
+      : '\nVerdict: BLOCKED — WARREN confirmed, no supporting council member');
   return { passes, confirms, claudeConfirmed, models, voteLog };
 }
 
@@ -3548,22 +3549,25 @@ async function requestKillShotApproval(signal) {
   const expiryTime = new Date(Date.now() + 2 * 60 * 60 * 1000)
     .toLocaleTimeString('en-CA', { timeZone: 'America/Edmonton', hour: '2-digit', minute: '2-digit' });
 
+  const councilLines = (signal.models || []).map(m => {
+    const role = MODEL_ROLE[m.name] || '?';
+    const icon = m.verdict === 'CONFIRM' ? '✅' : '❌';
+    return `${m.name} (${role}): ${icon} ${m.verdict} — "${m.reason}"`;
+  }).join('\n');
+
   await sendDiscordEmbed({
     color: 0x8B5CF6,
-    title: '⚔️ KILL SHOT APPROVAL NEEDED',
+    title: '⚔️ XAVIER COUNCIL VERDICT — KILL SHOT',
+    description: `**${signal.instrument.replace('_', '/')} ${signal.direction}** — ${signal.session}\n\n${councilLines}\n\n**Verdict: ${signal.confirms}/4 CONFIRM → AWAITING APPROVAL**`,
     fields: [
-      { name: 'Pair',      value: signal.instrument.replace('_', '/'),              inline: true },
-      { name: 'Direction', value: signal.direction,                                  inline: true },
       { name: 'Score',     value: `${signal.score}%`,                                inline: true },
       { name: 'Entry',     value: formatPrice(signal.liveEntry, signal.instrument),  inline: true },
       { name: 'Stop Loss', value: formatPrice(signal.liveSl,    signal.instrument),  inline: true },
       { name: 'TP1',       value: formatPrice(signal.liveTp1,   signal.instrument),  inline: true },
-      { name: 'Consensus', value: `${signal.confirms}/4`,  inline: true },
-      { name: 'Session',   value: signal.session,           inline: true },
-      { name: '⏰ Expires', value: `${expiryTime} Calgary`, inline: true },
+      { name: '⏰ Expires', value: `${expiryTime} Calgary`,                          inline: true },
+      { name: 'Action',    value: `\`!execute ${signal.instrument}\` or \`!skip ${signal.instrument}\``, inline: false },
     ],
     timestamp: new Date().toISOString(),
-    footer: { text: `Reply: !execute ${signal.instrument}  or  !skip ${signal.instrument}` },
   });
 
   console.log(`[KILL SHOT PENDING] ${signal.instrument} ${signal.direction} — awaiting Discord approval`);
