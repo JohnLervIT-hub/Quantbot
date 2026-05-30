@@ -4026,6 +4026,102 @@ app.get('/supabase/performance', async (_req, res) => {
   }
 });
 
+// ─── OPTIONS CHAIN SCANNER ────────────────────────────────────────────────────
+const OPTIONS_MAP = {
+  'EUR_USD':    'FXE',
+  'GBP_USD':    'FXB',
+  'USD_JPY':    'FXY',
+  'XAU_USD':    'GLD',
+  'XAG_USD':    'SLV',
+  'NAS100_USD': 'QQQ',
+  'AU200_AUD':  'EWA',
+  'EUR_GBP':    'FXE',
+};
+
+async function scanOptionsChain(instrument) {
+  if (!process.env.TRADIER_API_KEY) return null;
+  const ticker = OPTIONS_MAP[instrument];
+  if (!ticker) return null;
+
+  try {
+    const response = await fetch(
+      `https://api.tradier.com/v1/markets/options/chains?symbol=${ticker}&expiration=next&greeks=true`,
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.TRADIER_API_KEY}`,
+          'Accept': 'application/json',
+        },
+      },
+    );
+    const data = await response.json();
+    const options = data.options?.option || [];
+    if (options.length === 0) return null;
+
+    const calls = options.filter(o => o.option_type === 'call');
+    const puts  = options.filter(o => o.option_type === 'put');
+
+    const callVolume  = calls.reduce((s, o) => s + (o.volume || 0), 0);
+    const putVolume   = puts.reduce((s, o) => s + (o.volume || 0), 0);
+    const putCallRatio = callVolume > 0 ? putVolume / callVolume : 1;
+
+    const avgIV = options.reduce((s, o) => s + (o.greeks?.mid_iv || 0), 0) / options.length;
+
+    const unusualOptions = options
+      .filter(o => o.volume > (o.open_interest || 0) * 0.5)
+      .sort((a, b) => b.volume - a.volume)
+      .slice(0, 3);
+
+    const institutionalBias =
+      putCallRatio > 1.5 ? 'BEARISH' :
+      putCallRatio < 0.7 ? 'BULLISH' :
+      'NEUTRAL';
+
+    // Max pain calculation
+    const strikes = [...new Set(options.map(o => o.strike))];
+    let maxPainStrike = strikes[0];
+    let minPain = Infinity;
+    strikes.forEach(strike => {
+      const callPain = calls
+        .filter(c => c.strike < strike)
+        .reduce((s, c) => s + (strike - c.strike) * (c.open_interest || 0), 0);
+      const putPain = puts
+        .filter(p => p.strike > strike)
+        .reduce((s, p) => s + (p.strike - strike) * (p.open_interest || 0), 0);
+      const totalPain = callPain + putPain;
+      if (totalPain < minPain) { minPain = totalPain; maxPainStrike = strike; }
+    });
+
+    console.log(`[OPTIONS] ${instrument} (${ticker}) — bias: ${institutionalBias}, P/C: ${putCallRatio.toFixed(2)}, IV: ${(avgIV * 100).toFixed(1)}%`);
+
+    return {
+      ticker,
+      putCallRatio:      putCallRatio.toFixed(2),
+      avgIV:             (avgIV * 100).toFixed(1) + '%',
+      institutionalBias,
+      maxPain:           maxPainStrike,
+      unusualActivity:   unusualOptions.map(o => ({
+        type:         o.option_type,
+        strike:       o.strike,
+        volume:       o.volume,
+        openInterest: o.open_interest,
+        ratio:        ((o.volume || 0) / (o.open_interest || 1)).toFixed(2),
+      })),
+      signal: institutionalBias === 'BEARISH' ? 'SHORT'
+            : institutionalBias === 'BULLISH' ? 'LONG'
+            : 'NEUTRAL',
+    };
+  } catch (err) {
+    console.error('[OPTIONS]', err.message);
+    return null;
+  }
+}
+
+app.get('/options/:instrument', async (req, res) => {
+  const data = await scanOptionsChain(req.params.instrument);
+  if (!data) return res.json({ error: 'No options data available' });
+  res.json(data);
+});
+
 // ─── START ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
