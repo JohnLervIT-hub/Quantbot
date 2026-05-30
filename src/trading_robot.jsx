@@ -6197,6 +6197,16 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
   );
 }
 
+// ─── BACKTEST CONSTANTS ───────────────────────────────────────────────────────
+const BACKTEST_SPREAD_COSTS = {
+  EUR_USD: 0.0002, GBP_USD: 0.0003, USD_JPY: 0.02,  USD_CAD: 0.0003,
+  NZD_USD: 0.0003, AUD_USD: 0.0003, EUR_GBP: 0.0002, XAU_USD: 0.35,
+  NAS100_USD: 1.5, AU200_AUD: 1.0, UK100_GBP: 1.0, SPX500_USD: 0.5,
+  BCO_USD: 0.05,  WTICO_USD: 0.05,
+};
+const MIN_BT_TRADES = 50;
+const TRAINING_DAYS_MS = 60 * 86400000;
+
 // ─── BACKTEST TAB ─────────────────────────────────────────────────────────────
 function BacktestTab({ closedTrades = [], trades = [], isMobile }) {
   const [xavierInsight, setXavierInsight] = useState(null);
@@ -6338,12 +6348,12 @@ function BacktestTab({ closedTrades = [], trades = [], isMobile }) {
       </div>
 
       {/* Sample size warning */}
-      {data.length < 30 && (
+      {data.length < MIN_BT_TRADES && (
         <div style={{ background: "rgba(210,153,34,0.07)", border: "1px solid rgba(210,153,34,0.28)", borderRadius: 8, padding: "10px 14px", marginBottom: 16, display: "flex", gap: 8, alignItems: "flex-start" }}>
           <span style={{ color: "#d29922", fontSize: 14, flexShrink: 0 }}>⚠</span>
           <div>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#d29922" }}>Insufficient sample — {data.length} / 30 trades</div>
-            <div style={{ fontSize: 11, color: "#8b949e", marginTop: 2 }}>Statistics require ≥30 trades to be statistically reliable. Results may not reflect true system edge.</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#d29922" }}>LOW SAMPLE (n={data.length}) — minimum {MIN_BT_TRADES} trades required</div>
+            <div style={{ fontSize: 11, color: "#8b949e", marginTop: 2 }}>Statistics require ≥{MIN_BT_TRADES} trades to be statistically reliable. Results may not reflect true system edge.</div>
           </div>
         </div>
       )}
@@ -6583,7 +6593,9 @@ function HistoricalBacktest({ isMobile }) {
                 }
               }
               if (hit !== null) {
-                trades.push({ dir: sig.direction, score: sig.score, win: hit === "win", entry: parseFloat(entry.toFixed(dec)), exit: parseFloat((hit === "win" ? tp : sl).toFixed(dec)), rMultiple: hit === "win" ? 3.0 : -1.0, timestamp: candles[i]?.time ?? "" });
+                const spreadCost = BACKTEST_SPREAD_COSTS[pair.replace(/[/-]/g, "_").toUpperCase()] ?? 0.0003;
+                const spreadR    = atr > 0 ? spreadCost / (atr * 1.5) : 0;
+                trades.push({ dir: sig.direction, score: sig.score, win: hit === "win", entry: parseFloat(entry.toFixed(dec)), exit: parseFloat((hit === "win" ? tp : sl).toFixed(dec)), rMultiple: (hit === "win" ? 3.0 : -1.0) - spreadR, timestamp: candles[i]?.time ?? "" });
                 i = resolveIdx + 1;
                 continue;
               }
@@ -6620,12 +6632,21 @@ function HistoricalBacktest({ isMobile }) {
     let maxConsecLosses = 0, curStreak = 0;
     for (const t of trades) { if (!t.win) { curStreak++; maxConsecLosses = Math.max(maxConsecLosses, curStreak); } else curStreak = 0; }
 
-    // Validity confidence — higher bar for longer backtests (more data = more signals expected)
-    const minMod = parseInt(btDur) >= 180 ? 50 : 30;
-    const minHi  = parseInt(btDur) >= 180 ? 200 : 100;
-    const validityScore = trades.length >= minHi ? "High" : trades.length >= minMod ? "Moderate" : "Low";
+    const validityScore = trades.length >= 100 ? "High" : trades.length >= MIN_BT_TRADES ? "Moderate" : "Low";
 
-    return { trades, winRate, expectancyR, profitFactor, equityCurve, maxDD, totalR: equityCurve[equityCurve.length - 1], sharpe, maxConsecLosses, validityScore };
+    // Walk-forward validation — training: first 60d, validation: last 30d
+    const firstTs = candles[20]?.time ? new Date(candles[20].time).getTime() : 0;
+    const trainingTrades   = trades.filter(t => t.timestamp && (new Date(t.timestamp).getTime() - firstTs) < TRAINING_DAYS_MS);
+    const validationTrades = trades.filter(t => !t.timestamp || (new Date(t.timestamp).getTime() - firstTs) >= TRAINING_DAYS_MS);
+    const calcExp = (arr) => arr.length > 0 ? arr.reduce((s, t) => s + t.rMultiple, 0) / arr.length : null;
+    const trainingExpectancy   = calcExp(trainingTrades);
+    const validationExpectancy = calcExp(validationTrades);
+    const isRobust = trainingExpectancy !== null && validationExpectancy !== null && trainingExpectancy > 0.20 && validationExpectancy > 0.20;
+
+    // Confidence score
+    const confidence = Math.min(100, Math.round((trades.length / MIN_BT_TRADES) * 50 + (winRate > 40 ? 25 : 0) + (maxDD < 8 ? 25 : 0)));
+
+    return { trades, winRate, expectancyR, profitFactor, equityCurve, maxDD, totalR: equityCurve[equityCurve.length - 1], sharpe, maxConsecLosses, validityScore, trainingExpectancy, validationExpectancy, isRobust, confidence };
   };
 
   const runBacktest = async () => {
@@ -6825,7 +6846,7 @@ function HistoricalBacktest({ isMobile }) {
                       <div style={{ width: 8, height: 8, borderRadius: 2, background: r ? color : "#21262d", flexShrink: 0 }} />
                       <span style={{ color: r ? "#e6edf3" : "#484f58", fontWeight: isBest ? 600 : 400 }}>{strat}</span>
                       {isBest && <span style={{ fontSize: 8, background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 3, padding: "1px 4px", fontWeight: 700 }}>BEST</span>}
-                      {r && r.validityScore === "Low" && <span style={{ fontSize: 8, background: "rgba(248,81,73,0.1)", color: "#f85149", border: "1px solid rgba(248,81,73,0.3)", borderRadius: 3, padding: "1px 4px" }}>{"<30 trades"}</span>}
+                      {r && r.trades.length < MIN_BT_TRADES && <span style={{ fontSize: 8, background: "rgba(248,81,73,0.1)", color: "#f85149", border: "1px solid rgba(248,81,73,0.3)", borderRadius: 3, padding: "1px 4px" }}>⚠ LOW (n={r.trades.length})</span>}
                     </div>
                     <span style={{ fontFamily: FONT_MONO, color: r ? "#8b949e" : "#484f58" }}>{r ? r.trades.length : "—"}</span>
                     <span style={{ fontFamily: FONT_MONO, color: r ? (r.winRate >= 50 ? "#3fb950" : "#f85149") : "#484f58" }}>{r ? `${r.winRate.toFixed(0)}%` : "—"}</span>
@@ -6864,9 +6885,9 @@ function HistoricalBacktest({ isMobile }) {
                 </div>
 
                 {/* Low sample warning */}
-                {detail.validityScore === "Low" && (
+                {detail.trades.length < MIN_BT_TRADES && (
                   <div style={{ padding: "8px 12px", background: "rgba(248,81,73,0.06)", border: "1px solid rgba(248,81,73,0.2)", borderRadius: 6, fontSize: 10, color: "#f85149" }}>
-                    Only {detail.trades.length} signals — minimum 30 required for statistical confidence. Results are directional only, not reliable for live trading decisions.
+                    ⚠ LOW SAMPLE (n={detail.trades.length}) — minimum {MIN_BT_TRADES} trades required for statistical confidence. Treat results with caution.
                   </div>
                 )}
 
@@ -6887,23 +6908,50 @@ function HistoricalBacktest({ isMobile }) {
                 </div>
 
                 {/* Stats row 2 — advanced metrics */}
-                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: 8 }}>
-                  {[
-                    { label: "Sharpe Ratio",      value: detail.sharpe.toFixed(2),          color: detail.sharpe >= 1 ? "#3fb950" : detail.sharpe >= 0 ? "#d29922" : "#f85149",
-                      tip: "Mean R ÷ Std R — measures return per unit of risk" },
-                    { label: "Max Consec. Losses", value: `${detail.maxConsecLosses}`,       color: detail.maxConsecLosses <= 3 ? "#3fb950" : detail.maxConsecLosses <= 6 ? "#d29922" : "#f85149",
-                      tip: "Longest losing streak in the backtest period" },
-                    { label: "Confidence",         value: detail.validityScore,              color: VALIDITY_COLOR[detail.validityScore],
-                      tip: "Low <30 trades · Moderate 30–99 · High 100+" },
-                    { label: "Total R",            value: `${detail.totalR >= 0 ? "+" : ""}${detail.totalR.toFixed(1)}R`, color: pc(detail.totalR),
-                      tip: "Cumulative R-multiple over the backtest period" },
-                  ].map((c, i) => (
-                    <div key={i} style={{ ...CARD, position: "relative" }} title={c.tip}>
-                      <div style={{ fontSize: 9, color: "#8b949e", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 3 }}>{c.label}</div>
-                      <div style={{ fontSize: 16, fontWeight: 700, fontFamily: FONT_MONO, color: c.color }}>{c.value}</div>
+                {(() => {
+                  const confScore = detail.confidence ?? 0;
+                  const confLabel = confScore >= 80 ? '🟢 HIGH' : confScore >= 50 ? '🟡 MED' : '🔴 LOW';
+                  return (
+                    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: 8 }}>
+                      {[
+                        { label: "Sharpe Ratio",       value: detail.sharpe.toFixed(2),           color: detail.sharpe >= 1 ? "#3fb950" : detail.sharpe >= 0 ? "#d29922" : "#f85149",
+                          tip: "Mean R ÷ Std R — measures return per unit of risk" },
+                        { label: "Max Consec. Losses", value: `${detail.maxConsecLosses}`,        color: detail.maxConsecLosses <= 3 ? "#3fb950" : detail.maxConsecLosses <= 6 ? "#d29922" : "#f85149",
+                          tip: "Longest losing streak in the backtest period" },
+                        { label: "Confidence",         value: confLabel,                           color: confScore >= 80 ? "#3fb950" : confScore >= 50 ? "#d29922" : "#f85149",
+                          tip: `Score: ${confScore} — 🟢 HIGH(80+) trade full size · 🟡 MED(50-79) half size · 🔴 LOW(<50) do not trade` },
+                        { label: "Total R",            value: `${detail.totalR >= 0 ? "+" : ""}${detail.totalR.toFixed(1)}R`, color: pc(detail.totalR),
+                          tip: "Cumulative R-multiple over the backtest period" },
+                      ].map((c, i) => (
+                        <div key={i} style={{ ...CARD, position: "relative" }} title={c.tip}>
+                          <div style={{ fontSize: 9, color: "#8b949e", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 3 }}>{c.label}</div>
+                          <div style={{ fontSize: 15, fontWeight: 700, fontFamily: FONT_MONO, color: c.color }}>{c.value}</div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  );
+                })()}
+
+                {/* Walk-forward validation */}
+                {detail.trainingExpectancy !== null && detail.validationExpectancy !== null && (
+                  <div style={CARD}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: "#e6edf3" }}>Walk-Forward Validation</span>
+                      <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, fontWeight: 700, background: detail.isRobust ? "rgba(63,185,80,0.1)" : "rgba(248,81,73,0.1)", color: detail.isRobust ? "#3fb950" : "#f85149", border: `1px solid ${detail.isRobust ? "rgba(63,185,80,0.3)" : "rgba(248,81,73,0.3)"}` }}>
+                        {detail.isRobust ? "✅ ROBUST — validated on unseen data" : "⚠ OVERFIT — only works on training data"}
+                      </span>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      {[{ label: "Training (first 60d)", val: detail.trainingExpectancy }, { label: "Validation (last 30d)", val: detail.validationExpectancy }].map(({ label, val }, i) => (
+                        <div key={i} style={{ background: "#0d1117", border: "1px solid #21262d", borderRadius: 6, padding: "10px 12px" }}>
+                          <div style={{ fontSize: 9, color: "#8b949e", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 3 }}>{label}</div>
+                          <div style={{ fontSize: 16, fontWeight: 700, fontFamily: FONT_MONO, color: val > 0.20 ? "#3fb950" : val >= 0 ? "#d29922" : "#f85149" }}>{val >= 0 ? "+" : ""}{val.toFixed(2)}R</div>
+                          <div style={{ fontSize: 9, color: "#484f58", marginTop: 2 }}>{val > 0.20 ? "✓ meets 0.20R threshold" : "✗ below 0.20R"}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Expectancy bar */}
                 <div style={CARD}>
@@ -6961,7 +7009,7 @@ function HistoricalBacktest({ isMobile }) {
                           <span style={{ fontFamily: FONT_MONO, color: t.score >= 75 ? "#3fb950" : "#d29922" }}>{t.score}</span>
                           <span style={{ fontFamily: FONT_MONO, color: "#8b949e", fontSize: 10 }}>{t.entry}</span>
                           <span style={{ fontFamily: FONT_MONO, color: "#8b949e", fontSize: 10 }}>{t.exit}</span>
-                          <span style={{ fontFamily: FONT_MONO, color: t.win ? "#3fb950" : "#f85149", fontWeight: 700 }}>{t.win ? "+3R" : "-1R"}</span>
+                          <span style={{ fontFamily: FONT_MONO, color: t.rMultiple >= 0 ? "#3fb950" : "#f85149", fontWeight: 700 }}>{t.rMultiple >= 0 ? "+" : ""}{t.rMultiple.toFixed(2)}R</span>
                           <span style={{ fontSize: 9, padding: "2px 5px", borderRadius: 3, background: t.win ? "rgba(63,185,80,0.12)" : "rgba(248,81,73,0.12)", color: t.win ? "#3fb950" : "#f85149", fontWeight: 600, textAlign: "center" }}>{t.win ? "WIN" : "LOSS"}</span>
                         </div>
                       ))}
@@ -7540,7 +7588,9 @@ async function runBtSimulation(closes, candles, strat, sessRange, pair, btConfig
             }
           }
           if (hit !== null) {
-            trades.push({ win: hit === "win", rMultiple: hit === "win" ? 3.0 : -1.0 });
+            const spreadCost = BACKTEST_SPREAD_COSTS[pair.replace(/[/-]/g, "_").toUpperCase()] ?? 0.0003;
+            const spreadR    = atr > 0 ? spreadCost / (atr * 1.5) : 0;
+            trades.push({ win: hit === "win", rMultiple: (hit === "win" ? 3.0 : -1.0) - spreadR, tradeTime: candles[i]?.time ?? null });
             i = resolveIdx + 1;
             continue;
           }
@@ -7563,7 +7613,20 @@ async function runBtSimulation(closes, candles, strat, sessRange, pair, btConfig
   const rMean = rArr.reduce((a, b) => a + b, 0) / rArr.length;
   const rStd  = Math.sqrt(rArr.reduce((a, b) => a + (b - rMean) ** 2, 0) / rArr.length);
   const sharpe = rStd > 0 ? parseFloat((rMean / rStd).toFixed(2)) : 0;
-  return { trades: trades.length, winRate, expectancyR, profitFactor, maxDD, sharpe, signalCount: _sigsPassSess };
+
+  // Walk-forward validation
+  const firstTs = candles[20]?.time ? new Date(candles[20].time).getTime() : 0;
+  const trainTr = trades.filter(t => t.tradeTime && (new Date(t.tradeTime).getTime() - firstTs) < TRAINING_DAYS_MS);
+  const validTr = trades.filter(t => !t.tradeTime || (new Date(t.tradeTime).getTime() - firstTs) >= TRAINING_DAYS_MS);
+  const calcExpR = (arr) => arr.length > 0 ? arr.reduce((s, t) => s + t.rMultiple, 0) / arr.length : null;
+  const trainingExpectancy   = calcExpR(trainTr);
+  const validationExpectancy = calcExpR(validTr);
+  const isRobust = trainingExpectancy !== null && validationExpectancy !== null && trainingExpectancy > 0.20 && validationExpectancy > 0.20;
+
+  // Confidence score
+  const confidence = Math.min(100, Math.round((trades.length / MIN_BT_TRADES) * 50 + (winRate > 40 ? 25 : 0) + (maxDD < 8 ? 25 : 0)));
+
+  return { trades: trades.length, winRate, expectancyR, profitFactor, maxDD, sharpe, signalCount: _sigsPassSess, trainingExpectancy, validationExpectancy, isRobust, confidence };
 }
 
 // ─── XAVIER AUTONOMOUS OPTIMIZER HOOK ─────────────────────────────────────────
@@ -7637,9 +7700,9 @@ function useAutonomousBacktest() {
               if (!pairEdge[pair] || res.expectancyR > (pairEdge[pair].bestExpectancy ?? -Infinity))
                 pairEdge[pair] = { bestExpectancy: res.expectancyR, bestTrades: res.trades, bestDD: res.maxDD };
             }
-            if (res && res.expectancyR >= 0 && res.trades >= 30 && res.maxDD <= 15) {
-              const score = Math.max(0, res.expectancyR) * 60 + res.profitFactor * 20 + res.sharpe * 10 + (res.trades >= 30 ? 10 : 0);
-              allCombos.push({ strategy: strat, pair, session: sess, score, expectancyR: res.expectancyR, winRate: res.winRate, profitFactor: res.profitFactor, sharpe: res.sharpe, trades: res.trades });
+            if (res && res.expectancyR >= 0 && res.trades >= MIN_BT_TRADES && res.maxDD <= 15) {
+              const score = Math.max(0, res.expectancyR) * 60 + res.profitFactor * 20 + res.sharpe * 10 + (res.trades >= MIN_BT_TRADES ? 10 : 0);
+              allCombos.push({ strategy: strat, pair, session: sess, score, expectancyR: res.expectancyR, winRate: res.winRate, profitFactor: res.profitFactor, sharpe: res.sharpe, trades: res.trades, isRobust: res.isRobust, confidence: res.confidence });
             }
           }
         }
@@ -7658,10 +7721,10 @@ function useAutonomousBacktest() {
         const validatedPairs = []; const blockedPairs = [];
         for (const p of PAIRS) {
           const s = pairStats[p];
-          if (s && s.bestExpectancy >= 0.30 && s.bestTrades >= 30 && s.bestDD <= 15) {
+          if (s && s.bestExpectancy >= 0.30 && s.bestTrades >= MIN_BT_TRADES && s.bestDD <= 15) {
             validatedPairs.push(p);
           } else {
-            const reason = !s ? 'no data' : s.bestExpectancy < 0.30 ? `best ${s.bestExpectancy.toFixed(2)}R < 0.30R` : s.bestTrades < 30 ? `only ${s.bestTrades} trades` : `DD ${s.bestDD.toFixed(1)}R > 15R`;
+            const reason = !s ? 'no data' : s.bestExpectancy < 0.30 ? `best ${s.bestExpectancy.toFixed(2)}R < 0.30R` : s.bestTrades < MIN_BT_TRADES ? `only ${s.bestTrades} trades` : `DD ${s.bestDD.toFixed(1)}R > 15R`;
             blockedPairs.push({ pair: p, reason });
           }
         }
