@@ -2158,6 +2158,53 @@ async function manageOpenTrades() {
 }
 
 // ─── DAILY SUMMARY ────────────────────────────────────────────────────────────
+async function getDailySummary() {
+  if (!supabase) return null;
+
+  // Query yesterday's trades (function fires at midnight UTC — yesterday = the day just ended)
+  const dayStart = new Date();
+  dayStart.setUTCDate(dayStart.getUTCDate() - 1);
+  dayStart.setUTCHours(0, 0, 0, 0);
+  const dayEnd = new Date();
+  dayEnd.setUTCHours(0, 0, 0, 0);
+
+  const { data: trades } = await supabase
+    .from('trades')
+    .select('*')
+    .gte('created_at', dayStart.toISOString())
+    .lt('created_at',  dayEnd.toISOString());
+
+  if (!trades || trades.length === 0) {
+    return {
+      date:     dayStart.toDateString(),
+      trades:   0,
+      wins:     0,
+      losses:   0,
+      winRate:  '—',
+      totalPnl: 0,
+      totalPnlStr: '$0.00',
+      bestTrade: '—',
+      message:  'No trades — Xavier was selective or market conditions did not meet criteria',
+    };
+  }
+
+  const wins      = trades.filter(t => t.pnl > 0);
+  const losses    = trades.filter(t => t.pnl < 0);
+  const totalPnl  = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+  const bestTrade = trades.reduce((best, t) => (t.pnl > best.pnl ? t : best), trades[0]);
+
+  return {
+    date:        dayStart.toDateString(),
+    trades:      trades.length,
+    wins:        wins.length,
+    losses:      losses.length,
+    winRate:     ((wins.length / trades.length) * 100).toFixed(1) + '%',
+    totalPnl,
+    totalPnlStr: (totalPnl >= 0 ? '+' : '') + '$' + totalPnl.toFixed(2),
+    bestTrade:   `${bestTrade.pair} ${bestTrade.direction} $${bestTrade.pnl.toFixed(2)}`,
+  };
+}
+
 async function maybeSendDailySummary() {
   const now   = new Date();
   const today = now.toISOString().slice(0, 10);
@@ -2165,18 +2212,54 @@ async function maybeSendDailySummary() {
   if (lastDailySummaryDate === today) return;
   lastDailySummaryDate = today;
 
-  const yesterday = dailyStats.date;
-  if (!yesterday || dailyStats.trades === 0) {
-    await sendNotification(`📊 <b>DAILY SUMMARY</b>\nNo trades executed yesterday.`);
+  const summary = await getDailySummary();
+
+  if (!summary) {
+    // Supabase not configured — fall back to in-memory stats
+    const yesterday = dailyStats.date;
+    if (!yesterday || dailyStats.trades === 0) {
+      await sendNotification(`📊 <b>DAILY SUMMARY</b>\nNo trades executed yesterday.`);
+      return;
+    }
+    const winRate = ((dailyStats.winners / dailyStats.trades) * 100).toFixed(0);
+    await sendNotification(
+      `📊 <b>DAILY SUMMARY — ${yesterday}</b>\n` +
+      `Trades: ${dailyStats.trades} (${dailyStats.winners}W/${dailyStats.losers}L · ${winRate}%)\n` +
+      `Net P&L: ${dailyStats.totalPnl >= 0 ? '+' : ''}$${dailyStats.totalPnl.toFixed(2)}\n` +
+      `Best: ${dailyStats.bestTrade || '—'}`
+    );
     return;
   }
-  const winRate = ((dailyStats.winners / dailyStats.trades) * 100).toFixed(0);
-  await sendNotification(
-    `📊 <b>DAILY SUMMARY — ${yesterday}</b>\n` +
-    `Trades: ${dailyStats.trades} (${dailyStats.winners}W/${dailyStats.losers}L · ${winRate}%)\n` +
-    `Net P&L: ${dailyStats.totalPnl >= 0 ? '+' : ''}$${dailyStats.totalPnl.toFixed(2)}\n` +
-    `Best: ${dailyStats.bestTrade || '—'}`
-  );
+
+  if (summary.trades === 0) {
+    await sendDiscordEmbed({
+      title: '📊 DAILY SUMMARY',
+      color: 0x484f58,
+      fields: [
+        { name: 'Date',    value: summary.date,    inline: true },
+        { name: 'Trades',  value: '0',             inline: true },
+        { name: 'Note',    value: summary.message, inline: false },
+      ],
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
+  await sendDiscordEmbed({
+    title: '📊 DAILY SUMMARY',
+    color: summary.totalPnl > 0 ? 0x00ff88 : 0xf85149,
+    fields: [
+      { name: 'Date',       value: summary.date,        inline: true },
+      { name: 'Trades',     value: String(summary.trades), inline: true },
+      { name: 'Win Rate',   value: summary.winRate,     inline: true },
+      { name: 'Net P&L',    value: summary.totalPnlStr, inline: true },
+      { name: 'W / L',      value: `${summary.wins} / ${summary.losses}`, inline: true },
+      { name: 'Best Trade', value: summary.bestTrade,   inline: true },
+    ],
+    timestamp: new Date().toISOString(),
+    footer: { text: 'Source: Supabase trades table' },
+  });
+  console.log(`[DAILY SUMMARY] ${summary.date} — ${summary.trades} trades, ${summary.totalPnlStr}`);
 }
 
 // ─── DRAWDOWN RECOVERY MONITOR ────────────────────────────────────────────────
