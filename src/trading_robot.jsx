@@ -1661,28 +1661,49 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
 
   const getXavierContext = async () => {
     try {
-      const [tradesRes, accountRes, recoveryRes] = await Promise.all([
+      const [tradesRes, accountRes, recoveryRes, healthRes] = await Promise.all([
         fetch(`${BRIDGE}/trades`).then(r => r.json()).catch(() => ({ trades: [] })),
         fetch(`${BRIDGE}/account`).then(r => r.json()).catch(() => ({})),
         fetch(`${BRIDGE}/recovery-status`).then(r => r.json()).catch(() => ({})),
+        fetch(`${BRIDGE}/health`).then(r => r.json()).catch(() => ({})),
       ]);
       const liveTrades = tradesRes.trades || [];
+      const isWeekend = [0, 6].includes(new Date().getDay());
+      const calgaryTime = new Date().toLocaleString("en-CA", { timeZone: "America/Edmonton", weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      const allModelsOk = Object.values(healthRes.models || {}).length > 0 && Object.values(healthRes.models || {}).every(Boolean);
+      const balance = parseFloat(accountRes.balance || accountRes.account?.balance || 0).toFixed(2);
       const tradeLines = liveTrades.length > 0
-        ? liveTrades.map(t => `  ${t.instrument} ${parseFloat(t.currentUnits) >= 0 ? "LONG" : "SHORT"} P&L: ${parseFloat(t.unrealizedPL || 0).toFixed(2)}`).join("\n")
+        ? liveTrades.map(t => `  - ${t.instrument} ${parseFloat(t.currentUnits) >= 0 ? "LONG" : "SHORT"} @ ${parseFloat(t.price || 0).toFixed(4)}  P&L: $${parseFloat(t.unrealizedPL || 0).toFixed(2)}`).join("\n")
         : "  None";
-      return `LIVE SYSTEM STATE (use this, not any cached data):
-Session: ${session}
+      return `LIVE SYSTEM STATE — always use this data, never localStorage:
+Time: ${calgaryTime} Calgary
+Session: ${isWeekend ? "WEEKEND — markets closed" : session}
+Auto mode: ${healthRes.autoMode ? "ENABLED" : "PAUSED"}
+All models: ${allModelsOk ? "CONNECTED" : "ISSUES DETECTED"}
+OANDA: ${tradesRes.error ? "MAINTENANCE" : "ONLINE"}
+
+ACCOUNT:
+Balance: $${balance}
 Open trades: ${liveTrades.length}
 ${tradeLines}
-Account balance: $${parseFloat(accountRes.balance || accountRes.account?.balance || 0).toFixed(2)}
-Recovery mode: ${recoveryRes.recoveryMode ?? false}
-Peak balance: $${parseFloat(recoveryRes.peakBalance || 0).toFixed(2)}
-Auto mode: ${accountRes.autoMode ?? "unknown"}
-OANDA status: ${tradesRes.error ? "MAINTENANCE" : "ONLINE"}
 
+RECOVERY MODE: ${recoveryRes.recoveryMode ? "⚠️ ACTIVE — reduced sizing" : "✅ Normal"}
+Peak balance: $${parseFloat(recoveryRes.peakBalance || 0).toFixed(2)}
+Drawdown: ${recoveryRes.drawdown ?? 0}%
+
+VALIDATED PAIRS (M5 Auto — 180d backtest):
+EUR_USD, GBP_USD, USD_JPY, EUR_GBP, XAU_USD, XAG_USD, NAS100_USD, AU200_AUD
+
+SWING ONLY (M15 / Kill Shot):
+USD_CAD, AUD_USD, NZD_USD, UK100_GBP, JP225_USD, SPX500_USD
+
+MANUAL KILL SHOT ONLY:
+BCO_USD, WTICO_USD
+
+DO NOT reference localStorage or cached data. Use ONLY the live data above.
 `;
-    } catch {
-      return "";
+    } catch (err) {
+      return `SYSTEM STATE: Unable to fetch live data — ${err.message}. Advise user to check Railway connection.\n`;
     }
   };
 
