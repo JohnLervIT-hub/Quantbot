@@ -551,23 +551,29 @@ const TRAIL_SETTINGS = {
 // USER EXPLICIT OVERRIDE 2026-05-28 — XAG_USD removed (capital protection, multiple losses)
 // XAG_USD / BCO_USD / WTICO_USD = manual trading only, never auto
 // M5 backtest-validated combinations — updated 2026-05-27
+// M5 backtest-validated — 180d spread-adjusted, updated 2026-05-30
 const XAVIER_RULES = {
-  TOKYO:  { strategy: 'Mean Revert', pairs: ['EUR_GBP', 'EUR_USD', 'AUD_USD'],    minScore: 65 },
-  LONDON: { strategy: 'Momentum',    pairs: ['GBP_USD', 'EUR_USD'],              minScore: 65 },
-  PRIME:  { strategy: 'Breakout',    pairs: ['EUR_GBP', 'USD_CAD', 'XAU_USD'],    minScore: 65 },
-  NY:     { strategy: 'Mean Revert', pairs: ['USD_CAD', 'NZD_USD', 'EUR_USD'],    minScore: 65 },
-  SYDNEY: { strategy: 'Mean Revert', pairs: ['GBP_USD', 'NZD_USD', 'AUD_USD'],   minScore: 65 },
+  TOKYO:  { strategy: 'Momentum',    pairs: ['EUR_GBP', 'USD_JPY', 'GBP_USD'],   minScore: 65 },
+  LONDON: { strategy: 'Momentum',    pairs: ['AU200_AUD', 'GBP_USD', 'EUR_USD'],  minScore: 65 },
+  PRIME:  { strategy: 'Breakout',    pairs: ['EUR_GBP', 'XAU_USD', 'EUR_USD'],   minScore: 65 },
+  NY:     { strategy: 'Mean Revert', pairs: ['AU200_AUD', 'EUR_USD', 'XAG_USD'], minScore: 65 },
+  SYDNEY: { strategy: 'Momentum',    pairs: ['XAU_USD', 'NAS100_USD', 'XAG_USD'], minScore: 65 },
   AVOID:  { strategy: null,          pairs: [],                                    minScore: 999 },
 };
 
-// Phase 1 — Core forex only (M5 backtest validated 2026-05-27)
-// Phase 1 (active — M5 validated 2026-05-27)
-// Phase 2 (add after 1 week clean execution): XAG_USD, NAS100_USD, UK100_GBP, AU200_AUD, SPX500_USD, JP225_USD
-// Phase 3 (add after Phase 2 validates):      BCO_USD, WTICO_USD — manual Kill Shot only
+// M5 auto-execution allowlist — 180d spread-adjusted backtest validated 2026-05-30
+// SWING_ONLY (M15 validated, not M5): AUD_USD, USD_CAD, NZD_USD
+// SWING_ONLY (Kill Shot manual only): BCO_USD, WTICO_USD
+// SWING_ONLY (DD too high for M5):    UK100_GBP, JP225_USD, SPX500_USD
 const SERVER_PAIRS = new Set([
-  'EUR_USD', 'GBP_USD', 'USD_JPY',
-  'AUD_USD', 'USD_CAD', 'XAU_USD',
-  'NZD_USD', 'EUR_GBP',
+  'EUR_USD',    // +0.31R ✅
+  'GBP_USD',    // +0.45R ✅
+  'USD_JPY',    // +0.47R ✅
+  'EUR_GBP',    // +0.73R ✅
+  'XAU_USD',    // +0.56R ✅
+  'XAG_USD',    // +0.78R ✅
+  'NAS100_USD', // +0.47R ✅
+  'AU200_AUD',  // validated in LONDON + NY sessions
 ]);
 
 // Index pairs — home session only, 75%+ score required (tighter spreads, higher conviction)
@@ -619,8 +625,9 @@ async function checkMargin(instrument, units, price) {
 
 // High-threshold pairs — 75% signal score required (volatile, wider spreads, needs higher conviction)
 const HIGH_THRESHOLD_PAIRS = new Set([
-  'XAG_USD', 'BCO_USD', 'WTICO_USD',           // Commodities — volatile
-  'NAS100_USD', 'JP225_USD', 'UK100_GBP', 'AU200_AUD', 'SPX500_USD', // Indices
+  'XAG_USD', 'NAS100_USD', 'AU200_AUD', 'XAU_USD', // 180d backtest: high DD, needs tighter filter
+  'BCO_USD', 'WTICO_USD',                            // Commodities — Kill Shot manual only
+  'JP225_USD', 'UK100_GBP', 'SPX500_USD',            // Swing only — DD too high for M5
 ]);
 
 // USD-sensitive pairs — price below EMA50 signals USD strength → LONGs blocked
@@ -653,7 +660,7 @@ const INSTRUMENT_HOME_SESSIONS = {
   NAS100_USD: ['NY', 'SYDNEY'],
   JP225_USD:  ['TOKYO'],
   UK100_GBP:  ['LONDON', 'PRIME'],
-  AU200_AUD:  ['SYDNEY', 'TOKYO'],
+  AU200_AUD:  ['SYDNEY', 'TOKYO', 'NY', 'LONDON'],
   SPX500_USD: ['NY'],
   XAG_USD:    ['LONDON', 'PRIME', 'NY'],
   BCO_USD:    ['LONDON', 'PRIME', 'NY'],
