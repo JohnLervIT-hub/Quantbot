@@ -1321,12 +1321,12 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
         consensus: "REJECT",
         confidence: "0%",
         models: [
-          { name: "Claude Sonnet",    verdict: "REJECT", reason: msg },
-          { name: "GPT-5.5",           verdict: "REJECT", reason: msg },
-          { name: "DeepSeek",         verdict: "REJECT", reason: msg },
-          { name: "Gemini 2.5 Flash", verdict: "REJECT", reason: msg },
+          { name: "WARREN", verdict: "REJECT", reason: msg },
+          { name: "GEORGE", verdict: "REJECT", reason: msg },
+          { name: "JAMES",  verdict: "REJECT", reason: msg },
+          { name: "RAY",    verdict: "REJECT", reason: msg },
         ],
-        voteLog: [`[CLAUDE] REJECT — ${msg} ✗`, `[GPT4] REJECT — ${msg} ✗`, `[DEEPSEEK] REJECT — ${msg} ✗`, `[GEMINI] REJECT — ${msg} ✗`, "Result: 0/4 CONFIRM → BLOCKED"],
+        voteLog: [`[WARREN] REJECT — ${msg} ✗`, `[GEORGE] REJECT — ${msg} ✗`, `[JAMES] REJECT — ${msg} ✗`, `[RAY] REJECT — ${msg} ✗`, "Result: 0/4 CONFIRM → BLOCKED"],
         executeAllowed: false,
         bridgeError: true,
       });
@@ -1340,7 +1340,7 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
   const total = consensus?.models?.length ?? 4;
   const accentColor = confirms >= 3 ? "#3fb950" : confirms === 2 ? "#d29922" : "#f85149";
 
-  const MODEL_PLACEHOLDERS = ["Claude Sonnet", "GPT-5.5", "DeepSeek", "Gemini 2.5 Flash"];
+  const MODEL_PLACEHOLDERS = ["WARREN", "GEORGE", "JAMES", "RAY"];
 
   return (
     <motion.div
@@ -3116,7 +3116,7 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
   const claudeOk       = consensus?.claudeConfirmed ?? (consensus?.models?.[0]?.verdict === "CONFIRM");
   const otherOk        = consensus?.models?.slice(1).filter(m => m.verdict === "CONFIRM") ?? [];
   const accent         = executeAllowed ? "#F97316" : claudeOk ? "#d29922" : "#f85149";
-  const MODEL_PLACEHOLDERS = ["Claude Sonnet", "GPT-5.5", "DeepSeek", "Gemini 2.5 Flash"];
+  const MODEL_PLACEHOLDERS = ["WARREN", "GEORGE", "JAMES", "RAY"];
 
   return (
     <div style={{ marginTop: 8, padding: 12, borderRadius: 8, background: "#0d1117", border: `1px solid ${accent}40`, borderLeft: `3px solid ${accent}` }}>
@@ -3126,10 +3126,10 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
           {loading
             ? "⚔️ KILL SHOT CONSENSUS — consulting models…"
             : executeAllowed
-              ? `⚔️ Kill Shot cleared — Claude + ${otherOk[0]?.name?.split(" ")[0] ?? "1 model"} confirmed`
+              ? `⚔️ Kill Shot cleared — WARREN + ${otherOk[0]?.name ?? "1 model"} confirmed`
               : !claudeOk
-                ? "⚔️ BLOCKED — Claude rejected"
-                : "⚔️ BLOCKED — Claude confirmed, need 1 supporting model"}
+                ? "⚔️ BLOCKED — WARREN rejected"
+                : "⚔️ BLOCKED — WARREN confirmed, need 1 supporting model"}
         </div>
         {!loading && consensus && (
           <span style={{ fontSize: 10, fontWeight: 600, color: accent }}>{consensus.confidence}</span>
@@ -3414,9 +3414,7 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
                   {cs.data.models.map((model, i) => {
                     const isC = model.verdict === "CONFIRM";
                     const mc = isC ? "#3fb950" : "#f85149";
-                    const shortName = model.name === "Claude Sonnet" ? "Claude"
-                      : model.name === "Gemini 2.5 Flash" ? "Gemini"
-                      : model.name;
+                    const shortName = model.name;
                     return (
                       <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 6, marginBottom: i < cs.data.models.length - 1 ? 5 : 0 }}>
                         <span style={{ width: 62, fontSize: 10, color: "#8b949e", flexShrink: 0 }}>{shortName}:</span>
@@ -3427,10 +3425,10 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
                   })}
                   <div style={{ borderTop: "1px solid #21262d", marginTop: 7, paddingTop: 6, fontSize: 10, fontWeight: 700, color: resultColor, letterSpacing: "0.03em" }}>
                     {executeAllowed
-                      ? `Result: ${confirms}/4 — EXECUTING (Claude + ${csOtherOk[0]?.name?.split(" ")[0] ?? "1 model"} confirmed)`
+                      ? `Result: ${confirms}/4 — EXECUTING (WARREN + ${csOtherOk[0]?.name ?? "1 model"} confirmed)`
                       : !csClaudeOk
-                        ? "Result: BLOCKED — Claude rejected"
-                        : "Result: BLOCKED — Claude confirmed, need 1 supporting model"}
+                        ? "Result: BLOCKED — WARREN rejected"
+                        : "Result: BLOCKED — WARREN confirmed, need 1 supporting model"}
                   </div>
                 </>
               ) : !cs ? (
@@ -4506,7 +4504,7 @@ const FUNDAMENTALS = [
   { q: "WHAT IS R-MULTIPLE?", plain: "Profit measured in units of your risk", a: "R is your risk amount per trade. If you risk $15 per trade: +1R = made $15, +2R = made $30, +3R = made $45. Xavier targets +0.583R average across all trades. This means you don't need to win every trade — just let winners run and cut losers short." },
   { q: "WHAT IS PORTFOLIO HEAT?", plain: "Total risk across all open trades at once", a: "Heat = combined risk of all open positions. At 1.5% risk per trade, 4 open trades = 6R heat. Xavier stops taking new trades at 6R to protect the account. If all open trades hit their stop loss at the same time, 6R is the maximum possible loss." },
   { q: "WHAT IS A MEAN REVERT SIGNAL?", plain: "Trading the snap-back after an extreme move", a: "When price moves too far from its average in a short period, it tends to snap back — like a rubber band. Xavier measures this deviation statistically and trades the return to normal. This works best in quiet sessions (Tokyo, Sydney) when markets are ranging rather than trending." },
-  { q: "WHAT IS AI CONSENSUS?", plain: "Four AI models voting before every trade", a: "Before any trade, 4 AI models each cast a vote: Claude (risk guardian), GPT-5.5 (pattern analyst), DeepSeek (quant validator), and Gemini (macro analyst). At least 3 of 4 must vote CONFIRM before Xavier executes. This acts as four independent second opinions and filters out low-quality setups." },
+  { q: "WHAT IS AI CONSENSUS?", plain: "Four AI models voting before every trade", a: "Before any trade, 4 AI models each cast a vote: WARREN (risk guardian), GEORGE (pattern analyst), JAMES (quant validator), and RAY (macro analyst). At least 3 of 4 must vote CONFIRM before Xavier executes. This acts as four independent second opinions and filters out low-quality setups." },
 ];
 
 const COACH_TIMELINE = [
@@ -5371,7 +5369,7 @@ function AutoModeSettingsModal({ settings, onSave, onCancel, onResetOnboarding }
         {/* Risk summary */}
         <div style={{ background: "#2d2000", border: "1px solid #d29922", borderRadius: 8, padding: "12px 14px" }}>
           <div style={{ fontSize: 11, color: "#d29922", lineHeight: 1.6 }}>
-            With these settings the bot will trade maximum <strong>{s.maxTradesPerHour}</strong> time{s.maxTradesPerHour !== 1 ? "s" : ""} per hour at <strong>{s.minConfidence}%</strong> confidence, requiring <strong>{s.consensusRequired}/4</strong> AI models to agree. Gemini uses live Google news. Auto-halts if heat exceeds <strong>{s.maxHeat}R</strong>.
+            With these settings the bot will trade maximum <strong>{s.maxTradesPerHour}</strong> time{s.maxTradesPerHour !== 1 ? "s" : ""} per hour at <strong>{s.minConfidence}%</strong> confidence, requiring <strong>{s.consensusRequired}/4</strong> AI models to agree. RAY uses live Google news for macro context. Auto-halts if heat exceeds <strong>{s.maxHeat}R</strong>.
           </div>
         </div>
 
