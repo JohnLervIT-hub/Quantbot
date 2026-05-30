@@ -8151,6 +8151,24 @@ export default function TradingRobot() {
     });
     localStorage.setItem('xavier_memory_seeded_v1', '1');
   }, []);
+
+  // Startup: reconcile swing_trades against OANDA — remove phantom entries
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await fetch(`${BRIDGE}/trades`).then(r => r.json()).catch(() => ({}));
+        const oandaIds = (Array.isArray(data.trades) ? data.trades : [])
+          .map(t => t.id?.toString()).filter(Boolean);
+        const swingTrades = JSON.parse(localStorage.getItem("swing_trades") || "[]");
+        const validSwing = swingTrades.filter(t => oandaIds.includes(t.oandaId?.toString()));
+        if (validSwing.length !== swingTrades.length) {
+          console.log("[CLEANUP] Removed", swingTrades.length - validSwing.length, "phantom swing trades on startup");
+          localStorage.setItem("swing_trades", JSON.stringify(validSwing));
+        }
+      } catch { /* non-critical — silently skip */ }
+    })();
+  }, []); // eslint-disable-line
+
   const oandaNavRef = useRef(null);
   const xavierIntelRef = useRef(null);
   const reinforcement    = useTradeReinforcement(closedTrades);
