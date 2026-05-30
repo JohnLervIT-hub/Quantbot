@@ -204,15 +204,16 @@ app.post('/swing/order', async (req, res) => {
   let { units } = req.body;
   if (!instrument || !units) return res.status(400).json({ error: 'instrument and units required' });
 
-  // AUDIT: flag if consensusConfirms missing — gate is bypassed when undefined
-  if (consensusConfirms === undefined) {
-    console.warn('[AUDIT WARNING] /swing/order called WITHOUT consensusConfirms — consensus gate bypassed! caller:', _swingSource, instrument);
+  // Gate: approved flag required — fail closed
+  if (!req.body.approved) {
+    console.log('[SWING BLOCKED]', instrument, '— not approved (approved flag missing or false)');
+    return res.status(400).json({ error: 'APPROVAL_REQUIRED', message: 'Kill Shot requires Discord approval first' });
   }
 
-  // Swing consensus gate — require 3/4 confirms
-  if (consensusConfirms !== undefined && consensusConfirms < 3) {
-    console.log(`[SWING BLOCKED] ${instrument} — consensus ${consensusConfirms}/4, need 3/4`);
-    return res.status(400).json({ error: 'CONSENSUS_INSUFFICIENT', message: `${consensusConfirms}/4 — need 3/4 to execute Kill Shot` });
+  // Gate: consensus required — fail closed (undefined treated as 0, not bypassed)
+  if (!consensusConfirms || consensusConfirms < 3) {
+    console.log('[SWING BLOCKED]', instrument, 'consensusConfirms:', consensusConfirms, '— minimum 3/4 required');
+    return res.status(400).json({ error: 'CONSENSUS_REQUIRED', message: 'Must have 3/4 consensus before Kill Shot execution', provided: consensusConfirms ?? null });
   }
 
   // Post-close cooldown hard block — applies to manual swing orders too
@@ -3378,6 +3379,7 @@ async function executeKillShot(pending) {
     entry: liveEntry, stopLoss: liveSl, takeProfit: liveTp1,
     source: 'Kill-Shot-Auto', score, session, strategy: 'Kill Shot',
     approved: true,
+    consensusConfirms: confirms,
   });
 
   if (result.blocked) {
