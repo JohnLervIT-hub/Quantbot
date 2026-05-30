@@ -1691,9 +1691,37 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
         ? openTrades.map(t => `  - ${t.instrument} ${parseFloat(t.currentUnits) >= 0 ? "LONG" : "SHORT"} @ ${parseFloat(t.price || 0).toFixed(4)}  Unrealized P&L: $${parseFloat(t.unrealizedPL || 0).toFixed(2)}`).join("\n")
         : "  No open positions — clean slate";
 
+      // Accurate session countdown based on Calgary clock
+      const _calStr = new Date().toLocaleString("en-CA", { timeZone: "America/Edmonton", hour: "2-digit", minute: "2-digit", hour12: false });
+      const [_calH, _calM] = _calStr.split(":").map(Number);
+      const _calMinsInDay = _calH * 60 + _calM;
+      const _getSessionName = (h) => {
+        if (h >= 11 && h < 14) return "NY";
+        if (h >= 14 && h < 16) return "DEAD ZONE";
+        if (h >= 16 && h < 22) return "SYDNEY";
+        if (h >= 22 || h < 2)  return "TOKYO";
+        if (h >= 2  && h < 7)  return "LONDON";
+        return "PRIME";
+      };
+      const _fmtMins = (m) => { const h = Math.floor(m / 60); const min = m % 60; return h > 0 ? `${h}h ${min}m` : `${min}m`; };
+      // Boundaries (Calgary 24h): 11=NY, 14=Dead Zone, 16=Sydney, 22=Tokyo, 26=London(+1d), 31=Prime(+1d), 35=NY(+1d)
+      const _boundaries = [
+        { mins: 11 * 60, label: "NY opens" },
+        { mins: 14 * 60, label: "Dead zone starts" },
+        { mins: 16 * 60, label: "Sydney opens" },
+        { mins: 22 * 60, label: "Tokyo opens" },
+        { mins: 26 * 60, label: "London opens" },
+        { mins: 31 * 60, label: "Prime opens" },
+        { mins: 35 * 60, label: "NY opens" },
+      ];
+      const _upcoming = _boundaries.filter(b => b.mins - _calMinsInDay > 0).slice(0, 3);
+      const sessionLines = isWeekend
+        ? "Session: WEEKEND — markets closed"
+        : [`Session: ${_getSessionName(_calH)}`, ..._upcoming.map(u => `${u.label}: in ${_fmtMins(u.mins - _calMinsInDay)}`)].join("\n");
+
       return `LIVE SYSTEM STATE — authoritative OANDA data only:
 Time: ${calgaryTime} Calgary
-Session: ${isWeekend ? "WEEKEND — markets closed" : session}
+${sessionLines}
 Auto mode: ${healthRes.autoMode ? "ENABLED" : "PAUSED"}
 All models: ${allModelsOk ? "CONNECTED" : "ISSUES DETECTED"}
 OANDA: ${tradesRes.error ? "MAINTENANCE" : "ONLINE"}
