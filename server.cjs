@@ -110,7 +110,8 @@ app.get('/closed-trades', async (req, res) => {
 });
 
 app.post('/order', async (req, res) => {
-  console.log('[ORDER] body:', JSON.stringify(req.body));
+  const _orderSource = req.headers['x-order-source'] || req.body.source || 'UNKNOWN';
+  console.log('[ORDER SOURCE]', req.path, 'source:', _orderSource, 'approved:', req.body.approved || false, 'body:', JSON.stringify(req.body));
   console.log('[ORDER] BASE:', BASE, '| ACCOUNT:', ACCOUNT ? ACCOUNT.slice(0, 8) + '…' : 'MISSING');
   const { units, atr, price } = req.body;
   const instrument = normalizeInstrument(req.body.instrument);
@@ -196,10 +197,17 @@ app.post('/order', async (req, res) => {
 
 // ─── SWING ORDER — instrument-calibrated units, explicit SL/TP1 prices ────────
 app.post('/swing/order', async (req, res) => {
+  const _swingSource = req.headers['x-order-source'] || req.body.source || 'UNKNOWN';
+  console.log('[ORDER SOURCE]', req.path, 'source:', _swingSource, 'approved:', req.body.approved || false, 'consensusConfirms:', req.body.consensusConfirms, 'body:', JSON.stringify(req.body));
   const { slPrice, tp1Price, consensusConfirms } = req.body;
   const instrument = normalizeInstrument(req.body.instrument);
   let { units } = req.body;
   if (!instrument || !units) return res.status(400).json({ error: 'instrument and units required' });
+
+  // AUDIT: flag if consensusConfirms missing — gate is bypassed when undefined
+  if (consensusConfirms === undefined) {
+    console.warn('[AUDIT WARNING] /swing/order called WITHOUT consensusConfirms — consensus gate bypassed! caller:', _swingSource, instrument);
+  }
 
   // Swing consensus gate — require 3/4 confirms
   if (consensusConfirms !== undefined && consensusConfirms < 3) {
@@ -1679,8 +1687,9 @@ async function sendOandaOrder({ instrument, units, stopLoss, takeProfit }) {
   return r.json();
 }
 
-async function placeOrder({ instrument, direction, units, entry, stopLoss, takeProfit, source, score, session, strategy }) {
+async function placeOrder({ instrument, direction, units, entry, stopLoss, takeProfit, source, score, session, strategy, approved = false }) {
   const pair = normalizeInstrument(instrument);
+  console.log('[ORDER PLACED]', pair, direction, 'source:', source || 'UNKNOWN', 'approved:', approved, 'score:', score, 'session:', session, 'strategy:', strategy);
   console.log('[ORDER]', source, pair, direction, units, 'units');
 
   // Gate 1 — Duplicate check
@@ -2973,11 +2982,13 @@ async function serverAutoTrade() {
     const units = signal.direction === 'LONG' ? unitSize : -unitSize;
 
     try {
+      console.log('[ORDER SOURCE] serverAutoTrade', 'instrument:', instrument, 'direction:', signal.direction, 'score:', signal.score, 'session:', session, 'strategy:', strategy, 'approved: false (M5-Auto no-approval-required)');
       const result = await placeOrder({
         instrument, direction: signal.direction,
         units: unitSize,
         entry: price, stopLoss: sl, takeProfit: tp,
         source: 'M5-Auto', score: signal.score, session, strategy,
+        approved: false,
       });
 
       if (result.blocked === 'MARKET_HALTED') {
@@ -3359,12 +3370,14 @@ function verifyDiscordRequest(req) {
 // ─── KILL SHOT EXECUTION (called from approval flow) ─────────────────────────
 async function executeKillShot(pending) {
   const { instrument, direction, units, liveEntry, liveSl, liveTp1, liveTp2, liveTp3, score, reasons, session, confirms, models, voteLog, timestamp: ts } = pending;
+  console.log('[ORDER SOURCE] executeKillShot', 'instrument:', instrument, 'direction:', direction, 'confirms:', confirms, 'approved: true');
 
   const result = await placeOrder({
     instrument, direction,
     units: Math.abs(units),
     entry: liveEntry, stopLoss: liveSl, takeProfit: liveTp1,
     source: 'Kill-Shot-Auto', score, session, strategy: 'Kill Shot',
+    approved: true,
   });
 
   if (result.blocked) {
