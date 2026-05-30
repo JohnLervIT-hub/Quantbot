@@ -4132,34 +4132,43 @@ const OPTIONS_MAP = {
 };
 
 async function scanOptionsChain(instrument) {
-  if (!process.env.ALPHA_VANTAGE_KEY) return null;
+  if (!process.env.POLYGON_API_KEY) return null;
   const ticker = OPTIONS_MAP[instrument];
   if (!ticker) return null;
 
   try {
     const response = await fetch(
-      `https://www.alphavantage.co/query?function=REALTIME_OPTIONS&symbol=${ticker}&apikey=${process.env.ALPHA_VANTAGE_KEY}`,
+      `https://api.polygon.io/v3/snapshot/options/${ticker}?apiKey=${process.env.POLYGON_API_KEY}&limit=250&sort=expiration_date`,
     );
     const data = await response.json();
+    const options = data.results || [];
 
-    if (!data.data || data.data.length === 0) {
+    if (options.length === 0) {
       console.log('[OPTIONS]', ticker, '— no data available');
       return null;
     }
 
-    const options = data.data;
-    const calls = options.filter(o => o.type === 'call');
-    const puts  = options.filter(o => o.type === 'put');
+    // Normalise Polygon field structure
+    const norm = options.map(r => ({
+      type:             r.details?.contract_type,
+      strike:           r.details?.strike_price,
+      volume:           r.day?.volume        ?? 0,
+      open_interest:    r.open_interest      ?? 0,
+      implied_volatility: r.implied_volatility ?? 0,
+    }));
 
-    const callVolume   = calls.reduce((s, o) => s + parseInt(o.volume  || 0), 0);
-    const putVolume    = puts.reduce( (s, o) => s + parseInt(o.volume  || 0), 0);
+    const calls = norm.filter(o => o.type === 'call');
+    const puts  = norm.filter(o => o.type === 'put');
+
+    const callVolume   = calls.reduce((s, o) => s + (o.volume || 0), 0);
+    const putVolume    = puts.reduce( (s, o) => s + (o.volume || 0), 0);
     const putCallRatio = callVolume > 0 ? putVolume / callVolume : 1;
 
-    const avgIV = options.reduce((s, o) => s + parseFloat(o.implied_volatility || 0), 0) / options.length;
+    const avgIV = norm.reduce((s, o) => s + (o.implied_volatility || 0), 0) / norm.length;
 
-    const unusualOptions = options
-      .filter(o => parseInt(o.volume) > parseInt(o.open_interest || 0) * 0.5)
-      .sort((a, b) => parseInt(b.volume) - parseInt(a.volume))
+    const unusualOptions = norm
+      .filter(o => o.volume > (o.open_interest || 0) * 0.5)
+      .sort((a, b) => b.volume - a.volume)
       .slice(0, 3);
 
     const institutionalBias =
