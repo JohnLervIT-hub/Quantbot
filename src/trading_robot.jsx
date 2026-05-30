@@ -6190,7 +6190,7 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
         )}
 
         {!xavierOpt.result && !xavierOpt.m5Result && !xavierOpt.running && (
-          <div style={{ fontSize: 11, color: "#484f58", padding: "10px 0" }}>Click "Run Now" to run M15 swing + M5 live backtests — 16 pairs × 5 strategies × 5 sessions × 2 timeframes = 800 combinations. Takes ~30 minutes.</div>
+          <div style={{ fontSize: 11, color: "#484f58", padding: "10px 0" }}>Click "Run Now" to run M15 swing + M5 live backtests — 16 pairs × 5 strategies × 5 sessions × 2 timeframes = 800 combinations on 180d of data. Takes ~60 minutes.</div>
         )}
       </div>
     </div>
@@ -6205,7 +6205,7 @@ const BACKTEST_SPREAD_COSTS = {
   BCO_USD: 0.05,  WTICO_USD: 0.05,
 };
 const MIN_BT_TRADES = 50;
-const TRAINING_DAYS_MS = 60 * 86400000;
+const TRAINING_DAYS_MS = 120 * 86400000;
 
 // ─── BACKTEST TAB ─────────────────────────────────────────────────────────────
 function BacktestTab({ closedTrades = [], trades = [], isMobile }) {
@@ -7665,10 +7665,10 @@ function useAutonomousBacktest() {
       const allCombos = []; const rawResults = []; const pairStats = {}; const pairEdge = {}; const candleCounts = {}; let combosDone = 0;
       for (const pair of PAIRS) {
         if (cancelRef.current) break;
-        setLabel(`[M15] Fetching ${pair} (90d)…`);
+        setLabel(`[M15] Fetching ${pair} (180d)…`);
         let candles = [];
         try {
-          const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M15&days=90`);
+          const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M15&days=180`);
           const data = await r.json();
           if (!Array.isArray(data.candles) || data.candles.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
           candles = data.candles;
@@ -7688,7 +7688,7 @@ function useAutonomousBacktest() {
             setLabel(`[M15] ${pair} · ${strat} · ${sess}`);
             const res = await runBtSimulation(closes, candles, strat, SESS_UTC[sess], pair);
             combosDone++; setDone(combosDone); setProgress(Math.round(combosDone / TOTAL_ALL * 100));
-            rawResults.push({ pair, strategy: strat, session: sess, trades: res?.trades ?? 0, winRate: res?.winRate ?? null, expectancyR: res?.expectancyR ?? null, profitFactor: res?.profitFactor ?? null, maxDD: res?.maxDD ?? null, sharpe: res?.sharpe ?? null });
+            rawResults.push({ pair, strategy: strat, session: sess, days: 180, candleCount: candles.length, trades: res?.trades ?? 0, winRate: res?.winRate ?? null, expectancyR: res?.expectancyR ?? null, profitFactor: res?.profitFactor ?? null, maxDD: res?.maxDD ?? null, sharpe: res?.sharpe ?? null });
             if (res) {
               if (!pairStats[pair]) {
                 pairStats[pair] = { bestExpectancy: res.expectancyR, bestTrades: res.trades, bestDD: res.maxDD };
@@ -7741,10 +7741,10 @@ function useAutonomousBacktest() {
       const allCombos = []; const pairStats = {}; const pairEdge = {}; const candleCounts = {}; let combosDone = 0; let totalM5Signals = 0;
       for (const pair of PAIRS) {
         if (cancelRef.current) break;
-        setLabel(`[M5] Fetching ${pair} (90d)…`);
+        setLabel(`[M5] Fetching ${pair} (180d)…`);
         let candles = [];
         try {
-          const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M5&days=90`);
+          const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M5&days=180`);
           const data = await r.json();
           if (!Array.isArray(data.candles) || data.candles.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(TOTAL_PER + combosDone); continue; }
           candles = data.candles;
