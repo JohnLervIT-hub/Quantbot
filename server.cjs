@@ -15,10 +15,14 @@ app.use(cors({
   origin: [
     'http://localhost:5173',
     'http://localhost:5174',
+    'https://quantbot-phi.vercel.app',
+    /\.vercel\.app$/,
     /\.railway\.app$/,
     /\.up\.railway\.app$/,
   ],
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-order-source'],
 }));
 // Save raw body for Discord signature verification
 app.use(express.json({
