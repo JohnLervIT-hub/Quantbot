@@ -9237,6 +9237,11 @@ export default function TradingRobot() {
   const activeSessionColor = activeSess?.color ?? "#484f58";
   const tabs = [["markets", "Markets"], ["news", "News"], ["ai", "Ask Xavier"], ["knowledge", "Knowledge"], ["risk", "Risk"], ["coach", "Coach"], ["analytics", "Analytics"], ["schedule", "Schedule"], ["backtest", "Backtest"]];
 
+  const handleLogout = () => {
+    localStorage.removeItem("auth_token");
+    window.location.reload();
+  };
+
   if (!isAuthenticated()) return <LoginPage />;
 
   return (
@@ -9303,6 +9308,10 @@ export default function TradingRobot() {
                 style={{ background: "none", border: "none", cursor: "pointer", color: "#484f58", padding: "2px", fontSize: 13, lineHeight: 1, display: "flex", alignItems: "center" }}
                 title="Settings"
               >⚙</button>
+              <button
+                onClick={handleLogout}
+                style={{ background: "transparent", border: "1px solid #21262d", color: "#484f58", padding: "3px 8px", borderRadius: 5, cursor: "pointer", fontSize: 10, fontFamily: "inherit" }}
+              >Logout</button>
             </div>
           </div>
 
@@ -9390,6 +9399,12 @@ export default function TradingRobot() {
                   </span>
                 )}
               </div>
+              <button
+                onClick={handleLogout}
+                style={{ background: "transparent", border: "1px solid #21262d", color: "#6e7681", padding: "6px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontFamily: "inherit", transition: "color .15s, border-color .15s" }}
+                onMouseEnter={e => { e.target.style.color = "#e6edf3"; e.target.style.borderColor = "#30363d"; }}
+                onMouseLeave={e => { e.target.style.color = "#6e7681"; e.target.style.borderColor = "#21262d"; }}
+              >Logout</button>
             </div>
           </div>
         </div>
