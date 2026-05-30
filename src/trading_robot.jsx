@@ -15,8 +15,10 @@ import {
 Chart.register(LineElement, PointElement, LineController, CategoryScale, LinearScale, Filler);
 
 const FONT_MONO = "'JetBrains Mono', monospace";
-// Dev: Vite proxies /bridge → localhost:3001. Set VITE_OANDA_BRIDGE for phone/LAN, VITE_API_URL for Vercel → Railway.
-const BRIDGE = import.meta.env.VITE_OANDA_BRIDGE || import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "/bridge" : "http://localhost:3001");
+// Full Railway URL — set VITE_API_URL in Vercel env vars → https://quantbot-production.up.railway.app
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
+// Dev: Vite proxies /bridge → localhost:3001. Set VITE_OANDA_BRIDGE only for phone/LAN testing.
+const BRIDGE = import.meta.env.VITE_OANDA_BRIDGE || (import.meta.env.DEV ? "/bridge" : API_BASE);
 
 function priceDecimals(pair) {
   return pair.includes("JPY") ? 3 : pair.includes("XAU") || pair.includes("SPX") ? 2 : 5;
@@ -8086,7 +8088,7 @@ function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      const res  = await fetch(`${BRIDGE}/auth/login`, {
+      const res  = await fetch(`${API_BASE}/auth/login`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ email, password }),
