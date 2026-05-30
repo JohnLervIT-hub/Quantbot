@@ -8063,6 +8063,94 @@ function useTradeReinforcement(closedTrades) {
   return reinforcement;
 }
 
+// ── Auth helpers ──────────────────────────────────────────────────────────────
+function isAuthenticated() {
+  const token = localStorage.getItem("auth_token");
+  if (!token) return false;
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return payload.exp > Date.now() / 1000;
+  } catch {
+    return false;
+  }
+}
+
+function LoginPage() {
+  const [email, setEmail]       = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError]       = useState("");
+  const [loading, setLoading]   = useState(false);
+
+  const handleLogin = async () => {
+    if (!email || !password) { setError("Email and password required"); return; }
+    setLoading(true);
+    setError("");
+    try {
+      const res  = await fetch(`${BRIDGE}/auth/login`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (data.token) {
+        localStorage.setItem("auth_token", data.token);
+        window.location.reload();
+      } else {
+        setError(data.error || "Invalid credentials");
+      }
+    } catch {
+      setError("Connection failed — check server is running");
+    }
+    setLoading(false);
+  };
+
+  const css = `
+    .qb-login-wrap{min-height:100vh;background:#0d1117;display:flex;align-items:center;justify-content:center;font-family:'Inter',sans-serif}
+    .qb-login-card{background:#161b22;border:1px solid #21262d;border-radius:12px;padding:40px;width:360px;max-width:90vw;text-align:center}
+    .qb-login-logo h1{color:#3fb950;font-size:26px;font-weight:800;margin:0 0 6px;letter-spacing:-0.5px}
+    .qb-login-logo p{color:#8b949e;font-size:13px;margin:0 0 32px}
+    .qb-login-card input{display:block;width:100%;box-sizing:border-box;padding:11px 14px;background:#0d1117;border:1px solid #21262d;border-radius:8px;color:#e6edf3;margin-bottom:12px;font-size:14px;font-family:'Inter',sans-serif;outline:none;transition:border-color .15s}
+    .qb-login-card input:focus{border-color:#3fb950}
+    .qb-login-card input::placeholder{color:#484f58}
+    .qb-login-btn{display:block;width:100%;padding:13px;background:#238636;color:#fff;border:none;border-radius:8px;font-weight:700;font-size:15px;cursor:pointer;margin-top:8px;font-family:'Inter',sans-serif;letter-spacing:0.1px;transition:background .15s}
+    .qb-login-btn:hover:not(:disabled){background:#2ea043}
+    .qb-login-btn:disabled{opacity:.55;cursor:not-allowed}
+    .qb-login-err{color:#f85149;font-size:13px;margin:0 0 10px}
+  `;
+
+  return (
+    <div className="qb-login-wrap">
+      <style>{css}</style>
+      <div className="qb-login-card">
+        <div className="qb-login-logo">
+          <h1>QuantBot Pro</h1>
+          <p>Powered by Xavier AI</p>
+        </div>
+        <input
+          type="email"
+          placeholder="Email"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && handleLogin()}
+          autoComplete="email"
+        />
+        <input
+          type="password"
+          placeholder="Password"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && handleLogin()}
+          autoComplete="current-password"
+        />
+        {error && <p className="qb-login-err">{error}</p>}
+        <button className="qb-login-btn" onClick={handleLogin} disabled={loading}>
+          {loading ? "Signing in…" : "Access Dashboard"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function TradingRobot() {
   const [strategy, setStrategy] = useState(() => localStorage.getItem("active_strategy") || "Mean Revert");
   const [trades, setTrades] = useState([]);
@@ -9148,6 +9236,8 @@ export default function TradingRobot() {
   const activeSessionName = activeSess?.name ?? "—";
   const activeSessionColor = activeSess?.color ?? "#484f58";
   const tabs = [["markets", "Markets"], ["news", "News"], ["ai", "Ask Xavier"], ["knowledge", "Knowledge"], ["risk", "Risk"], ["coach", "Coach"], ["analytics", "Analytics"], ["schedule", "Schedule"], ["backtest", "Backtest"]];
+
+  if (!isAuthenticated()) return <LoginPage />;
 
   return (
     <div style={{ fontFamily: "'Inter', sans-serif", padding: `0 0 ${isMobile ? "90px" : "16px"}`, minHeight: "100vh", background: "#0d1117", position: "relative" }}>

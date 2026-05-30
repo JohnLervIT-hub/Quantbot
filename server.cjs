@@ -2,6 +2,7 @@ require('dotenv').config({ override: true, path: require('path').join(__dirname,
 const express = require('express');
 const cors    = require('cors');
 const crypto  = require('crypto');
+const jwt     = require('jsonwebtoken');
 
 const { createClient } = require('@supabase/supabase-js');
 const supabase = process.env.SUPABASE_URL
@@ -445,6 +446,27 @@ app.get('/discord-debug', async (_req, res) => {
   } catch (e) {
     res.json({ error: e.message });
   }
+});
+
+app.post('/auth/login', (req, res) => {
+  const { email, password } = req.body;
+  const validEmail    = process.env.DASHBOARD_EMAIL;
+  const validPassword = process.env.DASHBOARD_PASSWORD;
+  const secret        = process.env.JWT_SECRET;
+
+  if (!validEmail || !validPassword || !secret) {
+    console.error('[AUTH] Missing DASHBOARD_EMAIL, DASHBOARD_PASSWORD, or JWT_SECRET env vars');
+    return res.status(500).json({ error: 'Auth not configured on server' });
+  }
+
+  if (email === validEmail && password === validPassword) {
+    const token = jwt.sign({ email, role: 'admin' }, secret, { expiresIn: '7d' });
+    console.log('[AUTH] Login success:', email);
+    return res.json({ token });
+  }
+
+  console.warn('[AUTH] Failed login attempt for:', email);
+  res.status(401).json({ error: 'Invalid credentials' });
 });
 
 app.get('/health', (_req, res) => {
