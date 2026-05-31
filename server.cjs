@@ -669,6 +669,8 @@ const serverRejections   = [];        // newest-first, capped at 50
 let   lastScanAt         = null;
 const swingAutoTrades    = [];        // newest-first, capped at 50
 const lastSwingConsensus = new Map(); // instrument → ms (4-hour cooldown per pair)
+let   lastValidSwingSignal = null;   // last signal that passed all gates (shown during maintenance)
+let   swingStatus = { status: 'LIVE', message: 'Swing scanner active', lastSignal: null, nextScan: null };
 
 // Server-side trade log — persists across frontend sessions within a Railway deploy
 // Frontend fetches on mount and merges with localStorage to show complete history
@@ -1771,6 +1773,15 @@ app.get('/auto-trades', (_req, res) => {
 // ─── SWING AUTO TRADES ENDPOINT ──────────────────────────────────────────────
 app.get('/swing-auto-trades', (_req, res) => {
   res.json({ count: swingAutoTrades.length, trades: swingAutoTrades });
+});
+
+app.get('/swing/status', (_req, res) => {
+  res.json({
+    status:     swingStatus.status,
+    message:    swingStatus.message,
+    lastSignal: swingStatus.lastSignal,
+    nextScan:   swingStatus.nextScan || new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+  });
 });
 
 // ─── PAPER TRADES ENDPOINT ────────────────────────────────────────────────────
@@ -3596,9 +3607,34 @@ async function runSwingConsensus(p) {
   return { passes, confirms, claudeConfirmed, models, voteLog };
 }
 
+async function checkOandaHealth() {
+  try {
+    const response = await fetch(
+      'https://api-fxpractice.oanda.com/v3/accounts',
+      { headers: { 'Authorization': `Bearer ${process.env.OANDA_TOKEN}` } }
+    );
+    return response.ok;
+  } catch (err) {
+    return false;
+  }
+}
+
 // ─── SERVER-SIDE SWING AUTO TRADE ENGINE (Kill Shot — H4, 4-hour scan) ───────
 async function serverSwingAutoTrade() {
   if (process.env.AUTO_MODE_ENABLED !== 'true') return;
+
+  // OANDA health check — stand by silently during maintenance windows
+  const oandaHealthy = await checkOandaHealth();
+  if (!oandaHealthy) {
+    console.log('[SWING] OANDA unavailable — standing by');
+    swingStatus = {
+      status:     'MAINTENANCE',
+      message:    'OANDA maintenance in progress',
+      nextCheck:  new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      lastSignal: lastValidSwingSignal || null,
+    };
+    return;
+  }
 
   const now = new Date();
   const h   = now.getUTCHours();
@@ -3612,6 +3648,8 @@ async function serverSwingAutoTrade() {
 
   // Friday PM block: no new swings after 18 UTC Friday
   if (d === 5 && h >= 18) return;
+
+  swingStatus = { status: 'SCANNING', message: 'Scanning Kill Shot pairs…', lastSignal: lastValidSwingSignal || null, nextScan: null };
 
   // Fetch current OANDA open trades
   let openTrades = [];
@@ -3818,6 +3856,8 @@ async function serverSwingAutoTrade() {
       if (!(await checkMargin(instrument, units, liveEntry)).sufficient) continue;
 
       // ── 3/4 confirmed — queue for Discord approval ──────────────────────────
+      lastValidSwingSignal = { instrument, direction: sig.direction, score: sig.score, session, timestamp: ts };
+      swingStatus = { status: 'LIVE', message: `Kill Shot queued: ${instrument} ${sig.direction}`, lastSignal: lastValidSwingSignal, nextScan: null };
       await requestKillShotApproval({
         instrument, direction: sig.direction, units,
         liveEntry, liveSl, liveTp1, liveTp2, liveTp3,
