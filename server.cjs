@@ -859,6 +859,15 @@ const SERVER_PIP_SIZE = {
   UK100_GBP:  1.0, AU200_AUD:  1.0,
 };
 
+// Typical spread per instrument — added to 1R so loss on SL hit never exceeds 1R true risk
+const SPREAD_COSTS = {
+  EUR_USD: 0.0002, GBP_USD: 0.0003, USD_JPY: 0.02,
+  AUD_USD: 0.0003, USD_CAD: 0.0003, NZD_USD: 0.0004,
+  EUR_GBP: 0.0003, XAU_USD: 0.30,   XAG_USD: 0.04,
+  NAS100_USD: 2.0, SPX500_USD: 0.5,  AU200_AUD: 1.0,
+  BCO_USD: 0.05,   WTICO_USD: 0.05,
+};
+
 // ─── SHARED LLM HELPERS ──────────────────────────────────────────────────────
 const SYS_CLAUDE = 'You are an elite forex risk guardian. Protect capital above all else. Be decisive. Respond ONLY in the format shown.';
 const SYS_GPT    = 'You are an expert technical pattern analyst for forex. Validate price action only. Be decisive. Respond ONLY in the format shown.';
@@ -2265,7 +2274,8 @@ async function manageOpenTrades() {
     const sl         = trade.stopLossOrder?.price ? parseFloat(trade.stopLossOrder.price) : null;
 
     if (!sl) continue;
-    const risk = Math.abs(entry - sl);
+    const spread = SPREAD_COSTS[instrument] ?? 0.0003;
+    const risk = Math.abs(entry - sl) + spread;
     if (risk <= 0) continue;
 
     // Fetch live mid price
@@ -2300,7 +2310,7 @@ async function manageOpenTrades() {
     };
     const minPips   = MIN_BREAKEVEN_PIPS[instrument] ?? 0.0010;
     const pipsMoved = Math.abs(price - entry);
-    if (currentR >= 1.0 && pipsMoved >= minPips && !state.movedToBreakeven) {
+    if (currentR >= 1.5 && pipsMoved >= minPips && !state.movedToBreakeven) {
       const pip     = SERVER_PIP_SIZE[instrument] || 0.0001;
       const bePrice = dir === 'LONG' ? entry + pip : entry - pip;
       const moved   = await updateTradeSL(tradeId, bePrice, instrument);
