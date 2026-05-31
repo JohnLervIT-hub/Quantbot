@@ -868,6 +868,148 @@ const SPREAD_COSTS = {
   BCO_USD: 0.05,   WTICO_USD: 0.05,
 };
 
+// ─── CANDLE DATA & PATTERN RECOGNITION ───────────────────────────────────────
+async function getCandles(instrument, granularity, count) {
+  try {
+    const pair = normalizeInstrument(instrument);
+    const response = await fetch(
+      `https://api-fxpractice.oanda.com/v3/instruments/${pair}/candles?granularity=${granularity}&count=${count}`,
+      { headers: { 'Authorization': `Bearer ${process.env.OANDA_TOKEN}` } }
+    );
+    const data = await response.json();
+    return data.candles?.map(c => ({
+      open:   parseFloat(c.mid?.o || 0),
+      high:   parseFloat(c.mid?.h || 0),
+      low:    parseFloat(c.mid?.l || 0),
+      close:  parseFloat(c.mid?.c || 0),
+      volume: c.volume || 0,
+      time:   c.time,
+    })) || [];
+  } catch (err) {
+    console.error('[CANDLES ERROR]', err.message);
+    return [];
+  }
+}
+
+function analyzeCandlePatterns(candles) {
+  if (!candles || candles.length < 3) return null;
+
+  const curr  = candles[candles.length - 1];
+  const prev  = candles[candles.length - 2];
+  const prev2 = candles[candles.length - 3];
+
+  const currBody = Math.abs(curr.close - curr.open);
+  const prevBody = Math.abs(prev.close - prev.open);
+  const currRange = curr.high - curr.low;
+
+  const currBullish = curr.close > curr.open;
+  const currBearish = curr.close < curr.open;
+  const prevBullish = prev.close > prev.open;
+  const prevBearish = prev.close < prev.open;
+
+  const upperWick = curr.high - Math.max(curr.open, curr.close);
+  const lowerWick = Math.min(curr.open, curr.close) - curr.low;
+
+  const patterns = [];
+  let scoreAdjustment = 0;
+  let directionBias = 'NEUTRAL';
+
+  // 1. BULLISH ENGULFING
+  if (prevBearish && currBullish &&
+      curr.open <= prev.close &&
+      curr.close >= prev.open &&
+      currBody > prevBody * 1.1) {
+    patterns.push('BULLISH_ENGULFING');
+    scoreAdjustment += 12;
+    directionBias = 'LONG';
+  }
+
+  // 2. BEARISH ENGULFING
+  if (prevBullish && currBearish &&
+      curr.open >= prev.close &&
+      curr.close <= prev.open &&
+      currBody > prevBody * 1.1) {
+    patterns.push('BEARISH_ENGULFING');
+    scoreAdjustment += 12;
+    directionBias = 'SHORT';
+  }
+
+  // 3. BULLISH PIN BAR
+  if (lowerWick > currBody * 2 &&
+      lowerWick > upperWick * 3 &&
+      currBody < currRange * 0.35) {
+    patterns.push('BULLISH_PIN_BAR');
+    scoreAdjustment += 10;
+    directionBias = 'LONG';
+  }
+
+  // 4. BEARISH PIN BAR
+  if (upperWick > currBody * 2 &&
+      upperWick > lowerWick * 3 &&
+      currBody < currRange * 0.35) {
+    patterns.push('BEARISH_PIN_BAR');
+    scoreAdjustment += 10;
+    directionBias = 'SHORT';
+  }
+
+  // 5. DOJI — indecision
+  if (currBody < currRange * 0.1 && currRange > 0) {
+    patterns.push('DOJI');
+    scoreAdjustment -= 15;
+    directionBias = 'NEUTRAL';
+  }
+
+  // 6. INSIDE BAR — consolidation
+  if (curr.high < prev.high && curr.low > prev.low) {
+    patterns.push('INSIDE_BAR');
+    scoreAdjustment -= 8;
+  }
+
+  // 7. THREE BULLISH SOLDIERS
+  if (prev2.close > prev2.open &&
+      prev.close > prev.open &&
+      curr.close > curr.open &&
+      prev.close > prev2.close &&
+      curr.close > prev.close) {
+    patterns.push('THREE_SOLDIERS');
+    scoreAdjustment += 15;
+    directionBias = 'LONG';
+  }
+
+  // 8. THREE BEARISH CROWS
+  if (prev2.close < prev2.open &&
+      prev.close < prev.open &&
+      curr.close < curr.open &&
+      prev.close < prev2.close &&
+      curr.close < prev.close) {
+    patterns.push('THREE_CROWS');
+    scoreAdjustment += 15;
+    directionBias = 'SHORT';
+  }
+
+  // 9. HAMMER
+  if (currBullish &&
+      lowerWick > currBody * 2 &&
+      upperWick < currBody * 0.5 &&
+      currBody > 0) {
+    patterns.push('HAMMER');
+    scoreAdjustment += 8;
+    directionBias = 'LONG';
+  }
+
+  // 10. SHOOTING STAR
+  if (currBearish &&
+      upperWick > currBody * 2 &&
+      lowerWick < currBody * 0.5 &&
+      currBody > 0) {
+    patterns.push('SHOOTING_STAR');
+    scoreAdjustment += 8;
+    directionBias = 'SHORT';
+  }
+
+  return { patterns, scoreAdjustment, directionBias, confirms: true };
+}
+
 // ─── SHARED LLM HELPERS ──────────────────────────────────────────────────────
 const SYS_CLAUDE = 'You are an elite forex risk guardian. Protect capital above all else. Be decisive. Respond ONLY in the format shown.';
 const SYS_GPT    = 'You are an expert technical pattern analyst for forex. Validate price action only. Be decisive. Respond ONLY in the format shown.';
