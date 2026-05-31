@@ -3,6 +3,7 @@ const express = require('express');
 const cors    = require('cors');
 const crypto  = require('crypto');
 const jwt     = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
 
 const { createClient } = require('@supabase/supabase-js');
 const supabase = process.env.SUPABASE_URL
@@ -28,6 +29,47 @@ app.use(cors({
 app.use(express.json({
   verify: (req, _res, buf) => { req.rawBody = buf.toString(); },
 }));
+
+// ─── RATE LIMITERS ────────────────────────────────────────────────────────────
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'TOO_MANY_ATTEMPTS', message: 'Too many login attempts. Try again in 15 minutes.' },
+});
+
+const orderLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { error: 'ORDER_RATE_LIMITED', message: 'Too many order requests' },
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 100,
+  message: { error: 'RATE_LIMITED' },
+});
+
+app.use('/auth/login', loginLimiter);
+app.use('/order', orderLimiter);
+app.use('/swing/order', orderLimiter);
+app.use(apiLimiter);
+
+// ─── AUTH MIDDLEWARE ──────────────────────────────────────────────────────────
+const requireAuth = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) {
+    console.log('[SECURITY] Unauthorized access attempt:', req.path, 'from:', req.ip);
+    return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required' });
+  }
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    console.log('[SECURITY] Invalid token on:', req.path);
+    return res.status(401).json({ error: 'INVALID_TOKEN', message: 'Token invalid or expired' });
+  }
+};
 
 const BASE    = 'https://api-fxpractice.oanda.com';
 const TOKEN   = process.env.OANDA_TOKEN;
@@ -93,12 +135,12 @@ app.get('/prices', async (req, res) => {
   }
 });
 
-app.get('/account', async (req, res) => {
+app.get('/account', requireAuth, async (req, res) => {
   const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/summary`, { headers: H });
   res.json(await r.json());
 });
 
-app.get('/trades', async (req, res) => {
+app.get('/trades', requireAuth, async (req, res) => {
   const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
   res.json(await r.json());
 });
@@ -114,7 +156,7 @@ app.get('/closed-trades', async (req, res) => {
   res.json(await r.json());
 });
 
-app.post('/order', async (req, res) => {
+app.post('/order', requireAuth, async (req, res) => {
   const _orderSource = req.headers['x-order-source'] || req.body.source || 'UNKNOWN';
   console.log('[ORDER SOURCE]', req.path, 'source:', _orderSource, 'approved:', req.body.approved || false, 'body:', JSON.stringify(req.body));
   console.log('[ORDER] BASE:', BASE, '| ACCOUNT:', ACCOUNT ? ACCOUNT.slice(0, 8) + '…' : 'MISSING');
@@ -201,7 +243,7 @@ app.post('/order', async (req, res) => {
 });
 
 // ─── SWING ORDER — instrument-calibrated units, explicit SL/TP1 prices ────────
-app.post('/swing/order', async (req, res) => {
+app.post('/swing/order', requireAuth, async (req, res) => {
   const _swingSource = req.headers['x-order-source'] || req.body.source || 'UNKNOWN';
   console.log('[ORDER SOURCE]', req.path, 'source:', _swingSource, 'approved:', req.body.approved || false, 'consensusConfirms:', req.body.consensusConfirms, 'body:', JSON.stringify(req.body));
   const { slPrice, tp1Price, consensusConfirms } = req.body;
@@ -1321,7 +1363,7 @@ app.post('/xavier-weights', (req, res) => {
 });
 
 // ─── CONSENSUS ENDPOINT ───────────────────────────────────────────────────────
-app.post('/consensus', async (req, res) => {
+app.post('/consensus', requireAuth, async (req, res) => {
   try {
     const p = req.body;
     // Cache any xavier intel the frontend sends — server auto-trade uses this
@@ -1412,7 +1454,7 @@ app.post('/auto-mode', (req, res) => {
 });
 
 // ─── RECOVERY STATUS ENDPOINT ────────────────────────────────────────────────
-app.get('/recovery-status', (_req, res) => {
+app.get('/recovery-status', requireAuth, (_req, res) => {
   const drawdown = peakBalance > 0 ? parseFloat(((peakBalance - currentBalance) / peakBalance * 100).toFixed(2)) : 0;
   res.json({
     recoveryMode,
@@ -1483,7 +1525,7 @@ app.get('/auto-status', (_req, res) => {
 });
 
 // ─── TRANSACTION AUDIT ────────────────────────────────────────────────────────
-app.get('/audit', async (req, res) => {
+app.get('/audit', requireAuth, async (req, res) => {
   try {
     // Step 1: get lastTransactionID from account
     const acctR  = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/summary`, { headers: H });
@@ -3960,7 +4002,7 @@ async function runIntegrationTests() {
   return { passed, failed, total: results.length, allPassed: failed === 0, results };
 }
 
-app.get('/run-tests', async (_req, res) => {
+app.get('/run-tests', requireAuth, async (_req, res) => {
   try {
     const result = await runIntegrationTests();
     res.json(result);
@@ -3990,7 +4032,7 @@ app.get('/supabase/status', async (_req, res) => {
   }
 });
 
-app.get('/supabase/patterns', async (_req, res) => {
+app.get('/supabase/patterns', requireAuth, async (_req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const { data, error } = await supabase.from('patterns').select('*').order('avg_r', { ascending: false });
@@ -4060,7 +4102,7 @@ async function getSessionAnalysis() {
   };
 }
 
-app.get('/supabase/session-analysis', async (_req, res) => {
+app.get('/supabase/session-analysis', requireAuth, async (_req, res) => {
   try {
     if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
     const analysis = await getSessionAnalysis();
@@ -4070,7 +4112,7 @@ app.get('/supabase/session-analysis', async (_req, res) => {
   }
 });
 
-app.get('/supabase/performance', async (_req, res) => {
+app.get('/supabase/performance', requireAuth, async (_req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const { data, error } = await supabase.from('trades').select('*');
@@ -4206,7 +4248,7 @@ async function scanOptionsChain(instrument) {
   }
 }
 
-app.get('/options/:instrument', async (req, res) => {
+app.get('/options/:instrument', requireAuth, async (req, res) => {
   const data = await scanOptionsChain(req.params.instrument);
   if (!data) return res.json({ error: 'No options data available' });
   res.json(data);
