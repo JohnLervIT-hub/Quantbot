@@ -16,8 +16,15 @@ console.log('[SUPABASE]', supabase ? '✅ Connected' : '❌ Not configured');
 const maskKey   = (key)   => key   ? key.slice(0, 8) + '...' : 'NOT SET';
 const maskEmail = (email) => email ? email.replace(/(.{2}).*@/, '$1***@') : 'unknown';
 
+const INTERNAL_IPS = new Set(['100.64.0.2', '127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
 async function logSecurityEvent(event, details, severity) {
-  console.log('[SECURITY]', severity, event, JSON.stringify(details));
+  // Downgrade Railway internal network events — not real threats
+  const isInternal = details.ip?.startsWith('100.64.') ||
+    INTERNAL_IPS.has(details.ip);
+  if (isInternal) severity = 'INFO';
+
+  console.log('[SECURITY]', severity, event);
   if (!supabase) return;
   try {
     await supabase.from('security_logs').insert({
@@ -28,7 +35,8 @@ async function logSecurityEvent(event, details, severity) {
       ip:        details.ip || 'unknown',
       timestamp: new Date().toISOString(),
     });
-    if (severity === 'CRITICAL') {
+    // Only Discord-alert for genuine external CRITICAL events
+    if (severity === 'CRITICAL' && !isInternal) {
       await sendDiscordEmbed({
         title:  '🚨 SECURITY ALERT',
         color:  0xff0000,
@@ -109,9 +117,16 @@ app.use(apiLimiter);
 
 // ─── AUTH MIDDLEWARE ──────────────────────────────────────────────────────────
 const requireAuth = (req, res, next) => {
+  const clientIP = req.ip || req.connection?.remoteAddress;
+
+  // Whitelist Railway internal network and loopback — no auth needed
+  if (INTERNAL_IPS.has(clientIP) || clientIP?.startsWith('100.64.')) {
+    return next();
+  }
+
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) {
-    logSecurityEvent('UNAUTHORIZED_ACCESS', { path: req.path, ip: req.ip }, 'CRITICAL');
+    logSecurityEvent('UNAUTHORIZED_ACCESS', { path: req.path, ip: clientIP }, 'CRITICAL');
     return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required' });
   }
   try {
@@ -119,7 +134,7 @@ const requireAuth = (req, res, next) => {
     req.user = decoded;
     next();
   } catch (err) {
-    logSecurityEvent('UNAUTHORIZED_ACCESS', { path: req.path, ip: req.ip, reason: 'invalid_token' }, 'CRITICAL');
+    logSecurityEvent('UNAUTHORIZED_ACCESS', { path: req.path, ip: clientIP, reason: 'invalid_token' }, 'CRITICAL');
     return res.status(401).json({ error: 'INVALID_TOKEN', message: 'Token invalid or expired' });
   }
 };
