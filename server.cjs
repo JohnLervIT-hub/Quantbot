@@ -4,6 +4,7 @@ const cors    = require('cors');
 const crypto  = require('crypto');
 const jwt     = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
+const helmet    = require('helmet');
 
 const { createClient } = require('@supabase/supabase-js');
 const supabase = process.env.SUPABASE_URL
@@ -11,20 +12,63 @@ const supabase = process.env.SUPABASE_URL
   : null;
 console.log('[SUPABASE]', supabase ? '✅ Connected' : '❌ Not configured');
 
+// ─── SECURITY HELPERS ─────────────────────────────────────────────────────────
+const maskKey   = (key)   => key   ? key.slice(0, 8) + '...' : 'NOT SET';
+const maskEmail = (email) => email ? email.replace(/(.{2}).*@/, '$1***@') : 'unknown';
+
+async function logSecurityEvent(event, details, severity) {
+  console.log('[SECURITY]', severity, event, JSON.stringify(details));
+  if (!supabase) return;
+  try {
+    await supabase.from('security_logs').insert({
+      id:        `sec_${Date.now()}`,
+      event,
+      details:   JSON.stringify(details),
+      severity,
+      ip:        details.ip || 'unknown',
+      timestamp: new Date().toISOString(),
+    });
+    if (severity === 'CRITICAL') {
+      await sendDiscordEmbed({
+        title:  '🚨 SECURITY ALERT',
+        color:  0xff0000,
+        fields: [
+          { name: 'Event',    value: event,                                       inline: true },
+          { name: 'Severity', value: severity,                                    inline: true },
+          { name: 'IP',       value: details.ip || 'unknown',                     inline: true },
+          { name: 'Details',  value: JSON.stringify(details).slice(0, 200),       inline: false },
+        ],
+      });
+    }
+  } catch (err) {
+    console.error('[SECURITY LOG ERROR]', err.message);
+  }
+}
+
 const app = express();
+app.disable('x-powered-by'); // belt-and-suspenders alongside helmet
+
+const ALLOWED_ORIGINS = [
+  'https://quantbot-phi.vercel.app',
+  'https://xxavier.ai',
+  'http://localhost:5173',
+  'http://localhost:3001',
+];
+
 app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'https://quantbot-phi.vercel.app',
-    /\.vercel\.app$/,
-    /\.railway\.app$/,
-    /\.up\.railway\.app$/,
-  ],
+  origin: (origin, callback) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+      callback(null, true);
+    } else {
+      logSecurityEvent('CORS_VIOLATION', { origin }, 'WARNING');
+      callback(new Error('CORS violation'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-order-source'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-order-source'],
 }));
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' }, contentSecurityPolicy: false }));
 // Save raw body for Discord signature verification
 app.use(express.json({
   verify: (req, _res, buf) => { req.rawBody = buf.toString(); },
@@ -34,19 +78,28 @@ app.use(express.json({
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
-  message: { error: 'TOO_MANY_ATTEMPTS', message: 'Too many login attempts. Try again in 15 minutes.' },
+  handler: (req, res) => {
+    logSecurityEvent('RATE_LIMIT_HIT', { path: req.path, ip: req.ip }, 'WARNING');
+    res.status(429).json({ error: 'TOO_MANY_ATTEMPTS', message: 'Too many login attempts. Try again in 15 minutes.' });
+  },
 });
 
 const orderLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
-  message: { error: 'ORDER_RATE_LIMITED', message: 'Too many order requests' },
+  handler: (req, res) => {
+    logSecurityEvent('RATE_LIMIT_HIT', { path: req.path, ip: req.ip }, 'WARNING');
+    res.status(429).json({ error: 'ORDER_RATE_LIMITED', message: 'Too many order requests' });
+  },
 });
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 100,
-  message: { error: 'RATE_LIMITED' },
+  handler: (req, res) => {
+    logSecurityEvent('RATE_LIMIT_HIT', { path: req.path, ip: req.ip }, 'WARNING');
+    res.status(429).json({ error: 'RATE_LIMITED' });
+  },
 });
 
 app.use('/auth/login', loginLimiter);
@@ -58,7 +111,7 @@ app.use(apiLimiter);
 const requireAuth = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) {
-    console.log('[SECURITY] Unauthorized access attempt:', req.path, 'from:', req.ip);
+    logSecurityEvent('UNAUTHORIZED_ACCESS', { path: req.path, ip: req.ip }, 'CRITICAL');
     return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required' });
   }
   try {
@@ -66,9 +119,43 @@ const requireAuth = (req, res, next) => {
     req.user = decoded;
     next();
   } catch (err) {
-    console.log('[SECURITY] Invalid token on:', req.path);
+    logSecurityEvent('UNAUTHORIZED_ACCESS', { path: req.path, ip: req.ip, reason: 'invalid_token' }, 'CRITICAL');
     return res.status(401).json({ error: 'INVALID_TOKEN', message: 'Token invalid or expired' });
   }
+};
+
+// ─── INPUT VALIDATION ─────────────────────────────────────────────────────────
+const validateOrderInput = (req, res, next) => {
+  const { instrument, units, direction } = req.body;
+
+  // Instrument format — normalize slashes/dashes before validating
+  const inst = (instrument || '').replace(/[/\-]/g, '_').toUpperCase();
+  if (!inst || !/^[A-Z0-9_]+$/.test(inst) || inst.length > 20) {
+    return res.status(400).json({ error: 'INVALID_INSTRUMENT', message: 'Invalid instrument format' });
+  }
+
+  // Units — allow negative values (negative = SHORT direction)
+  const u = Number(units);
+  if (!units || isNaN(u) || Math.abs(u) < 1 || Math.abs(u) > 100000) {
+    return res.status(400).json({ error: 'INVALID_UNITS', message: 'Units must be 1-100000' });
+  }
+
+  // Direction — only validated if explicitly present in body
+  if (direction !== undefined && !['LONG', 'SHORT'].includes(direction)) {
+    return res.status(400).json({ error: 'INVALID_DIRECTION', message: 'Direction must be LONG or SHORT' });
+  }
+
+  // SL/TP — validated only if provided; accept both field name conventions
+  const sl = req.body.stopLoss  ?? req.body.slPrice;
+  const tp = req.body.takeProfit ?? req.body.tp1Price;
+  if (sl !== undefined && sl !== null && parseFloat(sl) <= 0) {
+    return res.status(400).json({ error: 'INVALID_PRICES', message: 'SL and TP must be positive' });
+  }
+  if (tp !== undefined && tp !== null && parseFloat(tp) <= 0) {
+    return res.status(400).json({ error: 'INVALID_PRICES', message: 'SL and TP must be positive' });
+  }
+
+  next();
 };
 
 const BASE    = 'https://api-fxpractice.oanda.com';
@@ -156,7 +243,7 @@ app.get('/closed-trades', async (req, res) => {
   res.json(await r.json());
 });
 
-app.post('/order', requireAuth, async (req, res) => {
+app.post('/order', requireAuth, validateOrderInput, async (req, res) => {
   const _orderSource = req.headers['x-order-source'] || req.body.source || 'UNKNOWN';
   console.log('[ORDER SOURCE]', req.path, 'source:', _orderSource, 'approved:', req.body.approved || false, 'body:', JSON.stringify(req.body));
   console.log('[ORDER] BASE:', BASE, '| ACCOUNT:', ACCOUNT ? ACCOUNT.slice(0, 8) + '…' : 'MISSING');
@@ -243,7 +330,7 @@ app.post('/order', requireAuth, async (req, res) => {
 });
 
 // ─── SWING ORDER — instrument-calibrated units, explicit SL/TP1 prices ────────
-app.post('/swing/order', requireAuth, async (req, res) => {
+app.post('/swing/order', requireAuth, validateOrderInput, async (req, res) => {
   const _swingSource = req.headers['x-order-source'] || req.body.source || 'UNKNOWN';
   console.log('[ORDER SOURCE]', req.path, 'source:', _swingSource, 'approved:', req.body.approved || false, 'consensusConfirms:', req.body.consensusConfirms, 'body:', JSON.stringify(req.body));
   const { slPrice, tp1Price, consensusConfirms } = req.body;
@@ -511,11 +598,11 @@ app.post('/auth/login', (req, res) => {
       secret,
       { expiresIn: '30d' },
     );
-    console.log('[AUTH] Login success:', email);
+    logSecurityEvent('LOGIN_SUCCESS', { email: maskEmail(email), ip: req.ip }, 'INFO');
     return res.json({ token });
   }
 
-  console.warn('[AUTH] Failed login attempt for:', email);
+  logSecurityEvent('FAILED_LOGIN', { email: maskEmail(email), ip: req.ip }, 'WARNING');
   res.status(401).json({ error: 'Invalid credentials' });
 });
 
@@ -4283,10 +4370,15 @@ app.listen(PORT, '0.0.0.0', () => {
     'VITE_GEMINI_API_KEY',   // local dev fallback
     'VITE_AUTO_MODE',        // local dev fallback
   ];
+  const SENSITIVE_ENV = new Set(['OANDA_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GEMINI_API_KEY', 'DISCORD_BOT_TOKEN', 'JWT_SECRET', 'DASHBOARD_PASSWORD', 'SUPABASE_ANON_KEY']);
   console.log('── ENV AUDIT ─────────────────────────────');
-  REQUIRED_VARS.forEach(v => console.log(`  [ENV] ${v}: ${process.env[v] ? '✅ SET' : '❌ MISSING'}`));
+  REQUIRED_VARS.forEach(v => {
+    const val = process.env[v];
+    const display = !val ? '❌ MISSING' : SENSITIVE_ENV.has(v) ? maskKey(val) : '✅ SET';
+    console.log(`  [ENV] ${v}: ${display}`);
+  });
   console.log('  Optional:');
-  OPTIONAL_VARS.forEach(v => { if (process.env[v]) console.log(`  [ENV] ${v}: ✅ SET`); });
+  OPTIONAL_VARS.forEach(v => { if (process.env[v]) console.log(`  [ENV] ${v}: ${SENSITIVE_ENV.has(v) ? maskKey(process.env[v]) : '✅ SET'}`); });
   console.log('──────────────────────────────────────────');
 });
 
