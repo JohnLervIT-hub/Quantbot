@@ -692,6 +692,9 @@ const POST_CLOSE_COOLDOWN_MS  = 15 * 60 * 1000; // 15 minutes
 // Pending Kill Shot approvals — awaiting Discord EXECUTE/SKIP/WAIT
 const pendingKillShots = new Map(); // instrument → pending signal data
 
+// Trade context — entry metadata stored at fill, looked up at close for journaling
+const openTradeContexts = new Map(); // tradeId (string) → context object
+
 // ─── DRAWDOWN RECOVERY MODE ───────────────────────────────────────────────────
 let peakBalance       = 0;
 let recoveryMode      = false;
@@ -2061,7 +2064,7 @@ async function sendOandaOrder({ instrument, units, stopLoss, takeProfit }) {
   return r.json();
 }
 
-async function placeOrder({ instrument, direction, units, entry, stopLoss, takeProfit, source, score, session, strategy, approved = false, patternData = null }) {
+async function placeOrder({ instrument, direction, units, entry, stopLoss, takeProfit, source, score, session, strategy, approved = false, patternData = null, context = null }) {
   const pair = normalizeInstrument(instrument);
   console.log('[ORDER PLACED]', pair, direction, 'source:', source || 'UNKNOWN', 'approved:', approved, 'score:', score, 'session:', session, 'strategy:', strategy);
   console.log('[ORDER]', source, pair, direction, units, 'units');
@@ -2133,6 +2136,10 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
   const fill    = result.orderFillTransaction.price;
   const tradeId = result.orderFillTransaction.tradeOpened?.tradeID || result.orderFillTransaction.id || null;
   console.log('[ORDER SUCCESS]', pair, 'tradeID:', tradeId);
+
+  if (context && tradeId) {
+    openTradeContexts.set(tradeId.toString(), { ...context, openTime: new Date().toISOString() });
+  }
 
   await sendDiscordEmbed({
     title: '⚡ TRADE OPENED',
@@ -2264,28 +2271,44 @@ async function saveTradeToSupabase(trade) {
   if (!supabase) return;
   try {
     const { error } = await supabase.from('trades').upsert({
-      id:            trade.id,
-      pair:          trade.pair,
-      direction:     trade.direction,
-      session:       trade.session,
-      strategy:      trade.strategy,
-      entry:         trade.entry,
-      exit_price:    trade.exitPrice,
-      stop_loss:     trade.stopLoss,
-      take_profit:   trade.takeProfit,
-      pnl:           trade.pnl,
-      r_multiple:    trade.rMultiple,
-      score:         trade.score,
-      consensus:     trade.consensus,
-      units:         trade.units,
-      duration_mins: trade.durationMins,
-      outcome:       trade.pnl > 0 ? 'WIN' : trade.pnl < 0 ? 'LOSS' : 'BREAKEVEN',
-      market_regime: trade.regime,
-      ema50_above:   trade.ema50Above,
-      rsi_at_entry:  trade.rsiAtEntry,
-      open_time:     trade.openTime,
-      close_time:    new Date().toISOString(),
-      created_at:    new Date().toISOString(),
+      id:                 trade.id,
+      pair:               trade.pair,
+      direction:          trade.direction,
+      session:            trade.session,
+      strategy:           trade.strategy,
+      entry:              trade.entry,
+      exit_price:         trade.exitPrice,
+      stop_loss:          trade.stopLoss,
+      take_profit:        trade.takeProfit,
+      pnl:                trade.pnl,
+      r_multiple:         trade.rMultiple,
+      score:              trade.score,
+      consensus:          trade.consensus,
+      units:              trade.units,
+      duration_mins:      trade.durationMins,
+      outcome:            trade.pnl > 0 ? 'WIN' : trade.pnl < 0 ? 'LOSS' : 'BREAKEVEN',
+      market_regime:      trade.regime,
+      ema50_above:        trade.ema50Above,
+      rsi_at_entry:       trade.rsiAtEntry,
+      open_time:          trade.openTime,
+      close_time:         new Date().toISOString(),
+      created_at:         new Date().toISOString(),
+      candle_patterns:    trade.candlePatterns    ?? null,
+      pattern_adjustment: trade.patternAdjustment ?? null,
+      pattern_bias:       trade.patternBias       ?? null,
+      candle_confirms:    trade.candleConfirms    ?? null,
+      warren_verdict:     trade.warrenVerdict     ?? null,
+      george_verdict:     trade.georgeVerdict     ?? null,
+      james_verdict:      trade.jamesVerdict      ?? null,
+      ray_verdict:        trade.rayVerdict        ?? null,
+      consensus_votes:    trade.consensusVotes    ?? null,
+      options_pcr:        trade.optionsPcr        ?? null,
+      options_bias:       trade.optionsBias       ?? null,
+      regime_at_entry:    trade.regimeAtEntry     ?? null,
+      ema50_side:         trade.ema50Side         ?? null,
+      heat_at_entry:      trade.heatAtEntry       ?? null,
+      recovery_mode:      trade.recoveryMode      ?? null,
+      atr_at_entry:       trade.atrAtEntry        ?? null,
     });
     if (error) {
       console.error('[SUPABASE ERROR]', error.message);
@@ -2409,27 +2432,45 @@ async function manageOpenTrades() {
           const _rMult       = _riskTotal > 0 ? pnl / _riskTotal : null;
           const _durMins     = trade.openTime ? Math.round((Date.now() - new Date(trade.openTime).getTime()) / 60000) : null;
           const _closeSess   = getServerSession();
+          const ctx          = openTradeContexts.get(id.toString()) || {};
           await saveTradeToSupabase({
-            id:           trade.id,
-            pair:         instr,
-            direction:    dir,
-            session:      _closeSess,
-            strategy:     (XAVIER_RULES[_closeSess] || {}).strategy || null,
-            entry:        _entry,
-            exitPrice:    _exitPrice,
-            stopLoss:     _sl,
-            takeProfit:   _tp,
+            id:                 trade.id,
+            pair:               instr,
+            direction:          dir,
+            session:            _closeSess,
+            strategy:           (XAVIER_RULES[_closeSess] || {}).strategy || null,
+            entry:              _entry,
+            exitPrice:          _exitPrice,
+            stopLoss:           _sl,
+            takeProfit:         _tp,
             pnl,
-            rMultiple:    _rMult,
-            score:        null,
-            consensus:    null,
-            units:        _units,
-            durationMins: _durMins,
-            regime:       null,
-            ema50Above:   null,
-            rsiAtEntry:   null,
-            openTime:     trade.openTime,
+            rMultiple:          _rMult,
+            score:              ctx.score              ?? null,
+            consensus:          ctx.consensusVotes     ?? null,
+            units:              _units,
+            durationMins:       _durMins,
+            regime:             ctx.regimeAtEntry      ?? null,
+            ema50Above:         null,
+            rsiAtEntry:         null,
+            openTime:           ctx.openTime || trade.openTime,
+            candlePatterns:     ctx.candlePatterns     ?? null,
+            patternAdjustment:  ctx.patternAdjustment  ?? null,
+            patternBias:        ctx.patternBias        ?? null,
+            candleConfirms:     ctx.candleConfirms     ?? null,
+            warrenVerdict:      ctx.warrenVerdict      ?? null,
+            georgeVerdict:      ctx.georgeVerdict      ?? null,
+            jamesVerdict:       ctx.jamesVerdict       ?? null,
+            rayVerdict:         ctx.rayVerdict         ?? null,
+            consensusVotes:     ctx.consensusVotes     ?? null,
+            optionsPcr:         ctx.optionsPcr         ?? null,
+            optionsBias:        ctx.optionsBias        ?? null,
+            regimeAtEntry:      ctx.regimeAtEntry      ?? null,
+            ema50Side:          ctx.ema50Side          ?? null,
+            heatAtEntry:        ctx.heatAtEntry        ?? null,
+            recoveryMode:       ctx.recoveryMode       ?? null,
+            atrAtEntry:         ctx.atrAtEntry         ?? null,
           });
+          openTradeContexts.delete(id.toString());
         }
       } catch (e) {
         console.error('[mgmt] Closed trade fetch failed:', e.message);
@@ -3421,6 +3462,26 @@ async function serverAutoTrade() {
       : (NORMAL_UNITS[instrument]   || NORMAL_UNITS.default);
     const units = signal.direction === 'LONG' ? unitSize : -unitSize;
 
+    const tradeContext = {
+      score:              signal.score,
+      consensusVotes:     consensus.votes.confirm,
+      warrenVerdict:      consensus.models.find(m => m.name === 'WARREN')?.verdict  || null,
+      georgeVerdict:      consensus.models.find(m => m.name === 'GEORGE')?.verdict  || null,
+      jamesVerdict:       consensus.models.find(m => m.name === 'JAMES')?.verdict   || null,
+      rayVerdict:         consensus.models.find(m => m.name === 'RAY')?.verdict     || null,
+      candlePatterns:     patternAnalysis?.patterns     || null,
+      patternAdjustment:  patternAnalysis?.scoreAdjustment ?? null,
+      patternBias:        patternAnalysis?.directionBias   || null,
+      candleConfirms:     patternAnalysis?.confirms        ?? null,
+      optionsPcr:         optionsData?.putCallRatio        ?? null,
+      optionsBias:        optionsData?.institutionalBias   || null,
+      regimeAtEntry:      signal.regime                    || null,
+      ema50Side:          ema50side                        || null,
+      heatAtEntry:        parseFloat(heat)                 ?? null,
+      recoveryMode:       recoveryMode                     || false,
+      atrAtEntry:         atr                              ?? null,
+    };
+
     try {
       console.log('[ORDER SOURCE] serverAutoTrade', 'instrument:', instrument, 'direction:', signal.direction, 'score:', signal.score, 'session:', session, 'strategy:', strategy, 'approved: false (M5-Auto no-approval-required)');
       const result = await placeOrder({
@@ -3430,6 +3491,7 @@ async function serverAutoTrade() {
         source: 'M5-Auto', score: signal.score, session, strategy,
         approved: false,
         patternData: patternAnalysis,
+        context: tradeContext,
       });
 
       if (result.blocked === 'MARKET_HALTED') {
