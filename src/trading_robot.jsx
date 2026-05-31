@@ -9631,7 +9631,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "analytics" ? "block" : "none" }}>
-        <PerformanceDashboard isVisible={tab === "analytics"} trades={trades} closedTrades={closedTrades} balance={balance} isMobile={isMobile} />
+        <PerformanceDashboard isVisible={tab === "analytics"} trades={trades} closedTrades={closedTrades} balance={displayNav} isMobile={isMobile} />
       </div>
 
       <div style={{ display: tab === "schedule" ? "block" : "none" }}>
