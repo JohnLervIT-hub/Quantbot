@@ -19,10 +19,8 @@ const maskEmail = (email) => email ? email.replace(/(.{2}).*@/, '$1***@') : 'unk
 const INTERNAL_IPS = new Set(['100.64.0.2', '127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
 async function logSecurityEvent(event, details, severity) {
-  // Downgrade Railway internal network events — not real threats
-  const isInternal = details.ip?.startsWith('100.64.') ||
-    INTERNAL_IPS.has(details.ip);
-  if (isInternal) severity = 'INFO';
+  const isInternal = details.ip?.startsWith('100.64.') || INTERNAL_IPS.has(details.ip);
+  if (isInternal) return; // Railway internal IPs are health checks — not threats
 
   console.log('[SECURITY]', severity, event);
   if (!supabase) return;
@@ -35,16 +33,15 @@ async function logSecurityEvent(event, details, severity) {
       ip:        details.ip || 'unknown',
       timestamp: new Date().toISOString(),
     });
-    // Only Discord-alert for genuine external CRITICAL events
-    if (severity === 'CRITICAL' && !isInternal) {
+    if (severity === 'CRITICAL') {
       await sendDiscordEmbed({
         title:  '🚨 SECURITY ALERT',
         color:  0xff0000,
         fields: [
-          { name: 'Event',    value: event,                                       inline: true },
-          { name: 'Severity', value: severity,                                    inline: true },
-          { name: 'IP',       value: details.ip || 'unknown',                     inline: true },
-          { name: 'Details',  value: JSON.stringify(details).slice(0, 200),       inline: false },
+          { name: 'Event',    value: event,                                 inline: true },
+          { name: 'Severity', value: severity,                              inline: true },
+          { name: 'IP',       value: details.ip || 'unknown',               inline: true },
+          { name: 'Details',  value: JSON.stringify(details).slice(0, 200), inline: false },
         ],
       });
     }
@@ -83,9 +80,12 @@ app.use(express.json({
 }));
 
 // ─── RATE LIMITERS ────────────────────────────────────────────────────────────
+const skipInternalIPs = (req) => INTERNAL_IPS.has(req.ip) || req.ip?.startsWith('100.64.');
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
+  skip: skipInternalIPs,
   handler: (req, res) => {
     logSecurityEvent('RATE_LIMIT_HIT', { path: req.path, ip: req.ip }, 'WARNING');
     res.status(429).json({ error: 'TOO_MANY_ATTEMPTS', message: 'Too many login attempts. Try again in 15 minutes.' });
@@ -95,6 +95,7 @@ const loginLimiter = rateLimit({
 const orderLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
+  skip: skipInternalIPs,
   handler: (req, res) => {
     logSecurityEvent('RATE_LIMIT_HIT', { path: req.path, ip: req.ip }, 'WARNING');
     res.status(429).json({ error: 'ORDER_RATE_LIMITED', message: 'Too many order requests' });
@@ -104,6 +105,7 @@ const orderLimiter = rateLimit({
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 100,
+  skip: skipInternalIPs,
   handler: (req, res) => {
     logSecurityEvent('RATE_LIMIT_HIT', { path: req.path, ip: req.ip }, 'WARNING');
     res.status(429).json({ error: 'RATE_LIMITED' });
