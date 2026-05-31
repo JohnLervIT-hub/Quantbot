@@ -863,8 +863,8 @@ const SERVER_PIP_SIZE = {
 const SPREAD_COSTS = {
   EUR_USD: 0.0002, GBP_USD: 0.0003, USD_JPY: 0.02,
   AUD_USD: 0.0003, USD_CAD: 0.0003, NZD_USD: 0.0004,
-  EUR_GBP: 0.0003, XAU_USD: 0.30,   XAG_USD: 0.04,
-  NAS100_USD: 2.0, SPX500_USD: 0.5,  AU200_AUD: 1.0,
+  EUR_GBP: 0.0002, XAU_USD: 0.350,  XAG_USD: 0.050,
+  NAS100_USD: 1.5, SPX500_USD: 0.5,  AU200_AUD: 1.0,
   BCO_USD: 0.05,   WTICO_USD: 0.05,
 };
 
@@ -2311,8 +2311,7 @@ async function manageOpenTrades() {
     const minPips   = MIN_BREAKEVEN_PIPS[instrument] ?? 0.0010;
     const pipsMoved = Math.abs(price - entry);
     if (currentR >= 1.5 && pipsMoved >= minPips && !state.movedToBreakeven) {
-      const pip     = SERVER_PIP_SIZE[instrument] || 0.0001;
-      const bePrice = dir === 'LONG' ? entry + pip : entry - pip;
+      const bePrice = dir === 'LONG' ? entry + risk * 0.5 : entry - risk * 0.5;
       const moved   = await updateTradeSL(tradeId, bePrice, instrument);
       if (moved) {
         state.movedToBreakeven = true;
@@ -2320,7 +2319,7 @@ async function manageOpenTrades() {
         await sendNotification(
           `🛡 <b>BREAKEVEN</b>\n` +
           `${instrument.replace('_', '/')} ${dir}\n` +
-          `SL → ${formatPrice(bePrice, instrument)} (entry +1pip)\n` +
+          `SL → ${formatPrice(bePrice, instrument)} (entry +0.5R)\n` +
           `Current: +${currentR.toFixed(2)}R`,
           {
             color: 0x0088ff,
@@ -2329,7 +2328,7 @@ async function manageOpenTrades() {
               { name: 'Pair',          value: instrument.replace('_', '/'), inline: true },
               { name: 'Direction',     value: dir,                          inline: true },
               { name: 'Reached',       value: `+${currentR.toFixed(2)}R`,  inline: true },
-              { name: 'Stop Moved To', value: `${formatPrice(bePrice, instrument)} (entry +1pip)`, inline: false },
+              { name: 'Stop Moved To', value: `${formatPrice(bePrice, instrument)} (entry +0.5R)`, inline: false },
             ],
             timestamp: new Date().toISOString(),
           }
@@ -2337,36 +2336,34 @@ async function manageOpenTrades() {
       }
     }
 
-    // ── 1R reached: partial close 33% (keep 67% running toward 2R/3R) ────────
+    // ── 1R reached: partial close 25% (keep 75% running toward 2R/3R) ────────
     if (currentR >= 1.0 && !state.partialClosed) {
-      const thirdUnits = Math.round(Math.abs(units) * 0.33);
-      if (thirdUnits > 0) {
-        const result = await partialCloseTrade(tradeId, thirdUnits);
+      const quarterUnits = Math.floor(Math.abs(units) * 0.25);
+      if (quarterUnits > 0) {
+        const result = await partialCloseTrade(tradeId, quarterUnits);
         if (result) {
           state.partialClosed = true;
           console.log(`[DISCORD NOTIFY] attempting send for ${instrument} — partial close`);
           await sendNotification(
-            `💰 <b>PARTIAL CLOSE 33%</b>\n` +
+            `💰 <b>PARTIAL CLOSE 25%</b>\n` +
             `${instrument.replace('_', '/')} ${dir}\n` +
-            `Closed ${thirdUnits} units @ ${formatPrice(result.fill, instrument)}\n` +
+            `Closed ${quarterUnits} units @ ${formatPrice(result.fill, instrument)}\n` +
             `Locked: ${result.pnl >= 0 ? '+' : ''}$${result.pnl.toFixed(2)}\n` +
-            `67% still running`
+            `75% still running`
           );
         }
       }
     }
 
-    // ── Trail stop: pair-specific startR and trailR ───────────────────────────
-    // Commodities (XAG, BCO, WTICO, XAU): start at 1.5R, trail 0.3R behind
-    // Forex/indices: start at 2.0R, trail 0.5R behind
-    if (currentR >= trail.startR) {
+    // ── Trail stop: start at 2.0R, trail 1R behind current price ────────────
+    if (currentR >= 2.0) {
       const trailPrice = dir === 'LONG'
-        ? entry + risk * (currentR - trail.trailR)
-        : entry - risk * (currentR - trail.trailR);
+        ? price - risk
+        : price + risk;
       const currentSL  = parseFloat(trade.stopLossOrder?.price || sl);
       const improving   = dir === 'LONG'
-        ? trailPrice > currentSL + risk * 0.05
-        : trailPrice < currentSL - risk * 0.05;
+        ? trailPrice > currentSL
+        : trailPrice < currentSL;
       if (improving) {
         await updateTradeSL(tradeId, trailPrice, instrument);
         console.log(`[TRAIL] ${instrument} ${dir} — SL → ${formatPrice(trailPrice, instrument)} (+${currentR.toFixed(2)}R)`);
