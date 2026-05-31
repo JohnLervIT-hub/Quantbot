@@ -1033,6 +1033,15 @@ Average IV: ${p.optionsData.avgIV}
 Confirms direction: ${p.optionsData.confirmsTrade}
 Factor institutional positioning into your CONFIRM/REJECT decision.`
     : '';
+  const patternBlock = p.patternAnalysis
+    ? `\nCANDLESTICK PATTERN ANALYSIS:
+Patterns: ${p.patternAnalysis.patterns.join(', ')}
+Score adjustment: ${p.patternAnalysis.scoreAdjustment > 0 ? '+' + p.patternAnalysis.scoreAdjustment : p.patternAnalysis.scoreAdjustment}
+Direction bias: ${p.patternAnalysis.directionBias}
+Confirms trade: ${p.patternAnalysis.directionBias === p.direction || p.patternAnalysis.directionBias === 'NEUTRAL'}
+
+Institutional traders read these patterns. Factor price action into your decision.`
+    : '';
   return `You are WARREN — Risk Guardian. Inspired by Warren Buffett: protect capital above all. Most likely to reject.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
@@ -1042,7 +1051,7 @@ Portfolio Heat: ${p.heat || '0'}R / 6R max
 News risk: ${p.newsRisk || 'LOW'}
 ATR: ${p.atr || '?'} (${p.atrPips || '?'} pips)
 Stop Loss: ${p.sl || '?'} | Take Profit: ${p.tp || '?'}
-Signal reason: ${p.reason}${xavierBlock}${freshnessBlock}${optionsBlock}
+Signal reason: ${p.reason}${xavierBlock}${freshnessBlock}${optionsBlock}${patternBlock}
 
 WEIGHTING RULE — M5 TRADES (apply this before any other check):
 Trend alignment carries 70% of your decision weight.
@@ -1088,6 +1097,15 @@ Average IV: ${p.optionsData.avgIV}
 Confirms direction: ${p.optionsData.confirmsTrade}
 Factor institutional positioning into your CONFIRM/REJECT decision.`
     : '';
+  const gptPatternBlock = p.patternAnalysis
+    ? `\nCANDLESTICK PATTERN ANALYSIS:
+Patterns: ${p.patternAnalysis.patterns.join(', ')}
+Score adjustment: ${p.patternAnalysis.scoreAdjustment > 0 ? '+' + p.patternAnalysis.scoreAdjustment : p.patternAnalysis.scoreAdjustment}
+Direction bias: ${p.patternAnalysis.directionBias}
+Confirms trade: ${p.patternAnalysis.directionBias === p.direction || p.patternAnalysis.directionBias === 'NEUTRAL'}
+
+Institutional traders read these patterns. Factor price action into your decision.`
+    : '';
   return `You are GEORGE — Pattern Analyst. Inspired by George Soros: ride the trend, validate price action only.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
@@ -1096,7 +1114,7 @@ EMA9: ${p.ema9 || '?'} | EMA21: ${p.ema21 || '?'} | EMA50: ${p.ema50 || '?'} | P
 Last 5 closes: ${p.closes || p.price}
 Trend regime: ${p.regime || 'UNKNOWN'}
 Momentum: ${p.momentum || '0'}%
-RSI: ${p.rsi}${gptOptionsBlock}
+RSI: ${p.rsi}${gptOptionsBlock}${gptPatternBlock}
 
 WEIGHTING RULE — M5 TRADES:
 Trend alignment carries 70% of your decision weight.
@@ -2030,7 +2048,7 @@ async function sendOandaOrder({ instrument, units, stopLoss, takeProfit }) {
   return r.json();
 }
 
-async function placeOrder({ instrument, direction, units, entry, stopLoss, takeProfit, source, score, session, strategy, approved = false }) {
+async function placeOrder({ instrument, direction, units, entry, stopLoss, takeProfit, source, score, session, strategy, approved = false, patternData = null }) {
   const pair = normalizeInstrument(instrument);
   console.log('[ORDER PLACED]', pair, direction, 'source:', source || 'UNKNOWN', 'approved:', approved, 'score:', score, 'session:', session, 'strategy:', strategy);
   console.log('[ORDER]', source, pair, direction, units, 'units');
@@ -2113,6 +2131,10 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
       { name: 'Entry',     value: fill,                    inline: true },
       { name: 'SL',        value: formattedSL || '—',      inline: true },
       { name: 'TP',        value: formattedTP || '—',      inline: true },
+      ...(patternData ? [
+        { name: '🕯️ Pattern', value: patternData.patterns.length > 0 ? patternData.patterns.join(', ') : 'None detected', inline: true },
+        { name: '📊 PA Bias',  value: patternData.directionBias,                                                           inline: true },
+      ] : []),
     ],
     timestamp: new Date().toISOString(),
   });
@@ -3048,6 +3070,26 @@ async function serverAutoTrade() {
       continue;
     }
 
+    // Pattern analysis — fetch last 3 M5 candles and adjust score / block contradictions
+    let patternAnalysis = null;
+    const recentCandles = await getCandles(instrument, 'M5', 3);
+    const rawPatternAnalysis = analyzeCandlePatterns(recentCandles);
+    if (rawPatternAnalysis && rawPatternAnalysis.patterns.length > 0) {
+      const { patterns, scoreAdjustment, directionBias } = rawPatternAnalysis;
+      console.log('[PATTERNS]', instrument, patterns.join(', '), 'adjustment:', scoreAdjustment, 'bias:', directionBias);
+      signal.score = Math.min(100, Math.max(0, signal.score + scoreAdjustment));
+      const strongPatterns = ['BULLISH_ENGULFING', 'BEARISH_ENGULFING', 'THREE_SOLDIERS', 'THREE_CROWS'];
+      if (directionBias !== 'NEUTRAL' && directionBias !== signal.direction && patterns.some(p => strongPatterns.includes(p))) {
+        console.log('[PATTERN BLOCK]', instrument, '—', patterns[0], 'contradicts', signal.direction);
+        continue;
+      }
+      if (patterns.includes('DOJI')) {
+        console.log('[PATTERN SKIP]', instrument, '— DOJI detected, skipping');
+        continue;
+      }
+      patternAnalysis = { patterns, scoreAdjustment, directionBias, confirms: directionBias === signal.direction || directionBias === 'NEUTRAL' };
+    }
+
     // Recovery mode — raised threshold for all pairs
     const scoreThresholdEffective = recoveryMode ? 75
       : (HIGH_THRESHOLD_PAIRS.has(instrument) ? 75 : 65);
@@ -3342,6 +3384,7 @@ async function serverAutoTrade() {
           avgIV:             optionsData.avgIV,
           confirmsTrade:     optionsData.signal === signal.direction,
         } : null,
+        patternAnalysis:    patternAnalysis,
       });
     } catch (e) {
       console.error(`[auto] Consensus error ${instrument}: ${e.message}`);
@@ -3373,6 +3416,7 @@ async function serverAutoTrade() {
         entry: price, stopLoss: sl, takeProfit: tp,
         source: 'M5-Auto', score: signal.score, session, strategy,
         approved: false,
+        patternData: patternAnalysis,
       });
 
       if (result.blocked === 'MARKET_HALTED') {
@@ -3617,6 +3661,26 @@ async function serverSwingAutoTrade() {
       const sig = serverGenerateSwingSignal(h4Candles, weeklyCandles, instrument);
       if (!sig) continue;
 
+      // Pattern analysis — fetch last 3 M15 candles and adjust score / block contradictions
+      let swingPatternAnalysis = null;
+      const swingRecentCandles = await getCandles(instrument, 'M15', 3);
+      const rawSwingPattern = analyzeCandlePatterns(swingRecentCandles);
+      if (rawSwingPattern && rawSwingPattern.patterns.length > 0) {
+        const { patterns, scoreAdjustment, directionBias } = rawSwingPattern;
+        console.log('[PATTERNS SWING]', instrument, patterns.join(', '), 'adjustment:', scoreAdjustment, 'bias:', directionBias);
+        sig.score = Math.min(100, Math.max(0, sig.score + scoreAdjustment));
+        const strongPatterns = ['BULLISH_ENGULFING', 'BEARISH_ENGULFING', 'THREE_SOLDIERS', 'THREE_CROWS'];
+        if (directionBias !== 'NEUTRAL' && directionBias !== sig.direction && patterns.some(p => strongPatterns.includes(p))) {
+          console.log('[PATTERN BLOCK SWING]', instrument, '—', patterns[0], 'contradicts', sig.direction);
+          continue;
+        }
+        if (patterns.includes('DOJI')) {
+          console.log('[PATTERN SKIP SWING]', instrument, '— DOJI detected, skipping');
+          continue;
+        }
+        swingPatternAnalysis = { patterns, scoreAdjustment, directionBias, confirms: directionBias === sig.direction || directionBias === 'NEUTRAL' };
+      }
+
       // Cross-system pair lock — block if OANDA already has ANY open trade on this instrument
       if (openTrades.some(t => normalizeInstrument(t.instrument) === normalizeInstrument(instrument))) {
         console.log(`[SWING PAIR LOCK] ${instrument} already open in another timeframe — skipping swing`);
@@ -3687,6 +3751,7 @@ async function serverSwingAutoTrade() {
         xavierBrief:       swingIntelFresh ? lastXavierIntel.brief      : null,
         freshNews:         swingIntelFresh ? lastXavierIntel.freshNews  : null,
         xavierIntelAgeMin: swingIntelAgeMins,
+        patternAnalysis:   swingPatternAnalysis,
       };
 
       // Duplicate guard — fresh OANDA check before committing to consensus
@@ -4503,6 +4568,16 @@ app.get('/options/:instrument', requireAuth, async (req, res) => {
   const data = await scanOptionsChain(req.params.instrument);
   if (!data) return res.json({ error: 'No options data available' });
   res.json(data);
+});
+
+app.get('/patterns/test/:instrument', requireAuth, async (req, res) => {
+  const candles  = await getCandles(req.params.instrument, 'M5', 3);
+  const analysis = analyzeCandlePatterns(candles);
+  res.json({
+    instrument: req.params.instrument,
+    candles: candles.map(c => ({ open: c.open, high: c.high, low: c.low, close: c.close, time: c.time })),
+    analysis,
+  });
 });
 
 // ─── START ────────────────────────────────────────────────────────────────────
