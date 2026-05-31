@@ -3211,6 +3211,19 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
 function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriPM, isNewsBlock, pendingSetups, session, xavierIntel, freshNews, livePrices, newsLastFetchedAt = 0 }) {
   const [consensusMap, setConsensusMap] = useState({});
   const fetchedRef = useRef(new Set());
+  const [serverSwingStatus, setServerSwingStatus] = useState(null);
+
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const r = await fetch(`${BRIDGE}/swing/status`);
+        if (r.ok) setServerSwingStatus(await r.json());
+      } catch { /* bridge offline */ }
+    };
+    poll();
+    const id = setInterval(poll, 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const sessionPairs = KILL_SHOT_PAIRS.filter(p => {
     const allowed = INSTRUMENT_HOME_SESSIONS[p.replace("/", "_")];
@@ -3317,10 +3330,25 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
           <div style={{ fontSize: 13, fontWeight: 700, color: "#F97316" }}>⚔️ Kill Shot — Swing Scanner</div>
           <div style={{ fontSize: 10, color: "#484f58", marginTop: 1 }}>H4 · 3–5R targets · 2-5 day holds</div>
         </div>
-        <div style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO }}>
-          {scanning ? "Scanning…" : `${sessionPairs.length} pairs`}
+        <div style={{ fontSize: 10, fontFamily: FONT_MONO, color: serverSwingStatus?.status === "MAINTENANCE" ? "#f85149" : serverSwingStatus?.status === "SCANNING" ? "#58a6ff" : "#3fb950", fontWeight: 600 }}>
+          {serverSwingStatus?.status === "MAINTENANCE" ? "⚠ MAINTENANCE" : scanning || serverSwingStatus?.status === "SCANNING" ? "● SCANNING" : `● LIVE · ${sessionPairs.length} pairs`}
         </div>
       </div>
+
+      {/* OANDA maintenance banner */}
+      {serverSwingStatus?.status === "MAINTENANCE" && (
+        <div style={{ padding: "8px 14px", background: "#f8514910", borderBottom: "1px solid #f8514930", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 10, color: "#f85149", fontWeight: 700 }}>⚠ OANDA MAINTENANCE</span>
+            <span style={{ fontSize: 10, color: "#8b949e" }}>Scanner standing by — no new signals during maintenance window</span>
+          </div>
+          {serverSwingStatus.lastSignal && (
+            <span style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO }}>
+              Last: {serverSwingStatus.lastSignal.instrument?.replace("_", "/")} {serverSwingStatus.lastSignal.direction}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Guard 2 — Friday PM warning */}
       {isFriPM && (
