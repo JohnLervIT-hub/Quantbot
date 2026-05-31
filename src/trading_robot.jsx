@@ -7182,7 +7182,7 @@ function PerformanceDashboard({ trades, closedTrades = [], balance, isMobile }) 
   const currentVal = filteredCurve[filteredCurve.length - 1];
   const peakIdx = filteredCurve.indexOf(peakVal);
   const afterPeak = filteredCurve.slice(peakIdx);
-  const maxDrawdown = peakVal > 0 ? ((peakVal - Math.min(...afterPeak)) / peakVal * 100) : 0;
+  const maxDrawdown = peakVal > 0 && balance > 0 ? Math.min(100, Math.max(0, (peakVal - Math.min(...afterPeak)) / balance * 100)) : 0;
 
   const pairStats = {};
   analyticsData.forEach(t => {
