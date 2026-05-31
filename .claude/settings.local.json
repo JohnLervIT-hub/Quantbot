@@ -8,7 +8,8 @@
       "Bash(pkill -f \"node server.cjs\")",
       "Bash(git push *)",
       "Bash(git commit *)",
-      "Bash(node --check server.cjs)"
+      "Bash(node --check server.cjs)",
+      "Bash(node *)"
     ]
   }
 }
