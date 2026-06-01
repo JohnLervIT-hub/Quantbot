@@ -7279,8 +7279,8 @@ function TradeHistoryTab({ isVisible, closedTrades = [] }) {
 
       {/* ── Trade table ─────────────────────────────────────────────────────── */}
       <div style={{ ...CARD, overflow: 'hidden', marginBottom: 12 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '88px 54px 52px 74px 74px 52px 66px 62px', gap: '0 6px', padding: '7px 12px', borderBottom: '1px solid #21262d', fontSize: 9, color: '#484f58', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          {['Date', 'Pair', 'Dir', 'Entry', 'Exit', 'R', 'P&L', 'Session'].map(h => <div key={h}>{h}</div>)}
+        <div style={{ display: 'grid', gridTemplateColumns: '88px 54px 52px 74px 74px 52px 66px 62px 52px', gap: '0 6px', padding: '7px 12px', borderBottom: '1px solid #21262d', fontSize: 9, color: '#484f58', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          {['Date', 'Pair', 'Dir', 'Entry', 'Exit', 'R', 'P&L', 'Session', 'Dur'].map(h => <div key={h}>{h}</div>)}
         </div>
         {loading ? (
           <div style={{ padding: '32px 0', textAlign: 'center', color: '#484f58', fontSize: 11 }}>Loading…</div>
@@ -7288,7 +7288,7 @@ function TradeHistoryTab({ isVisible, closedTrades = [] }) {
           <div style={{ padding: '32px 0', textAlign: 'center', color: '#484f58', fontSize: 12 }}>No trades found</div>
         ) : paginated.map((t, i) => (
           <div key={t.id || i} onClick={() => setSelectedTrade(selectedTrade?.id === t.id ? null : t)}
-            style={{ display: 'grid', gridTemplateColumns: '88px 54px 52px 74px 74px 52px 66px 62px', gap: '0 6px', padding: '7px 12px', borderBottom: '0.5px solid #0d1117', fontSize: 11, cursor: 'pointer', alignItems: 'center', background: selectedTrade?.id === t.id ? 'rgba(88,166,255,0.06)' : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)' }}>
+            style={{ display: 'grid', gridTemplateColumns: '88px 54px 52px 74px 74px 52px 66px 62px 52px', gap: '0 6px', padding: '7px 12px', borderBottom: '0.5px solid #0d1117', fontSize: 11, cursor: 'pointer', alignItems: 'center', background: selectedTrade?.id === t.id ? 'rgba(88,166,255,0.06)' : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)' }}>
             <div style={{ fontFamily: FONT_MONO, color: '#484f58', fontSize: 9 }}>{fmtTime(t.close_time)}</div>
             <div style={{ fontFamily: FONT_MONO, color: '#e6edf3', fontSize: 10, fontWeight: 600 }}>{(t.pair || '—').replace('_', '/')}</div>
             <div style={{ color: t.direction === 'LONG' ? '#3fb950' : '#f85149', fontSize: 10, fontWeight: 600 }}>{t.direction || '—'}</div>
@@ -7301,6 +7301,9 @@ function TradeHistoryTab({ isVisible, closedTrades = [] }) {
               {t.pnl != null ? `${t.pnl >= 0 ? '+$' : '-$'}${Math.abs(t.pnl).toFixed(2)}` : '—'}
             </div>
             <div style={{ fontSize: 9, color: '#8b949e' }}>{t.session || '—'}</div>
+            <div style={{ fontFamily: FONT_MONO, color: '#484f58', fontSize: 9 }}>
+              {t.duration_mins != null ? (t.duration_mins >= 60 ? `${Math.floor(t.duration_mins / 60)}h${t.duration_mins % 60 > 0 ? `${t.duration_mins % 60}m` : ''}` : `${t.duration_mins}m`) : '—'}
+            </div>
           </div>
         ))}
       </div>
