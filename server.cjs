@@ -777,7 +777,7 @@ const XAVIER_RULES = {
 // M5 auto-execution allowlist — 180d spread-adjusted backtest validated 2026-05-30
 // SWING_ONLY (M15 validated, not M5): AUD_USD, USD_CAD, NZD_USD
 // SWING_ONLY (Kill Shot manual only): BCO_USD, WTICO_USD
-// SWING_ONLY (DD too high for M5):    UK100_GBP, JP225_USD, SPX500_USD
+// SWING_ONLY (DD too high for M5):    UK100_GBP, SPX500_USD, JP225_USD (Kill Shot manual only)
 const SERVER_PAIRS = new Set([
   'EUR_USD',    // +0.31R ✅
   'GBP_USD',    // +0.45R ✅
@@ -792,7 +792,7 @@ const SERVER_PAIRS = new Set([
 // Index pairs — home session only, 75%+ score required (tighter spreads, higher conviction)
 const INDEX_PAIRS = new Set([
   'SPX500_USD', 'NAS100_USD',  // NY only
-  'JP225_USD',                  // Tokyo only
+  // JP225_USD — swing only (DD too high for M5), Kill Shot manual only
   'UK100_GBP',                  // London only
   'AU200_AUD',                  // Sydney only
 ]);
