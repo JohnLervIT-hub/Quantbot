@@ -3491,17 +3491,19 @@ async function serverAutoTrade() {
     // All five criteria must be true simultaneously for A+ classification
     const HC_MIN_AGE_MS  = 5 * 60 * 1000; // 5 minutes building
     const signalAgeMs    = Date.now() - (signalFirstDetected.get(instrument) || Date.now());
+    const optionsOk = !optionsData ||
+      optionsData.institutionalBias === 'NEUTRAL' ||
+      optionsData.confirmsTrade === true;
     const isHighConviction = (
       signal.score >= 72 &&
       patternAnalysis?.confirms === true &&
       (patternAnalysis?.patterns?.length ?? 0) > 0 &&
-      optionsData?.confirmsTrade === true &&
-      optionsData?.institutionalBias !== 'NEUTRAL' &&
+      optionsOk &&
       (!patternInsight || patternInsight.attempts < 10 || patternInsight.winRate >= 55) &&
       signalAgeMs >= HC_MIN_AGE_MS
     );
     const requiredVotes = isHighConviction ? 4 : 3;
-    console.log(`[auto] ${instrument} — HIGH_CONVICTION: ${isHighConviction} (score:${signal.score} age:${Math.round(signalAgeMs/60000)}min patternOk:${patternAnalysis?.confirms} optionsOk:${optionsData?.confirmsTrade} histOk:${(patternInsight?.attempts ?? 0) >= 10}) — need ${requiredVotes}/4`);
+    console.log(`[auto] ${instrument} — HIGH_CONVICTION: ${isHighConviction} (score:${signal.score} age:${Math.round(signalAgeMs/60000)}min patternOk:${patternAnalysis?.confirms} optionsOk:${optionsOk} histOk:${(patternInsight?.attempts ?? 0) >= 10}) — need ${requiredVotes}/4`);
 
     diagCounters.reachedConsensus++;
     console.log(`[auto] ${instrument} — calling consensus`);
