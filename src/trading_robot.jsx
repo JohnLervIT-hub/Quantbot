@@ -7324,25 +7324,44 @@ function TradeHistoryTab({ isVisible, closedTrades = [] }) {
             <button onClick={() => setSelectedTrade(null)} style={{ background: 'none', border: 'none', color: '#484f58', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>✕</button>
           </div>
 
-          {/* Core fields grid */}
+          {/* Primary trade data — always present */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 12 }}>
             {[
-              { label: 'Score',        value: selectedTrade.score != null ? `${selectedTrade.score}%` : '—' },
-              { label: 'Strategy',     value: selectedTrade.strategy || '—' },
-              { label: 'Session',      value: selectedTrade.session  || '—' },
-              { label: 'Duration',     value: selectedTrade.duration_mins != null ? `${selectedTrade.duration_mins}m` : '—' },
-              { label: 'Units',        value: selectedTrade.units    != null ? selectedTrade.units : '—' },
-              { label: 'Regime',       value: selectedTrade.regime_at_entry || selectedTrade.market_regime || '—' },
-              { label: 'Heat at Entry',value: selectedTrade.heat_at_entry  != null ? `${selectedTrade.heat_at_entry}R` : '—' },
-              { label: 'EMA50 Side',   value: selectedTrade.ema50_side    || '—' },
-              { label: 'Recovery',     value: selectedTrade.recovery_mode != null ? (selectedTrade.recovery_mode ? 'YES' : 'NO') : '—' },
+              { label: 'Entry',    value: selectedTrade.entry      != null ? selectedTrade.entry.toFixed(5)      : '—', mono: true },
+              { label: 'Exit',     value: selectedTrade.exit_price != null ? selectedTrade.exit_price.toFixed(5) : '—', mono: true },
+              { label: 'Stop Loss',value: selectedTrade.stop_loss  != null ? selectedTrade.stop_loss.toFixed(5)  : (selectedTrade.stopLoss != null ? selectedTrade.stopLoss.toFixed(5) : '—'), mono: true },
+              { label: 'P&L',      value: selectedTrade.pnl != null ? `${selectedTrade.pnl >= 0 ? '+$' : '-$'}${Math.abs(selectedTrade.pnl).toFixed(2)}` : '—', color: pc(selectedTrade.pnl) },
+              { label: 'R',        value: selectedTrade.r_multiple != null ? `${selectedTrade.r_multiple >= 0 ? '+' : ''}${selectedTrade.r_multiple.toFixed(2)}R` : '—', color: pc(selectedTrade.r_multiple) },
+              { label: 'Duration', value: selectedTrade.duration_mins != null ? `${selectedTrade.duration_mins}m` : (selectedTrade.duration || '—') },
+              { label: 'Session',  value: selectedTrade.session  || '—' },
+              { label: 'Strategy', value: selectedTrade.strategy || '—' },
+              { label: 'Score',    value: selectedTrade.score    != null ? `${selectedTrade.score}%` : '—' },
             ].map(f => (
               <div key={f.label}>
                 <div style={LBL}>{f.label}</div>
-                <div style={{ fontSize: 11, color: '#8b949e', fontFamily: FONT_MONO }}>{f.value}</div>
+                <div style={{ fontSize: 11, color: f.color || '#8b949e', fontFamily: f.mono ? FONT_MONO : 'inherit', fontWeight: f.color ? 700 : 400 }}>{f.value}</div>
               </div>
             ))}
           </div>
+
+          {/* Sprint 1 context fields — only for Supabase-enriched trades */}
+          {selectedTrade._source === 'supabase' && (selectedTrade.regime_at_entry || selectedTrade.heat_at_entry != null || selectedTrade.ema50_side) && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 12, paddingTop: 10, borderTop: '1px solid #21262d' }}>
+              {[
+                { label: 'Regime',        value: selectedTrade.regime_at_entry || selectedTrade.market_regime || '—' },
+                { label: 'Heat at Entry', value: selectedTrade.heat_at_entry != null ? `${selectedTrade.heat_at_entry}R` : '—' },
+                { label: 'EMA50 Side',    value: selectedTrade.ema50_side || '—' },
+                { label: 'Units',         value: selectedTrade.units != null ? selectedTrade.units : '—' },
+                { label: 'Recovery',      value: selectedTrade.recovery_mode != null ? (selectedTrade.recovery_mode ? 'YES' : 'NO') : '—' },
+                { label: 'ATR',           value: selectedTrade.atr_at_entry != null ? selectedTrade.atr_at_entry.toFixed(5) : '—' },
+              ].map(f => (
+                <div key={f.label}>
+                  <div style={LBL}>{f.label}</div>
+                  <div style={{ fontSize: 11, color: '#8b949e', fontFamily: FONT_MONO }}>{f.value}</div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Council verdicts */}
           {(selectedTrade.warren_verdict || selectedTrade.george_verdict || selectedTrade.james_verdict || selectedTrade.ray_verdict) && (
