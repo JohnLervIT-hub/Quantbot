@@ -7368,12 +7368,6 @@ export default function TradingRobot() {
     localStorage.setItem('xavier_memory_seeded_v1', '1');
   }, []);
 
-  // Hide loading screen as soon as React has mounted — timer in index.html is just a fallback
-  useEffect(() => {
-    const loader = document.getElementById('loading');
-    if (loader) loader.style.display = 'none';
-  }, []);
-
   // Startup: reconcile swing_trades against OANDA — remove phantom entries
   useEffect(() => {
     (async () => {
