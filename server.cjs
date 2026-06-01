@@ -2382,7 +2382,7 @@ async function saveTradeToSupabase(trade) {
            || openTradeContexts.get(trade.oandaId?.toString())
            || openTradeContexts.get(trade.tradeId?.toString())
            || {};
-    console.log('[JOURNAL DEBUG]', 'trade.id:', trade.id, 'context keys:', Array.from(openTradeContexts.keys()), 'found:', Object.keys(ctx).length > 0);
+    console.log('[JOURNAL DEBUG]', 'trade.id:', trade.id, 'map keys:', Array.from(openTradeContexts.keys()), 'found:', Object.keys(ctx).length > 0, 'session:', ctx.session, 'source:', ctx.tradeSource);
 
     // If context is empty (server restarted or key mismatch), recover from partial Supabase row written at open
     if (!ctx.score && !ctx.consensusVotes) {
