@@ -1,15 +1,26 @@
-html, body {
-  background: #0a0a0a;
-  color: #e6edf3;
-  margin: 0;
-  padding: 0;
-  min-height: 100vh;
+:root {
+  --bg: #fff;
+  --border: #e5e4e7;
+  background: var(--bg);
 }
 
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16171d;
+    --border: #2e303a;
+  }
+}
+
+body { margin: 0; }
+
 #root {
-  background: #0a0a0a;
-  max-width: 1400px;
-  width: 100%;
+  width: 1126px;
+  max-width: 100%;
   margin: 0 auto;
-  min-height: 100vh;
+  text-align: center;
+  border-inline: 1px solid var(--border);
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
 }
