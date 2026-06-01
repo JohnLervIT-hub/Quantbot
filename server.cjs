@@ -4665,6 +4665,23 @@ async function runIntegrationTests() {
     results.push({ test: 'supabase_connected', passed: false, detail: e.message });
   }
 
+  // Test 8 — Frontend reachable
+  try {
+    const frontendRes = await fetch('https://quantbot-phi.vercel.app');
+    const frontendOk = frontendRes.ok && frontendRes.status === 200;
+    results.push({ test: 'frontend_reachable', passed: frontendOk, detail: `HTTP ${frontendRes.status}` });
+  } catch (e) {
+    results.push({ test: 'frontend_reachable', passed: false, detail: e.message });
+  }
+
+  // Test 9 — React bundle exists
+  try {
+    const bundleRes = await fetch('https://quantbot-phi.vercel.app/assets/vendor.js');
+    results.push({ test: 'react_bundle_exists', passed: bundleRes.ok, detail: bundleRes.ok ? 'vendor.js loading ✅' : `vendor.js missing ❌ HTTP ${bundleRes.status}` });
+  } catch (e) {
+    results.push({ test: 'react_bundle_exists', passed: false, detail: e.message });
+  }
+
   const passed = results.filter(r => r.passed).length;
   const failed = results.filter(r => !r.passed).length;
   console.log('[TESTS]', passed, 'passed,', failed, 'failed');
