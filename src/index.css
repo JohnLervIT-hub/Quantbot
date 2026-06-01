@@ -3,7 +3,7 @@
 }
 
 html, body, #root {
-  background-color: #0a0a0a;
+  background-color: #0a0a0a !important;
   color: #e6edf3;
   margin: 0;
   padding: 0;
@@ -14,7 +14,7 @@ html, body, #root {
 :root {
   --text: #6b6375;
   --text-h: #08060d;
-  --bg: #fff;
+  --bg: #0a0a0a;
   --border: #e5e4e7;
   --code-bg: #f4f3ec;
   --accent: #aa3bff;
@@ -34,7 +34,7 @@ html, body, #root {
   letter-spacing: 0.18px;
   color-scheme: light dark;
   color: var(--text);
-  background: var(--bg);
+  background: transparent;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
