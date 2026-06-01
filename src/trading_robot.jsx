@@ -7127,216 +7127,247 @@ function HistoricalBacktest({ isMobile }) {
   );
 }
 
-// ─── DIAGNOSTICS ERROR BOUNDARY ──────────────────────────────────────────────
-class DiagnosticsErrorBoundary extends React.Component {
-  constructor(props) { super(props); this.state = { error: null }; }
-  static getDerivedStateFromError(e) { return { error: e }; }
-  render() {
-    if (this.state.error) return (
-      <div style={{ padding: 24, color: '#f85149', fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>Diagnostics render error</div>
-        <pre style={{ whiteSpace: 'pre-wrap', color: '#8b949e', fontSize: 10 }}>{this.state.error?.message}{'\n'}{this.state.error?.stack}</pre>
-        <button onClick={() => this.setState({ error: null })} style={{ marginTop: 12, background: '#161b22', border: '1px solid #21262d', borderRadius: 6, color: '#8b949e', fontSize: 11, padding: '6px 14px', cursor: 'pointer' }}>Retry</button>
-      </div>
-    );
-    return this.props.children;
-  }
-}
-
 // ─── DIAGNOSTICS TAB ─────────────────────────────────────────────────────────
 function DiagnosticsTab({ isVisible }) {
-  const [data, setData]       = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [lastFetch, setLastFetch] = useState(null);
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
-  const fetchDiag = async () => {
-    setLoading(true);
-    try {
-      const token = localStorage.getItem('auth_token');
-      const res   = await fetch(`${BRIDGE}/diagnostics`, { headers: { Authorization: `Bearer ${token}` } });
-      if (res.ok) { setData(await res.json()); setLastFetch(new Date()); }
-    } catch (e) { console.error('[Diagnostics]', e); }
-    setLoading(false);
-  };
+  useEffect(() => {
+    if (!isVisible) return
 
-  useEffect(() => { if (isVisible) fetchDiag(); }, [isVisible]);
+    const fetchDiagnostics = async () => {
+      try {
+        const token = localStorage.getItem('auth_token')
+        const res = await fetch(`${BRIDGE}/diagnostics`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+        if (!res.ok) throw new Error('HTTP ' + res.status)
+        const json = await res.json()
+        setData(json)
+        setError(null)
+      } catch(err) {
+        setError(err.message)
+      } finally {
+        setLoading(false)
+      }
+    }
 
-  const CARD  = { background: '#161b22', border: '1px solid #21262d', borderRadius: 8 };
-  const LBL   = { fontSize: 9, color: '#484f58', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 };
-  const MONO  = { fontFamily: FONT_MONO };
-
-  const scoreColor = (s) => ({ AGGRESSIVE: '#f85149', BALANCED: '#3fb950', CONSERVATIVE: '#58a6ff', TOO_CONSERVATIVE: '#d29922' })[s] || '#8b949e';
+    fetchDiagnostics()
+    const interval = setInterval(fetchDiagnostics, 30000)
+    return () => clearInterval(interval)
+  }, [isVisible])
 
   if (loading) return (
-    <div style={{ padding: 24, textAlign: 'center', color: '#484f58', fontSize: 12 }}>Loading diagnostics…</div>
-  );
-  if (!data) return (
-    <div style={{ padding: 24, textAlign: 'center', color: '#f85149', fontSize: 12 }}>Failed to load — bridge offline?</div>
-  );
-
-  const { thresholds, m5: last24h, swing, conservatismScore, recommendation, periodHours } = data;
-
-  if (!last24h || !last24h.blocked || !thresholds) return (
-    <div style={{ padding: 24, textAlign: 'center', color: '#f85149', fontSize: 12 }}>
-      Unexpected response shape — restart the bridge and refresh.
-      <pre style={{ fontSize: 9, color: '#484f58', marginTop: 8, textAlign: 'left' }}>{JSON.stringify(Object.keys(data), null, 2)}</pre>
+    <div style={{padding:24, color:'#8b949e', textAlign:'center'}}>
+      Loading diagnostics...
     </div>
-  );
+  )
 
-  const b = last24h.blocked;
+  if (error) return (
+    <div style={{padding:24, color:'#f85149', textAlign:'center', fontSize:12}}>
+      Error: {error}
+    </div>
+  )
 
-  // Funnel steps
-  const funnel = [
-    { label: 'Signals Scanned',    value: last24h.signalsScanned,    pct: null },
-    { label: 'Passed News Guard',  value: last24h.passedNewsGuard,   pct: last24h.signalsScanned },
-    { label: 'Passed Gatekeeper',  value: last24h.passedGatekeeper,  pct: last24h.signalsScanned },
-    { label: 'Passed Macro Filter',value: last24h.passedMacroFilter, pct: last24h.signalsScanned },
-    { label: 'Reached Consensus',  value: last24h.reachedConsensus,  pct: last24h.signalsScanned },
-    { label: 'Executed',           value: last24h.executed,          pct: last24h.signalsScanned },
-  ];
+  if (!data) return (
+    <div style={{padding:24, color:'#8b949e', textAlign:'center'}}>
+      No data available
+    </div>
+  )
 
-  const blockedRows = [
-    { label: 'Score Threshold',  value: b.scoreThreshold },
-    { label: 'News Guard',       value: b.newsGuard },
-    { label: 'Macro Filter',     value: b.macroFilter },
-    { label: 'Options PCR',      value: b.options },
-    { label: 'Historical Edge',  value: b.historical },
-    { label: 'Consensus',        value: b.consensus },
-    { label: 'Cooldown',         value: b.cooldown },
-    { label: 'Heat Limit',       value: b.heatLimit },
-  ];
-
-  const totalBlocked = blockedRows.reduce((s, r) => s + r.value, 0);
+  const m5 = data?.m5 || data?.last24h || {}
+  const swing = data?.swing || {}
+  const thresholds = data?.thresholds || {}
+  const blocked = m5?.blocked || {}
+  const conservatism = data?.conservatismScore || 'UNKNOWN'
+  const recommendation = data?.recommendation || ''
+  const periodHours = data?.periodHours || 0
 
   return (
-    <div style={{ padding: 16, paddingBottom: 80 }}>
+    <div style={{padding:16, fontFamily:"'JetBrains Mono',monospace", fontSize:11}}>
 
-      {/* ── Header ── */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#e6edf3' }}>System Diagnostics</div>
-          <div style={{ fontSize: 10, color: '#484f58', ...MONO }}>
-            {periodHours}h window · {lastFetch ? `updated ${lastFetch.toLocaleTimeString()}` : '—'}
+      <div style={{marginBottom:16, display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+        <div style={{color:'#8b949e'}}>
+          {periodHours.toFixed(1)}h window
+        </div>
+        <div style={{
+          color: conservatism === 'TOO_CONSERVATIVE' ? '#f85149'
+            : conservatism === 'BALANCED' ? '#3fb950'
+            : '#d29922',
+          fontWeight:600}}>
+          {conservatism}
+        </div>
+      </div>
+
+      {recommendation && (
+        <div style={{
+          padding:'8px 12px',
+          background:'#161b22',
+          border:'1px solid #30363d',
+          borderRadius:6,
+          marginBottom:16,
+          color:'#8b949e',
+          fontSize:10}}>
+          {recommendation}
+        </div>
+      )}
+
+      <div style={{marginBottom:16}}>
+        <div style={{
+          color:'#8b949e',
+          marginBottom:8,
+          fontSize:10,
+          textTransform:'uppercase',
+          letterSpacing:'0.1em'}}>
+          M5 Signal Funnel
+        </div>
+        {[
+          ['Signals Scanned',    m5?.signalsScanned    ?? 0],
+          ['Passed News Guard',  m5?.passedNewsGuard   ?? 0],
+          ['Passed Gatekeeper',  m5?.passedGatekeeper  ?? 0],
+          ['Passed Macro Filter',m5?.passedMacroFilter ?? 0],
+          ['Reached Consensus',  m5?.reachedConsensus  ?? 0],
+          ['A+ Trades',          m5?.aplus             ?? 0],
+          ['Standard Trades',    m5?.standard          ?? 0],
+          ['Executed',           m5?.executed          ?? 0],
+        ].map(([label, value]) => (
+          <div key={label} style={{
+            display:'flex',
+            justifyContent:'space-between',
+            padding:'4px 0',
+            borderBottom:'0.5px solid #161b22'}}>
+            <div style={{color:'#8b949e'}}>{label}</div>
+            <div style={{
+              color: label === 'Executed' && value > 0 ? '#3fb950' : '#e6edf3',
+              fontWeight:600}}>
+              {value}
+            </div>
           </div>
-        </div>
-        <button onClick={fetchDiag}
-          style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 6, color: '#8b949e', fontSize: 11, padding: '6px 14px', cursor: 'pointer' }}>
-          ↻ Refresh
-        </button>
+        ))}
       </div>
 
-      {/* ── Conservatism score ── */}
-      <div style={{ ...CARD, padding: '14px 16px', marginBottom: 12, borderLeft: `3px solid ${scoreColor(conservatismScore)}` }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-          <div style={{ fontSize: 18, fontWeight: 800, color: scoreColor(conservatismScore), ...MONO }}>{conservatismScore}</div>
-          <div style={{ fontSize: 10, color: '#484f58' }}>exec rate: {last24h.signalsScanned > 0 ? (last24h.executed / last24h.signalsScanned * 100).toFixed(1) : '0.0'}%</div>
+      {/* Blocked Signals */}
+      <div style={{marginBottom:16}}>
+        <div style={{
+          color:'#8b949e',
+          marginBottom:8,
+          fontSize:10,
+          textTransform:'uppercase',
+          letterSpacing:'0.1em'}}>
+          Blocked Signals
         </div>
-        <div style={{ fontSize: 11, color: '#8b949e', lineHeight: 1.5 }}>{recommendation}</div>
+        {[
+          ['Score Threshold', blocked?.scoreThreshold ?? 0],
+          ['News Guard',      blocked?.newsGuard      ?? 0],
+          ['Macro Filter',    blocked?.macroFilter    ?? 0],
+          ['Options PCR',     blocked?.options        ?? 0],
+          ['Historical Edge', blocked?.historical     ?? 0],
+          ['Consensus',       blocked?.consensus      ?? 0],
+          ['Cooldown',        blocked?.cooldown       ?? 0],
+          ['Heat Limit',      blocked?.heatLimit      ?? 0],
+        ].map(([label, value]) => (
+          <div key={label} style={{
+            display:'flex',
+            justifyContent:'space-between',
+            padding:'4px 0',
+            borderBottom:'0.5px solid #161b22'}}>
+            <div style={{color:'#8b949e'}}>{label}</div>
+            <div style={{
+              color: value > 0 ? '#f85149' : '#484f58',
+              fontWeight:600}}>
+              {value}
+            </div>
+          </div>
+        ))}
       </div>
 
-      {/* ── Signal funnel ── */}
-      <div style={{ ...CARD, padding: '12px 16px', marginBottom: 12 }}>
-        <div style={{ ...LBL, marginBottom: 10 }}>Signal Funnel — last {periodHours}h</div>
-        {funnel.map((row, i) => {
-          const pct = row.pct > 0 ? Math.round(row.value / row.pct * 100) : (i === 0 ? 100 : 0);
-          const barW = `${Math.min(pct, 100)}%`;
-          const isExec = row.label === 'Executed';
-          return (
-            <div key={row.label} style={{ marginBottom: 8 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                <div style={{ fontSize: 10, color: isExec ? '#3fb950' : '#8b949e', fontWeight: isExec ? 700 : 400 }}>{row.label}</div>
-                <div style={{ fontSize: 10, ...MONO, color: isExec ? '#3fb950' : '#e6edf3' }}>
-                  {row.value}{row.pct > 0 ? ` · ${pct}%` : ''}
-                </div>
+      {/* Swing / Kill Shot */}
+      <div style={{marginBottom:16}}>
+        <div style={{
+          color:'#8b949e',
+          marginBottom:8,
+          fontSize:10,
+          textTransform:'uppercase',
+          letterSpacing:'0.1em'}}>
+          Swing / Kill Shot
+        </div>
+        {[
+          ['Scanned',          swing?.scanned          ?? 0],
+          ['Passed Consensus', swing?.passedConsensus  ?? 0],
+          ['Queued',           swing?.queued           ?? 0],
+          ['Executed',         swing?.executed         ?? 0],
+        ].map(([label, value]) => (
+          <div key={label} style={{
+            display:'flex',
+            justifyContent:'space-between',
+            padding:'4px 0',
+            borderBottom:'0.5px solid #161b22'}}>
+            <div style={{color:'#8b949e'}}>{label}</div>
+            <div style={{
+              color: label === 'Executed' && value > 0 ? '#3fb950' : '#e6edf3',
+              fontWeight:600}}>
+              {value}
+            </div>
+          </div>
+        ))}
+
+        {swing?.pending?.length > 0 && (
+          <div style={{
+            marginTop:8,
+            padding:8,
+            background:'#161b22',
+            borderRadius:6}}>
+            <div style={{color:'#d29922', fontSize:10, marginBottom:6}}>
+              Pending Kill Shots
+            </div>
+            {swing.pending.map(p => (
+              <div key={p.pair} style={{
+                display:'flex',
+                justifyContent:'space-between',
+                padding:'3px 0',
+                color:'#8b949e',
+                fontSize:10}}>
+                <span>{p.pair}</span>
+                <span>{p.score}% · {p.consensus}/4</span>
               </div>
-              <div style={{ height: 3, background: '#21262d', borderRadius: 2, overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: barW, background: isExec ? '#3fb950' : i === 0 ? '#58a6ff' : '#484f58', borderRadius: 2, transition: 'width 0.4s ease' }} />
-              </div>
-            </div>
-          );
-        })}
-        {/* A+ vs Standard breakdown */}
-        {last24h.executed > 0 && (
-          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #21262d', display: 'flex', gap: 16 }}>
-            <div>
-              <div style={LBL}>A+ Executed</div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: '#FFD700', ...MONO }}>{last24h.aplus}</div>
-            </div>
-            <div>
-              <div style={LBL}>Standard</div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: '#8b949e', ...MONO }}>{last24h.standard}</div>
-            </div>
+            ))}
           </div>
         )}
       </div>
 
-      {/* ── Block breakdown ── */}
-      <div style={{ ...CARD, padding: '12px 16px', marginBottom: 12 }}>
-        <div style={{ ...LBL, marginBottom: 10 }}>Blocked Signals — {totalBlocked} total</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
-          {blockedRows.map(row => (
-            <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '0.5px solid #0d1117' }}>
-              <div style={{ fontSize: 10, color: '#8b949e' }}>{row.label}</div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: row.value > 0 ? '#f85149' : '#484f58', ...MONO }}>{row.value}</div>
-            </div>
-          ))}
+      {/* Active Thresholds */}
+      <div style={{marginBottom:16}}>
+        <div style={{
+          color:'#8b949e',
+          marginBottom:8,
+          fontSize:10,
+          textTransform:'uppercase',
+          letterSpacing:'0.1em'}}>
+          Active Thresholds
         </div>
-      </div>
-
-      {/* ── Swing / Kill Shot ── */}
-      {swing && (
-        <div style={{ ...CARD, padding: '12px 16px', marginBottom: 12 }}>
-          <div style={{ ...LBL, marginBottom: 10 }}>Swing / Kill Shot</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
-            {[
-              { label: 'Scanned',          value: swing.scanned },
-              { label: 'Passed Consensus', value: swing.passedConsensus },
-              { label: 'Queued',           value: swing.queued },
-              { label: 'Executed',         value: swing.executed },
-            ].map(r => (
-              <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '0.5px solid #0d1117' }}>
-                <div style={{ fontSize: 10, color: '#8b949e' }}>{r.label}</div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: r.label === 'Executed' && r.value > 0 ? '#3fb950' : '#e6edf3', ...MONO }}>{r.value}</div>
-              </div>
-            ))}
+        {[
+          ['Standard Score',    (thresholds?.standardScore    ?? 65) + '%'],
+          ['A+ Score',          (thresholds?.aplusScore       ?? 72) + '%'],
+          ['Consensus Standard',(thresholds?.consensusStandard ?? 3) + '/4'],
+          ['Consensus A+',      (thresholds?.consensusAplus   ?? 4) + '/4'],
+          ['History Min Trades', thresholds?.historyMinTrades ?? 10],
+          ['History Win Rate',  (thresholds?.historyWinRate   ?? 55) + '%'],
+          ['Signal Age Min',    (thresholds?.signalAgeMin     ?? 5) + ' min'],
+        ].map(([label, value]) => (
+          <div key={label} style={{
+            display:'flex',
+            justifyContent:'space-between',
+            padding:'4px 0',
+            borderBottom:'0.5px solid #161b22'}}>
+            <div style={{color:'#8b949e'}}>{label}</div>
+            <div style={{color:'#e6edf3', fontWeight:600}}>{value}</div>
           </div>
-          {swing.pending?.length > 0 && (
-            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #21262d' }}>
-              <div style={{ ...LBL, marginBottom: 6 }}>Pending Kill Shots</div>
-              {swing.pending.map(p => (
-                <div key={p.pair} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '0.5px solid #0d1117' }}>
-                  <div style={{ fontSize: 10, color: '#d29922', ...MONO }}>{p.pair}</div>
-                  <div style={{ fontSize: 10, color: '#8b949e', ...MONO }}>score {p.score} · {p.consensus}/4</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Thresholds reference ── */}
-      <div style={{ ...CARD, padding: '12px 16px' }}>
-        <div style={{ ...LBL, marginBottom: 10 }}>Active Thresholds</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
-          {[
-            { label: 'Standard Score',      value: `${thresholds.standardScore}%` },
-            { label: 'A+ Score',            value: `${thresholds.aplusScore}%` },
-            { label: 'Consensus Standard',  value: `${thresholds.consensusStandard}/4` },
-            { label: 'Consensus A+',        value: `${thresholds.consensusAplus}/4` },
-            { label: 'History Min Trades',  value: thresholds.historicalMinTrades },
-            { label: 'History Win Rate',    value: `${thresholds.historicalMinWinRate}%` },
-            { label: 'Signal Age Min',      value: `${thresholds.signalAgeMinutes} min` },
-          ].map(r => (
-            <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '0.5px solid #0d1117' }}>
-              <div style={{ fontSize: 10, color: '#8b949e' }}>{r.label}</div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: '#58a6ff', ...MONO }}>{r.value}</div>
-            </div>
-          ))}
-        </div>
+        ))}
       </div>
 
     </div>
-  );
+  )
 }
 
 // ─── TRADE HISTORY TAB ───────────────────────────────────────────────────────
@@ -10149,9 +10180,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "diagnostics" ? "block" : "none" }}>
-        <DiagnosticsErrorBoundary>
-          <DiagnosticsTab isVisible={tab === "diagnostics"} />
-        </DiagnosticsErrorBoundary>
+        <DiagnosticsTab isVisible={tab === "diagnostics"} />
       </div>
 
       <div style={{ display: tab === "schedule" ? "block" : "none" }}>
