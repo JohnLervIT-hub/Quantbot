@@ -7127,6 +7127,22 @@ function HistoricalBacktest({ isMobile }) {
   );
 }
 
+// ─── DIAGNOSTICS ERROR BOUNDARY ──────────────────────────────────────────────
+class DiagnosticsErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(e) { return { error: e }; }
+  render() {
+    if (this.state.error) return (
+      <div style={{ padding: 24, color: '#f85149', fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>Diagnostics render error</div>
+        <pre style={{ whiteSpace: 'pre-wrap', color: '#8b949e', fontSize: 10 }}>{this.state.error?.message}{'\n'}{this.state.error?.stack}</pre>
+        <button onClick={() => this.setState({ error: null })} style={{ marginTop: 12, background: '#161b22', border: '1px solid #21262d', borderRadius: 6, color: '#8b949e', fontSize: 11, padding: '6px 14px', cursor: 'pointer' }}>Retry</button>
+      </div>
+    );
+    return this.props.children;
+  }
+}
+
 // ─── DIAGNOSTICS TAB ─────────────────────────────────────────────────────────
 function DiagnosticsTab({ isVisible }) {
   const [data, setData]       = useState(null);
@@ -7159,6 +7175,14 @@ function DiagnosticsTab({ isVisible }) {
   );
 
   const { thresholds, m5: last24h, swing, conservatismScore, recommendation, periodHours } = data;
+
+  if (!last24h || !last24h.blocked || !thresholds) return (
+    <div style={{ padding: 24, textAlign: 'center', color: '#f85149', fontSize: 12 }}>
+      Unexpected response shape — restart the bridge and refresh.
+      <pre style={{ fontSize: 9, color: '#484f58', marginTop: 8, textAlign: 'left' }}>{JSON.stringify(Object.keys(data), null, 2)}</pre>
+    </div>
+  );
+
   const b = last24h.blocked;
 
   // Funnel steps
@@ -10125,7 +10149,9 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "diagnostics" ? "block" : "none" }}>
-        <DiagnosticsTab isVisible={tab === "diagnostics"} />
+        <DiagnosticsErrorBoundary>
+          <DiagnosticsTab isVisible={tab === "diagnostics"} />
+        </DiagnosticsErrorBoundary>
       </div>
 
       <div style={{ display: tab === "schedule" ? "block" : "none" }}>
