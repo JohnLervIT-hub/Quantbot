@@ -6840,8 +6840,9 @@ function useAutonomousBacktest() {
 
   const run = useCallback(async () => {
     if (runningRef.current) return;
-    runningRef.current = true; cancelRef.current = false;
-    setRunning(true); setProgress(0); setDone(0);
+    try {
+      runningRef.current = true; cancelRef.current = false;
+      setRunning(true); setProgress(0); setDone(0);
 
     // ── Phase 1: M15 backtest (swing / Kill Shot) ──────────────────────────────
     setLabel("Starting M15 optimization…");
@@ -6852,7 +6853,10 @@ function useAutonomousBacktest() {
         setLabel(`[M15] Fetching ${pair} (180d)…`);
         let candles = [];
         try {
-          const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M15&days=180`);
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000);
+          const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M15&days=180`, { signal: controller.signal });
+          clearTimeout(timeoutId);
           const data = await r.json();
           if (!Array.isArray(data.candles) || data.candles.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
           candles = data.candles;
@@ -6862,7 +6866,7 @@ function useAutonomousBacktest() {
             ? Math.round((new Date(candles[candles.length - 1].time) - new Date(candles[0].time)) / 86400000) : 0;
           console.log('[BACKTEST-M15] candles:', candles.length, 'for', pair, '|', _calDays, 'd |', _fDate, '→', _lDate);
           candleCounts[pair] = { count: candles.length, days: _calDays };
-        } catch { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
+        } catch (err) { if (err.name === 'AbortError') console.log('[OPT] M15 fetch timeout — skipping', pair); combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
         const closes = candles.map(c => parseFloat(c.mid?.c ?? 0)).filter(v => v > 0 && !isNaN(v));
         if (closes.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(combosDone); continue; }
         for (const strat of STRATS) {
@@ -6928,7 +6932,10 @@ function useAutonomousBacktest() {
         setLabel(`[M5] Fetching ${pair} (180d)…`);
         let candles = [];
         try {
-          const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M5&days=180`);
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000);
+          const r = await fetch(`${BRIDGE}/backtest/candles?instrument=${pair.replace("/", "_")}&granularity=M5&days=180`, { signal: controller.signal });
+          clearTimeout(timeoutId);
           const data = await r.json();
           if (!Array.isArray(data.candles) || data.candles.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(TOTAL_PER + combosDone); continue; }
           candles = data.candles;
@@ -6938,7 +6945,7 @@ function useAutonomousBacktest() {
             ? Math.round((new Date(candles[candles.length - 1].time) - new Date(candles[0].time)) / 86400000) : 0;
           console.log('[BACKTEST-M5] candles:', candles.length, 'for', pair, '|', _calDays, 'd |', _fDate, '→', _lDate);
           candleCounts[pair] = { count: candles.length, days: _calDays };
-        } catch { combosDone += STRATS.length * SESSIONS.length; setDone(TOTAL_PER + combosDone); continue; }
+        } catch (err) { if (err.name === 'AbortError') console.log('[OPT] M5 fetch timeout — skipping', pair); combosDone += STRATS.length * SESSIONS.length; setDone(TOTAL_PER + combosDone); continue; }
         const closes = candles.map(c => parseFloat(c.mid?.c ?? 0)).filter(v => v > 0 && !isNaN(v));
         if (closes.length < 22) { combosDone += STRATS.length * SESSIONS.length; setDone(TOTAL_PER + combosDone); continue; }
         for (const strat of STRATS) {
@@ -6993,11 +7000,23 @@ function useAutonomousBacktest() {
       }
     }
 
-    setLabel(""); setRunning(false); setProgress(cancelRef.current ? 0 : 100);
-    runningRef.current = false;
+      setLabel(""); setProgress(cancelRef.current ? 0 : 100);
+    } catch (err) {
+      console.error('[OPT ERROR]', err.message);
+    } finally {
+      setRunning(false);
+      runningRef.current = false;
+      console.log('[OPT] Complete or cancelled');
+    }
   }, []); // eslint-disable-line
 
-  const cancel = useCallback(() => { cancelRef.current = true; }, []);
+  const cancel = useCallback(() => {
+    cancelRef.current = true;
+    runningRef.current = false;
+    setRunning(false);
+    setProgress(0);
+    console.log('[OPT] Cancelled by user');
+  }, []);
 
   // Auto-run on mount if > 7 days since last run
   useEffect(() => {
