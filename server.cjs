@@ -2221,6 +2221,37 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
         trade_source:       ctxToStore.tradeSource        ?? null,
         spread_cost:        ctxToStore.spreadCost         ?? null,
       }).then(() => {}).catch(e => console.warn('[SUPABASE] open context save failed:', e.message));
+
+      // Also persist to dedicated trade_contexts table — survives Railway restarts
+      try {
+        await supabase.from('trade_contexts').upsert({
+          trade_id:       tradeId.toString(),
+          pair:           normalizeInstrument(instrument),
+          session:        session                          || null,
+          strategy:       strategy                         || null,
+          score:          ctxToStore.score                 ?? null,
+          source:         source                           || null,
+          pattern:        ctxToStore.pattern || ctxToStore.patternBias || 'NONE',
+          options_pcr:    ctxToStore.optionsPcr            ?? null,
+          options_bias:   ctxToStore.optionsBias           || 'NEUTRAL',
+          council_warren: ctxToStore.warrenVerdict         ?? null,
+          council_george: ctxToStore.georgeVerdict         ?? null,
+          council_james:  ctxToStore.jamesVerdict          ?? null,
+          council_ray:    ctxToStore.rayVerdict            ?? null,
+          council_votes:  ctxToStore.consensusVotes        || 0,
+          regime:         ctxToStore.regimeAtEntry         || 'UNKNOWN',
+          spread_cost:    ctxToStore.spreadCost            || 0,
+          trade_source:   ctxToStore.tradeSource           || 'UNKNOWN',
+          ema50_side:     ctxToStore.ema50Side             ?? null,
+          heat_at_entry:  ctxToStore.heatAtEntry           || 0,
+          recovery_mode:  ctxToStore.recoveryMode          || false,
+          atr_at_entry:   ctxToStore.atrAtEntry            || 0,
+          open_time:      ctxToStore.openTime,
+        });
+        console.log('[CONTEXT SAVED]', 'tradeId:', tradeId, 'pair:', normalizeInstrument(instrument), 'session:', session, 'source:', ctxToStore.tradeSource);
+      } catch (err) {
+        console.error('[CONTEXT SAVE ERROR]', err.message);
+      }
     }
   }
 
@@ -2374,47 +2405,52 @@ async function verifySupabaseColumns() {
   }
 }
 
+async function getContextFromSupabase(tradeId) {
+  if (!supabase) return {};
+  try {
+    const { data, error } = await supabase
+      .from('trade_contexts')
+      .select('*')
+      .eq('trade_id', tradeId.toString())
+      .single();
+    if (error || !data) return {};
+    console.log('[CONTEXT RECOVERED]', 'tradeId:', tradeId, 'from Supabase ✅', 'session:', data.session, 'source:', data.trade_source);
+    return {
+      session:        data.session,
+      strategy:       data.strategy,
+      score:          data.score,
+      tradeSource:    data.trade_source,
+      patternBias:    data.pattern,
+      optionsPcr:     data.options_pcr,
+      optionsBias:    data.options_bias,
+      warrenVerdict:  data.council_warren,
+      georgeVerdict:  data.council_george,
+      jamesVerdict:   data.council_james,
+      rayVerdict:     data.council_ray,
+      consensusVotes: data.council_votes,
+      regimeAtEntry:  data.regime,
+      spreadCost:     data.spread_cost,
+      ema50Side:      data.ema50_side,
+      heatAtEntry:    data.heat_at_entry,
+      recoveryMode:   data.recovery_mode,
+      atrAtEntry:     data.atr_at_entry,
+    };
+  } catch (err) {
+    console.error('[CONTEXT RECOVER ERROR]', err.message);
+    return {};
+  }
+}
+
 async function saveTradeToSupabase(trade) {
   if (!supabase) return;
   try {
-    // Try all possible keys — tradeId and txId may differ depending on OANDA response shape
+    // Try all possible keys — tradeId and txId may differ; fall back to Supabase on map miss (Railway restart)
     let ctx = openTradeContexts.get(trade.id?.toString())
-           || openTradeContexts.get(trade.oandaId?.toString())
            || openTradeContexts.get(trade.tradeId?.toString())
+           || openTradeContexts.get(trade.oandaId?.toString())
+           || await getContextFromSupabase(trade.id)
            || {};
-    console.log('[JOURNAL DEBUG]', 'trade.id:', trade.id, 'map keys:', Array.from(openTradeContexts.keys()), 'found:', Object.keys(ctx).length > 0, 'session:', ctx.session, 'source:', ctx.tradeSource);
-
-    // If context is empty (server restarted or key mismatch), recover from partial Supabase row written at open
-    if (!ctx.score && !ctx.consensusVotes) {
-      const { data: existing } = await supabase.from('trades').select('*').eq('id', trade.id).maybeSingle();
-      if (existing) {
-        ctx = {
-          score:             existing.score              ?? ctx.score,
-          consensusVotes:    existing.consensus_votes    ?? ctx.consensusVotes,
-          warrenVerdict:     existing.warren_verdict     ?? ctx.warrenVerdict,
-          georgeVerdict:     existing.george_verdict     ?? ctx.georgeVerdict,
-          jamesVerdict:      existing.james_verdict      ?? ctx.jamesVerdict,
-          rayVerdict:        existing.ray_verdict        ?? ctx.rayVerdict,
-          candlePatterns:    existing.candle_patterns    ?? ctx.candlePatterns,
-          patternAdjustment: existing.pattern_adjustment ?? ctx.patternAdjustment,
-          patternBias:       existing.pattern_bias       ?? ctx.patternBias,
-          candleConfirms:    existing.candle_confirms    ?? ctx.candleConfirms,
-          optionsPcr:        existing.options_pcr        ?? ctx.optionsPcr,
-          optionsBias:       existing.options_bias       ?? ctx.optionsBias,
-          regimeAtEntry:     existing.regime_at_entry    ?? ctx.regimeAtEntry,
-          ema50Side:         existing.ema50_side         ?? ctx.ema50Side,
-          heatAtEntry:       existing.heat_at_entry      ?? ctx.heatAtEntry,
-          recoveryMode:      existing.recovery_mode      ?? ctx.recoveryMode,
-          atrAtEntry:        existing.atr_at_entry       ?? ctx.atrAtEntry,
-          tradeSource:       existing.trade_source       ?? ctx.tradeSource,
-          spreadCost:        existing.spread_cost        ?? ctx.spreadCost,
-          openTime:          existing.open_time          ?? ctx.openTime,
-          session:           existing.session            ?? ctx.session,
-          strategy:          existing.strategy           ?? ctx.strategy,
-        };
-        console.log('[SUPABASE] context recovered from open-time row for trade', trade.id);
-      }
-    }
+    console.log('[JOURNAL DEBUG]', 'trade.id:', trade.id, 'map keys:', Array.from(openTradeContexts.keys()), 'map found:', openTradeContexts.has(trade.id?.toString()), 'ctx found:', Object.keys(ctx).length > 0, 'session:', ctx.session, 'source:', ctx.tradeSource);
     const { error } = await supabase.from('trades').upsert({
       id:                 trade.id,
       pair:               trade.pair,
