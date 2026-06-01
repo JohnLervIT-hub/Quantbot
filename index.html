@@ -31,17 +31,11 @@
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
     <script>
-      document.addEventListener('DOMContentLoaded', () => {
-        const root = document.getElementById('root');
-        const loading = document.getElementById('loading');
-        if (!root || !loading) return;
-        const observer = new MutationObserver(() => {
-          if (root.children.length > 0) {
-            loading.style.display = 'none';
-            observer.disconnect();
-          }
-        });
-        observer.observe(root, { childList: true });
+      window.addEventListener('load', () => {
+        setTimeout(() => {
+          const loader = document.getElementById('loading');
+          if (loader) loader.style.display = 'none';
+        }, 1000);
       });
     </script>
   </body>
