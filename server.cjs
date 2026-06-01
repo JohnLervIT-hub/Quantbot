@@ -249,12 +249,12 @@ app.get('/trades', requireAuth, async (req, res) => {
   res.json(await r.json());
 });
 
-app.get('/positions', async (req, res) => {
+app.get('/positions', requireAuth, async (req, res) => {
   const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
   res.json(await r.json());
 });
 
-app.get('/closed-trades', async (req, res) => {
+app.get('/closed-trades', requireAuth, async (req, res) => {
   const count = Math.min(parseInt(req.query.count) || 50, 500);
   const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades?state=CLOSED&count=${count}`, { headers: H });
   res.json(await r.json());
@@ -449,13 +449,13 @@ app.post('/swing/order', requireAuth, validateOrderInput, async (req, res) => {
   res.json({ orderFillTransaction: { price: result.fill, tradeOpened: { tradeID: result.tradeId } } });
 });
 
-app.post('/close/:tradeId', async (req, res) => {
+app.post('/close/:tradeId', requireAuth, async (req, res) => {
   const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${req.params.tradeId}/close`, { method: 'PUT', headers: H });
   res.json(await r.json());
 });
 
 // Partial close — body: { units: "500" }
-app.post('/close/:tradeId/partial', async (req, res) => {
+app.post('/close/:tradeId/partial', requireAuth, async (req, res) => {
   const { tradeId } = req.params;
   const { units } = req.body;
   if (!units) return res.status(400).json({ error: 'units required' });
@@ -1165,6 +1165,9 @@ REASON: (one sentence, max 15 words, use specific numbers, trader language — n
 }
 
 function buildDeepSeekPrompt(p) {
+  const jamesPatternBlock = p.patternAnalysis?.patterns?.length > 0
+    ? `\nCANDLESTICK PATTERNS:\nPatterns: ${p.patternAnalysis.patterns.join(', ')}\nScore adjustment: ${p.patternAnalysis.scoreAdjustment > 0 ? '+' : ''}${p.patternAnalysis.scoreAdjustment}\nDirection bias: ${p.patternAnalysis.directionBias}`
+    : '';
   return `You are JAMES — Quant Validator. Inspired by James Simons: validate math and statistical edge only.
 
 Trade: ${p.instrument} ${p.direction} @ ${p.price}
@@ -1183,7 +1186,7 @@ Validations:
 - Score >= 65: ${p.scoreValid || (p.score >= 65 ? 'YES' : 'NO')}
 - R:R >= 2.0: ${p.rrValid || 'YES'}
 - ATR stop properly sized: ${p.atrValid || 'YES'}
-- Position size correct: ${p.sizeValid || 'YES'}
+- Position size correct: ${p.sizeValid || 'YES'}${jamesPatternBlock}
 
 WEIGHTING RULE — M5 TRADES:
 Trend alignment carries 70% of your decision weight. The math check is 30%.
@@ -1199,6 +1202,9 @@ REASON: (one sentence, max 15 words, cite the key number, trader language — no
 }
 
 function buildGeminiPrompt(p) {
+  const rayPatternBlock = p.patternAnalysis?.patterns?.length > 0
+    ? `\nCANDLESTICK PATTERNS:\nPatterns: ${p.patternAnalysis.patterns.join(', ')}\nScore adjustment: ${p.patternAnalysis.scoreAdjustment > 0 ? '+' : ''}${p.patternAnalysis.scoreAdjustment}\nDirection bias: ${p.patternAnalysis.directionBias}`
+    : '';
   const xavierBlock = (p.xavierKeyRisk || p.xavierSentiment)
     ? `\nXavier AI market read (proprietary — treat as additional signal context):
 - Overall sentiment: ${p.xavierSentiment || 'UNKNOWN'}
@@ -1222,7 +1228,7 @@ Spread: ${p.spread || '?'} pips (limit: ${p.spreadLimit || '?'} pips)
 Correlated pairs: ${p.correlatedPairs || 'N/A'}
 Market sentiment: ${p.sentiment || 'NEUTRAL'}
 Volatility state: ${p.regime || 'RANGING'}
-Change: ${p.change}%${xavierBlock}${retailBlock}${freshnessBlock}
+Change: ${p.change}%${rayPatternBlock}${xavierBlock}${retailBlock}${freshnessBlock}
 
 WEIGHTING RULE — M5 TRADES:
 Trend alignment carries 70% of your decision weight. Macro context is 30%.
@@ -1656,7 +1662,7 @@ app.get('/economic-calendar', async (_req, res) => {
 
 // ─── XAVIER PRINCIPLE WEIGHTS ─────────────────────────────────────────────────
 app.get('/xavier-weights', (_req, res) => res.json(xavierWeights));
-app.post('/xavier-weights', (req, res) => {
+app.post('/xavier-weights', requireAuth, (req, res) => {
   const { scoreThreshold, newsWindowMins, capitalPreservation, informationFiltering, patience } = req.body;
   if (typeof scoreThreshold       === 'number') xavierWeights.scoreThreshold       = Math.max(50, Math.min(95, scoreThreshold));
   if (typeof newsWindowMins       === 'number') xavierWeights.newsWindowMins       = Math.max(60, Math.min(240, newsWindowMins));
@@ -1750,7 +1756,7 @@ app.post('/swing-consensus', async (req, res) => {
 });
 
 // ─── AUTO MODE TOGGLE ────────────────────────────────────────────────────────
-app.post('/auto-mode', (req, res) => {
+app.post('/auto-mode', requireAuth, (req, res) => {
   const { enabled } = req.body;
   if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be boolean' });
   process.env.AUTO_MODE_ENABLED = enabled ? 'true' : 'false';
@@ -1943,11 +1949,13 @@ async function sendDiscordEmbed(embed, components) {
     return;
   }
   try {
+    const { content, ...embedData } = embed; // hoist content to payload level for @mentions
     const payload = {
       username: 'Xavier | QuantBot Pro',
       avatar_url: 'https://i.imgur.com/4M34hi2.png',
-      embeds: [embed],
+      embeds: [embedData],
     };
+    if (content) payload.content = content;
     if (components) payload.components = components;
     const dr = await fetch(process.env.DISCORD_WEBHOOK_URL, {
       method: 'POST',
@@ -3553,6 +3561,7 @@ async function serverAutoTrade() {
         return { name: m.name, value: `${icon} ${m.verdict}`, inline: true };
       });
       await sendDiscordEmbed({
+        content: '@everyone ⭐ A+ SIGNAL — 4/4 COUNCIL',
         title: '⭐ HIGH CONVICTION KILL SHOT',
         color: 0xFFD700,
         fields: [
@@ -4124,17 +4133,41 @@ async function executeKillShot(pending) {
 
 // ─── KILL SHOT APPROVAL REQUEST ────────────────────────────────────────────────
 async function requestKillShotApproval(signal) {
-  pendingKillShots.set(signal.instrument, signal);
+  const instrument = signal.instrument;
+  pendingKillShots.set(instrument, signal);
 
-  // Auto-expire after 2 hours
+  const utcHour = new Date().getUTCHours();
+  const isOvernightHour = utcHour >= 22 || utcHour < 6; // Sydney/Tokyo quiet hours
+  const expiryMs = isOvernightHour ? 4 * 60 * 60 * 1000 : 2 * 60 * 60 * 1000;
+
+  // Auto-expire
   setTimeout(() => {
-    if (pendingKillShots.get(signal.instrument) === signal) {
-      pendingKillShots.delete(signal.instrument);
-      console.log(`[KILL SHOT EXPIRED] ${signal.instrument} — approval timeout`);
+    if (pendingKillShots.get(instrument) === signal) {
+      pendingKillShots.delete(instrument);
+      console.log(`[KILL SHOT EXPIRED] ${instrument} — approval timeout`);
     }
-  }, 2 * 60 * 60_000);
+  }, expiryMs);
 
-  const expiryTime = new Date(Date.now() + 2 * 60 * 60 * 1000)
+  // Reminder at 50% of expiry window
+  setTimeout(async () => {
+    if (pendingKillShots.has(instrument)) {
+      const minsLeft = Math.round(expiryMs / 2 / 60000);
+      await sendDiscordEmbed({
+        title: '⏰ KILL SHOT REMINDER',
+        color: 0xffaa00,
+        fields: [
+          { name: 'Pair',    value: instrument.replace('_', '/'), inline: true },
+          { name: 'Score',   value: `${signal.score}%`,           inline: true },
+          { name: 'Expires', value: `In ${minsLeft} min`,         inline: true },
+          { name: 'Action',  value: `\`!execute ${instrument}\` or \`!skip ${instrument}\``, inline: false },
+        ],
+        timestamp: new Date().toISOString(),
+      });
+      console.log(`[KILL SHOT REMINDER] ${instrument} — ${minsLeft} min remaining`);
+    }
+  }, expiryMs / 2);
+
+  const expiryTime = new Date(Date.now() + expiryMs)
     .toLocaleTimeString('en-CA', { timeZone: 'America/Edmonton', hour: '2-digit', minute: '2-digit' });
 
   const councilLines = (signal.models || []).map(m => {
@@ -4661,7 +4694,7 @@ app.get('/supabase/patterns', requireAuth, async (_req, res) => {
   }
 });
 
-app.get('/supabase/lessons', async (_req, res) => {
+app.get('/supabase/lessons', requireAuth, async (_req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const { data, error } = await supabase.from('lessons').select('*').order('created_at', { ascending: false }).limit(20);
@@ -4784,7 +4817,7 @@ app.get('/supabase/performance', requireAuth, async (_req, res) => {
 });
 
 // ─── TRADE HISTORY ENDPOINT ──────────────────────────────────────────────────
-app.get('/supabase/history', async (req, res) => {
+app.get('/supabase/history', requireAuth, async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const { pair, outcome, session, dateRange, sortBy, limit } = req.query;
