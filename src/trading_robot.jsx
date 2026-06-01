@@ -7152,7 +7152,7 @@ function TradeHistoryTab({ isVisible, closedTrades = [] }) {
   // Normalise OANDA closedTrades into the same shape as Supabase rows
   const normalised = closedTrades.map(t => ({
     id:           t.oandaId,
-    pair:         t.pair,
+    pair:         t.pair?.replace('/', '_'),
     direction:    t.dir,
     entry:        t.entryPrice,
     exit_price:   t.closePrice,
