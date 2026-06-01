@@ -2173,7 +2173,13 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
   console.log('[ORDER SUCCESS]', pair, 'tradeID:', tradeId);
 
   if (context && tradeId) {
-    openTradeContexts.set(tradeId.toString(), { ...context, openTime: new Date().toISOString() });
+    openTradeContexts.set(tradeId.toString(), {
+      ...context,
+      openTime:   new Date().toISOString(),
+      session:    session    || null,
+      strategy:   strategy   || null,
+      spreadCost: SPREAD_COSTS[instrument] ?? null,
+    });
   }
 
   await sendDiscordEmbed({
@@ -2302,49 +2308,75 @@ async function loadCooldowns() {
   }
 }
 
+async function verifySupabaseColumns() {
+  if (!supabase) return;
+  const required = [
+    'id','pair','direction','session','strategy','entry','exit_price',
+    'stop_loss','take_profit','pnl','r_multiple','score','consensus',
+    'units','duration_mins','outcome','market_regime','open_time','close_time',
+    'candle_patterns','pattern_adjustment','pattern_bias','candle_confirms',
+    'warren_verdict','george_verdict','james_verdict','ray_verdict',
+    'consensus_votes','options_pcr','options_bias','regime_at_entry',
+    'ema50_side','heat_at_entry','recovery_mode','atr_at_entry',
+    'trade_source','spread_cost',
+  ];
+  try {
+    const { error } = await supabase.from('trades').select(required.join(',')).limit(0);
+    if (error) {
+      console.warn('[SUPABASE COLUMNS] Missing columns detected:', error.message);
+    } else {
+      console.log('[SUPABASE COLUMNS] All required columns present ✓');
+    }
+  } catch (err) {
+    console.error('[SUPABASE COLUMNS ERROR]', err.message);
+  }
+}
+
 async function saveTradeToSupabase(trade) {
   if (!supabase) return;
   try {
+    const ctx = openTradeContexts.get(trade.id?.toString()) || {};
     const { error } = await supabase.from('trades').upsert({
       id:                 trade.id,
       pair:               trade.pair,
       direction:          trade.direction,
       session:            trade.session,
-      strategy:           trade.strategy,
+      strategy:           trade.strategy || ctx.strategy || null,
       entry:              trade.entry,
       exit_price:         trade.exitPrice,
       stop_loss:          trade.stopLoss,
       take_profit:        trade.takeProfit,
       pnl:                trade.pnl,
       r_multiple:         trade.rMultiple,
-      score:              trade.score,
-      consensus:          trade.consensus,
+      score:              ctx.score              ?? null,
+      consensus:          ctx.consensusVotes     ?? null,
       units:              trade.units,
       duration_mins:      trade.durationMins,
       outcome:            trade.pnl > 0 ? 'WIN' : trade.pnl < 0 ? 'LOSS' : 'BREAKEVEN',
-      market_regime:      trade.regime,
-      ema50_above:        trade.ema50Above,
-      rsi_at_entry:       trade.rsiAtEntry,
-      open_time:          trade.openTime,
+      market_regime:      ctx.regimeAtEntry      ?? null,
+      ema50_above:        null,
+      rsi_at_entry:       null,
+      open_time:          ctx.openTime || trade.openTime,
       close_time:         new Date().toISOString(),
       created_at:         new Date().toISOString(),
-      candle_patterns:    trade.candlePatterns    ?? null,
-      pattern_adjustment: trade.patternAdjustment ?? null,
-      pattern_bias:       trade.patternBias       ?? null,
-      candle_confirms:    trade.candleConfirms    ?? null,
-      warren_verdict:     trade.warrenVerdict     ?? null,
-      george_verdict:     trade.georgeVerdict     ?? null,
-      james_verdict:      trade.jamesVerdict      ?? null,
-      ray_verdict:        trade.rayVerdict        ?? null,
-      consensus_votes:    trade.consensusVotes    ?? null,
-      options_pcr:        trade.optionsPcr        ?? null,
-      options_bias:       trade.optionsBias       ?? null,
-      regime_at_entry:    trade.regimeAtEntry     ?? null,
-      ema50_side:         trade.ema50Side         ?? null,
-      heat_at_entry:      trade.heatAtEntry       ?? null,
-      recovery_mode:      trade.recoveryMode      ?? null,
-      atr_at_entry:       trade.atrAtEntry        ?? null,
-      trade_source:       trade.tradeSource       ?? null,
+      candle_patterns:    ctx.candlePatterns     ?? null,
+      pattern_adjustment: ctx.patternAdjustment  ?? null,
+      pattern_bias:       ctx.patternBias        ?? null,
+      candle_confirms:    ctx.candleConfirms     ?? null,
+      warren_verdict:     ctx.warrenVerdict      ?? null,
+      george_verdict:     ctx.georgeVerdict      ?? null,
+      james_verdict:      ctx.jamesVerdict       ?? null,
+      ray_verdict:        ctx.rayVerdict         ?? null,
+      consensus_votes:    ctx.consensusVotes     ?? null,
+      options_pcr:        ctx.optionsPcr         ?? null,
+      options_bias:       ctx.optionsBias        ?? null,
+      regime_at_entry:    ctx.regimeAtEntry      ?? null,
+      ema50_side:         ctx.ema50Side          ?? null,
+      heat_at_entry:      ctx.heatAtEntry        ?? null,
+      recovery_mode:      ctx.recoveryMode       ?? null,
+      atr_at_entry:       ctx.atrAtEntry         ?? null,
+      trade_source:       ctx.tradeSource        ?? null,
+      spread_cost:        ctx.spreadCost         ?? null,
     });
     if (error) {
       console.error('[SUPABASE ERROR]', error.message);
@@ -2468,44 +2500,21 @@ async function manageOpenTrades() {
           const _rMult       = _riskTotal > 0 ? pnl / _riskTotal : null;
           const _durMins     = trade.openTime ? Math.round((Date.now() - new Date(trade.openTime).getTime()) / 60000) : null;
           const _closeSess   = getServerSession();
-          const ctx          = openTradeContexts.get(id.toString()) || {};
           await saveTradeToSupabase({
-            id:                 trade.id,
-            pair:               instr,
-            direction:          dir,
-            session:            _closeSess,
-            strategy:           (XAVIER_RULES[_closeSess] || {}).strategy || null,
-            entry:              _entry,
-            exitPrice:          _exitPrice,
-            stopLoss:           _sl,
-            takeProfit:         _tp,
+            id:           trade.id,
+            pair:         instr,
+            direction:    dir,
+            session:      _closeSess,
+            strategy:     (XAVIER_RULES[_closeSess] || {}).strategy || null,
+            entry:        _entry,
+            exitPrice:    _exitPrice,
+            stopLoss:     _sl,
+            takeProfit:   _tp,
             pnl,
-            rMultiple:          _rMult,
-            score:              ctx.score              ?? null,
-            consensus:          ctx.consensusVotes     ?? null,
-            units:              _units,
-            durationMins:       _durMins,
-            regime:             ctx.regimeAtEntry      ?? null,
-            ema50Above:         null,
-            rsiAtEntry:         null,
-            openTime:           ctx.openTime || trade.openTime,
-            candlePatterns:     ctx.candlePatterns     ?? null,
-            patternAdjustment:  ctx.patternAdjustment  ?? null,
-            patternBias:        ctx.patternBias        ?? null,
-            candleConfirms:     ctx.candleConfirms     ?? null,
-            warrenVerdict:      ctx.warrenVerdict      ?? null,
-            georgeVerdict:      ctx.georgeVerdict      ?? null,
-            jamesVerdict:       ctx.jamesVerdict       ?? null,
-            rayVerdict:         ctx.rayVerdict         ?? null,
-            consensusVotes:     ctx.consensusVotes     ?? null,
-            optionsPcr:         ctx.optionsPcr         ?? null,
-            optionsBias:        ctx.optionsBias        ?? null,
-            regimeAtEntry:      ctx.regimeAtEntry      ?? null,
-            ema50Side:          ctx.ema50Side          ?? null,
-            heatAtEntry:        ctx.heatAtEntry        ?? null,
-            recoveryMode:       ctx.recoveryMode       ?? null,
-            atrAtEntry:         ctx.atrAtEntry         ?? null,
-            tradeSource:        ctx.tradeSource        ?? null,
+            rMultiple:    _rMult,
+            units:        _units,
+            durationMins: _durMins,
+            openTime:     trade.openTime,
           });
           openTradeContexts.delete(id.toString());
         }
@@ -5002,6 +5011,7 @@ setInterval(() => maybeSendDailySummary().catch(e => console.error('[mgmt] Summa
 
 // Upgrade 2 — Economic calendar refresh every hour
 loadCooldowns().catch(e => console.error('[state] loadCooldowns startup:', e.message));
+verifySupabaseColumns().catch(e => console.error('[supabase] Column check startup:', e.message));
 refreshEconomicCalendar().catch(e => console.error('[calendar] Startup:', e.message));
 setInterval(() => refreshEconomicCalendar().catch(e => console.error('[calendar] Refresh:', e.message)), 60 * 60_000);
 
