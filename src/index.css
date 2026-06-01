@@ -1,13 +1,19 @@
 :root {
   --bg: #fff;
   --border: #e5e4e7;
+  --text: #6b6375;
   background: var(--bg);
+  color: var(--text);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #16171d;
     --border: #2e303a;
+    --text: #9ca3af;
   }
 }
 
