@@ -7131,7 +7131,7 @@ function HistoricalBacktest({ isMobile }) {
 function TradeHistoryTab({ isVisible }) {
   const [trades, setTrades]               = useState([]);
   const [loading, setLoading]             = useState(true);
-  const [filters, setFilters]             = useState({ pair: 'ALL', outcome: 'ALL', session: 'ALL', dateRange: '30d' });
+  const [filters, setFilters]             = useState({ pair: 'ALL', outcome: 'ALL', session: 'ALL', dateRange: 'ALL' });
   const [sortBy, setSortBy]               = useState('close_time');
   const [search, setSearch]               = useState('');
   const [selectedTrade, setSelectedTrade] = useState(null);
