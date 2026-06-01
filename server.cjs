@@ -3183,37 +3183,35 @@ async function serverAutoTrade() {
     // Track signal age — start clock on first qualifying signal appearance
     if (!signalFirstDetected.has(instrument)) signalFirstDetected.set(instrument, Date.now());
 
-    // Pattern analysis — fetch last 3 M5 candles and adjust score / block contradictions
+    // Step 1 — fetch candles and analyze patterns
     let patternAnalysis = null;
     const recentCandles = await getCandles(instrument, 'M5', 3);
     const rawPatternAnalysis = analyzeCandlePatterns(recentCandles);
     if (rawPatternAnalysis && rawPatternAnalysis.patterns.length > 0) {
       const { patterns, scoreAdjustment, directionBias } = rawPatternAnalysis;
-      console.log('[PATTERNS]', instrument, patterns.join(', '), 'adjustment:', scoreAdjustment, 'bias:', directionBias);
+
+      // Step 2 — apply pattern adjustment to score BEFORE threshold check
+      const baseScore = signal.score;
       signal.score = Math.min(100, Math.max(0, signal.score + scoreAdjustment));
+      console.log(`[SCORE BOOST] ${instrument} base:${baseScore}% pattern:${patterns[0]} adjustment:${scoreAdjustment > 0 ? '+' : ''}${scoreAdjustment} final:${signal.score}%`);
+
+      // Contradiction — strong pattern opposes signal direction → hard block
       const strongPatterns = ['BULLISH_ENGULFING', 'BEARISH_ENGULFING', 'THREE_SOLDIERS', 'THREE_CROWS'];
       if (directionBias !== 'NEUTRAL' && directionBias !== signal.direction && patterns.some(p => strongPatterns.includes(p))) {
         console.log('[PATTERN BLOCK]', instrument, '—', patterns[0], 'contradicts', signal.direction);
         diagCounters.blockedScore++;
         continue;
       }
-      if (patterns.includes('DOJI')) {
-        console.log('[PATTERN SKIP]', instrument, '— DOJI detected, skipping');
-        diagCounters.blockedScore++;
-        continue;
-      }
+
+      // DOJI (-15 adjustment already applied above) — threshold check below handles the block
       patternAnalysis = { patterns, scoreAdjustment, directionBias, confirms: directionBias === signal.direction || directionBias === 'NEUTRAL' };
     }
 
-    // Recovery mode — raised threshold for all pairs
+    // Step 3 — score threshold check AFTER pattern boost
     const scoreThresholdEffective = recoveryMode ? 75
       : (HIGH_THRESHOLD_PAIRS.has(instrument) ? 75 : 65);
     if (signal.score < scoreThresholdEffective) {
-      if (recoveryMode) {
-        console.log(`[RECOVERY MODE] ${instrument} — score ${signal.score}% < 75% required in recovery — skipping`);
-      } else {
-        console.log(`[HIGH-THRESH] ${instrument} — score ${signal.score}% < 75% required for volatile asset`);
-      }
+      console.log(`[SCORE] ${instrument} ${signal.score}% below ${scoreThresholdEffective}% threshold`);
       diagCounters.blockedScore++;
       continue;
     }
