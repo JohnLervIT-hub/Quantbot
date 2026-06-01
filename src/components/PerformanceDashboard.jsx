@@ -4,7 +4,13 @@ import { FONT_MONO } from '../lib/config';
 
 export default function PerformanceDashboard({ trades, closedTrades = [], balance, isMobile }) {
   const hasClosed = closedTrades.length > 0;
-  const analyticsData = hasClosed ? closedTrades : trades;
+  const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
+  const cleanTrades = hasClosed ? closedTrades.filter(t =>
+    new Date(t.close_time) >= CLEAN_CUTOFF &&
+    t.r_multiple !== null &&
+    t.session_name !== null
+  ) : [];
+  const analyticsData = hasClosed ? cleanTrades : trades;
   const [curveFilter, setCurveFilter] = useState("ALL");
   const [xavierNote, setXavierNote] = useState("");
   const [xavierLoading, setXavierLoading] = useState(false);
@@ -13,8 +19,15 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
     return (
       <div style={{ padding: "60px 16px", textAlign: "center" }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>📊</div>
-        <div style={{ fontSize: 15, fontWeight: 600, color: "#e6edf3", marginBottom: 6 }}>No trades yet</div>
-        <div style={{ fontSize: 12, color: "#8b949e" }}>Execute trades in the Markets tab to see analytics here.</div>
+        <div style={{ fontSize: 15, fontWeight: 600, color: "#e6edf3", marginBottom: 6 }}>
+          {hasClosed ? "No clean trades yet" : "No trades yet"}
+        </div>
+        <div style={{ fontSize: 12, color: "#8b949e" }}>
+          {hasClosed
+            ? `${closedTrades.length} historical trade${closedTrades.length !== 1 ? "s" : ""} exist but are excluded (pre-June 1 calibration data). New trades will appear here.`
+            : "Execute trades in the Markets tab to see analytics here."
+          }
+        </div>
       </div>
     );
   }
@@ -32,7 +45,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
   const profitFactor = avgLoss > 0 && losses.length > 0 ? (avgWin * wins.length) / (avgLoss * losses.length) : 0;
 
   const equityCurve = hasClosed
-    ? closedTrades.slice().reverse().reduce((acc, t) => {
+    ? cleanTrades.slice().reverse().reduce((acc, t) => {
         acc.push(acc[acc.length - 1] + (t.realizedPL || 0));
         return acc;
       }, [0])
@@ -41,7 +54,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
   const filterMs = { ALL: Infinity, TODAY: 86400000, WEEK: 604800000, MONTH: 2592000000 };
   const nowMs = Date.now();
   const filteredBase = hasClosed
-    ? closedTrades.slice().reverse().filter(t => {
+    ? cleanTrades.slice().reverse().filter(t => {
         if (curveFilter === "ALL") return true;
         const ts = t.closeTime ? new Date(t.closeTime).getTime() : 0;
         return nowMs - ts <= filterMs[curveFilter];
@@ -134,7 +147,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
   };
 
   const metrics = hasClosed ? [
-    { label: "Closed Trades",  value: closedTrades.length,       color: "#e6edf3" },
+    { label: "Clean Trades",   value: cleanTrades.length,         color: "#e6edf3" },
     { label: "Win Rate",       value: `${winRate.toFixed(1)}%`,  color: winRate >= 50 ? "#3fb950" : "#f85149" },
     { label: "Total P&L",     value: fmtD(totalPnl),             color: pc(totalPnl) },
     { label: "Expectancy",    value: fmtD(expectancy),           color: pc(expectancy) },
@@ -157,14 +170,36 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
     <div style={{ padding: "0 16px 32px" }}>
 
       {/* ── Banner ─────────────────────────────────────────────────────────── */}
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderRadius: 10, background: analyticsData.length < 30 ? "#2d2a1a" : "#161b22", border: `1px solid ${analyticsData.length < 30 ? "#d29922" : "#21262d"}`, marginBottom: 16 }}>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3" }}>{hasClosed ? "OANDA Trade Analytics" : "Signal Analytics"}</div>
-          <div style={{ fontSize: 10, color: "#8b949e", marginTop: 2 }}>{hasClosed ? `${closedTrades.length} closed trades · live OANDA data` : `${trades.length} signal records · simulated P&L`}</div>
-        </div>
-        {analyticsData.length < 30 && (
-          <div style={{ fontSize: 10, color: "#d29922", textAlign: "right" }}>{30 - analyticsData.length} more trades for stable stats</div>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ marginBottom: 16 }}>
+        {hasClosed ? (
+          <>
+            <div style={{ fontSize: 10, color: "#8b949e", padding: "6px 12px", background: "#16171d", border: "1px solid #2e303a", borderRadius: 6, marginBottom: 8, textAlign: "center", fontStyle: "italic" }}>
+              Pre-June 1 trades excluded from performance metrics — contained system calibration data
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div style={{ padding: "10px 14px", borderRadius: 10, background: "#0f2217", border: "1px solid #238636" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#3fb950" }}>Clean trades (post-fix)</div>
+                <div style={{ fontSize: 10, color: "#8b949e", marginTop: 2 }}>{cleanTrades.length} trade{cleanTrades.length !== 1 ? "s" : ""} · accurate performance data</div>
+                {cleanTrades.length < 30 && cleanTrades.length > 0 && (
+                  <div style={{ fontSize: 10, color: "#d29922", marginTop: 4 }}>{30 - cleanTrades.length} more for stable stats</div>
+                )}
+              </div>
+              <div style={{ padding: "10px 14px", borderRadius: 10, background: "#161b22", border: "1px solid #21262d" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#8b949e" }}>All time (50 trades)</div>
+                <div style={{ fontSize: 10, color: "#484f58", marginTop: 2 }}>{closedTrades.length} trade{closedTrades.length !== 1 ? "s" : ""} · historical reference only</div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderRadius: 10, background: analyticsData.length < 30 ? "#2d2a1a" : "#161b22", border: `1px solid ${analyticsData.length < 30 ? "#d29922" : "#21262d"}` }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3" }}>Signal Analytics</div>
+              <div style={{ fontSize: 10, color: "#8b949e", marginTop: 2 }}>{trades.length} signal records · simulated P&L</div>
+            </div>
+            {analyticsData.length < 30 && (
+              <div style={{ fontSize: 10, color: "#d29922", textAlign: "right" }}>{30 - analyticsData.length} more trades for stable stats</div>
+            )}
+          </div>
         )}
       </motion.div>
 
@@ -366,7 +401,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
       {/* ── Trade log ───────────────────────────────────────────────────────── */}
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }} style={CARD}>
         <div style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3", marginBottom: 10 }}>
-          {hasClosed ? "Closed Trade Log" : "Trade Log"}
+          {hasClosed ? `Clean Trade Log (${cleanTrades.length} post-Jun 1)` : "Trade Log"}
         </div>
         {hasClosed ? (
           <div style={{ overflowX: "auto" }}>
@@ -374,7 +409,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
               {["Pair", "Dir", "Time", "P&L ($)", "Pips", "R", "Dur"].map(h => <div key={h}>{h}</div>)}
             </div>
             <div style={{ maxHeight: 280, overflowY: "auto" }}>
-              {closedTrades.slice(0, 50).map((t, i) => {
+              {cleanTrades.map((t, i) => {
                 const isWin = t.realizedPL > 0;
                 const closeDate = t.closeTime ? new Date(t.closeTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
                 return (
