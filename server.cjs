@@ -684,23 +684,27 @@ const signalFirstDetected      = new Map(); // instrument → ms timestamp when 
 
 // ─── DIAGNOSTIC COUNTERS (reset every 24h) ───────────────────────────────────
 let diagCounters = {
-  resetAt:          Date.now(),
-  signalCounter:    0,
-  gatekeeperPass:   0,
-  newsGuardPass:    0,
-  macroPass:        0,
-  reachedConsensus: 0,
-  aplusCount:       0,
-  standardCount:    0,
-  executedCount:    0,
-  blockedScore:     0,
-  blockedNews:      0,
-  blockedMacro:     0,
-  blockedOptions:   0,
-  blockedHistory:   0,
-  blockedConsensus: 0,
-  blockedCooldown:  0,
-  blockedHeat:      0,
+  resetAt:             Date.now(),
+  signalCounter:       0,
+  gatekeeperPass:      0,
+  newsGuardPass:       0,
+  macroPass:           0,
+  reachedConsensus:    0,
+  aplusCount:          0,
+  standardCount:       0,
+  executedCount:       0,
+  blockedScore:        0,
+  blockedNews:         0,
+  blockedMacro:        0,
+  blockedOptions:      0,
+  blockedHistory:      0,
+  blockedConsensus:    0,
+  blockedCooldown:     0,
+  blockedHeat:         0,
+  swingCounter:        0,
+  swingConsensusPass:  0,
+  swingQueued:         0,
+  swingExecutedCount:  0,
 };
 let   economicEvents       = [];        // high-impact events this week
 let   dailyStats           = { date: '', trades: 0, winners: 0, losers: 0, totalPnl: 0, bestTrade: '', _bestPnl: -Infinity };
@@ -3060,7 +3064,7 @@ async function serverAutoTrade() {
 
   // Reset diagnostic counters every 24h
   if (Date.now() - diagCounters.resetAt > 24 * 60 * 60 * 1000) {
-    diagCounters = { resetAt: Date.now(), signalCounter: 0, gatekeeperPass: 0, newsGuardPass: 0, macroPass: 0, reachedConsensus: 0, aplusCount: 0, standardCount: 0, executedCount: 0, blockedScore: 0, blockedNews: 0, blockedMacro: 0, blockedOptions: 0, blockedHistory: 0, blockedConsensus: 0, blockedCooldown: 0, blockedHeat: 0 };
+    diagCounters = { resetAt: Date.now(), signalCounter: 0, gatekeeperPass: 0, newsGuardPass: 0, macroPass: 0, reachedConsensus: 0, aplusCount: 0, standardCount: 0, executedCount: 0, blockedScore: 0, blockedNews: 0, blockedMacro: 0, blockedOptions: 0, blockedHistory: 0, blockedConsensus: 0, blockedCooldown: 0, blockedHeat: 0, swingCounter: 0, swingConsensusPass: 0, swingQueued: 0, swingExecutedCount: 0 };
   }
 
   if (openTrades.length >= 2) {
@@ -3879,6 +3883,7 @@ async function serverSwingAutoTrade() {
 
       const sig = serverGenerateSwingSignal(h4Candles, weeklyCandles, instrument);
       if (!sig) continue;
+      diagCounters.swingCounter++;
 
       // Pattern analysis — fetch last 3 M15 candles and adjust score / block contradictions
       let swingPatternAnalysis = null;
@@ -4020,6 +4025,7 @@ async function serverSwingAutoTrade() {
         console.log(`[SWING] consensus failed ${consensus.confirms}/4 — not sending Discord notification`);
         continue;
       }
+      diagCounters.swingConsensusPass++;
 
       // ── SL/TP sanity check before queuing ───────────────────────────────────
       const swingUnitSize = SWING_UNITS[instrument] ?? 500;
@@ -4037,12 +4043,14 @@ async function serverSwingAutoTrade() {
       // ── 3/4 confirmed — queue for Discord approval ──────────────────────────
       lastValidSwingSignal = { instrument, direction: sig.direction, score: sig.score, session, timestamp: ts };
       swingStatus = { status: 'LIVE', message: `Kill Shot queued: ${instrument} ${sig.direction}`, lastSignal: lastValidSwingSignal, nextScan: null };
+      diagCounters.swingQueued++;
       await requestKillShotApproval({
         instrument, direction: sig.direction, units,
         liveEntry, liveSl, liveTp1, liveTp2, liveTp3,
         score: sig.score, reasons: sig.reasons, session,
         confirms: consensus.confirms, models: consensus.models,
         voteLog: consensus.voteLog, timestamp: ts,
+        expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
       });
       return; // HARD STOP — no execution without Discord approval
 
@@ -4092,6 +4100,7 @@ async function executeKillShot(pending) {
 
   const { fill, tradeId } = result;
   console.log(`[KILL SHOT EXECUTE SUCCESS] ${instrument} ${direction} @ ${fill} — tradeID: ${tradeId}`);
+  diagCounters.swingExecutedCount++;
 
   serverTradeLog.unshift({ id: tradeId, pair: instrument, direction, strategy: 'Kill Shot', session, score, entry: parseFloat(fill), sl: parseFloat(formatPrice(liveSl, instrument)), tp: parseFloat(formatPrice(liveTp1, instrument)), units, type: 'swing', timestamp: Date.now() });
   if (serverTradeLog.length > 500) serverTradeLog.pop();
@@ -4574,7 +4583,7 @@ app.get('/diagnostics', requireAuth, async (_req, res) => {
       historicalMinWinRate:   55,
       signalAgeMinutes:       5,
     },
-    last24h: {
+    m5: {
       signalsScanned:    diagCounters.signalCounter,
       passedGatekeeper:  diagCounters.gatekeeperPass,
       passedNewsGuard:   diagCounters.newsGuardPass,
@@ -4593,6 +4602,18 @@ app.get('/diagnostics', requireAuth, async (_req, res) => {
         cooldown:       diagCounters.blockedCooldown,
         heatLimit:      diagCounters.blockedHeat,
       },
+    },
+    swing: {
+      scanned:         diagCounters.swingCounter,
+      passedConsensus: diagCounters.swingConsensusPass,
+      queued:          diagCounters.swingQueued,
+      executed:        diagCounters.swingExecutedCount,
+      pending: Array.from(pendingKillShots.entries()).map(([pair, data]) => ({
+        pair,
+        score:     data.score,
+        consensus: data.confirms,
+        expiresAt: data.expiresAt || null,
+      })),
     },
     conservatismScore: calculateConservatism(),
     recommendation:    getRecommendation(),
