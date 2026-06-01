@@ -7143,11 +7143,9 @@ function TradeHistoryTab({ isVisible }) {
   const fetchHistory = async () => {
     setLoading(true);
     try {
-      const token  = localStorage.getItem('auth_token');
       const params = new URLSearchParams({ ...filters, sortBy, limit: 500 });
-      const res    = await fetch(`${BRIDGE}/supabase/history?${params}`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
+      const res    = await fetch(`${BRIDGE}/supabase/history?${params}`);
+      if (!res.ok) { console.error('[History] HTTP', res.status); setLoading(false); return; }
       const data = await res.json();
       setTrades(data.trades || []);
     } catch (err) {

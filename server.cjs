@@ -4586,7 +4586,7 @@ app.get('/supabase/performance', requireAuth, async (_req, res) => {
 });
 
 // ─── TRADE HISTORY ENDPOINT ──────────────────────────────────────────────────
-app.get('/supabase/history', requireAuth, async (req, res) => {
+app.get('/supabase/history', async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const { pair, outcome, session, dateRange, sortBy, limit } = req.query;
