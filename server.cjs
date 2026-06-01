@@ -681,6 +681,27 @@ const tradeManagementState = new Map(); // tradeId → { movedToBreakeven, parti
 const lastKnownTradeIds        = new Set(); // for closed trade detection (management loop)
 const serverAutoTradeOpenInstr = new Set(); // last-seen open instruments (auto-trade loop, for race-free cooldown detection)
 const signalFirstDetected      = new Map(); // instrument → ms timestamp when qualifying signal was first seen (for 5-min age gate)
+
+// ─── DIAGNOSTIC COUNTERS (reset every 24h) ───────────────────────────────────
+let diagCounters = {
+  resetAt:          Date.now(),
+  signalCounter:    0,
+  gatekeeperPass:   0,
+  newsGuardPass:    0,
+  macroPass:        0,
+  reachedConsensus: 0,
+  aplusCount:       0,
+  standardCount:    0,
+  executedCount:    0,
+  blockedScore:     0,
+  blockedNews:      0,
+  blockedMacro:     0,
+  blockedOptions:   0,
+  blockedHistory:   0,
+  blockedConsensus: 0,
+  blockedCooldown:  0,
+  blockedHeat:      0,
+};
 let   economicEvents       = [];        // high-impact events this week
 let   dailyStats           = { date: '', trades: 0, winners: 0, losers: 0, totalPnl: 0, bestTrade: '', _bestPnl: -Infinity };
 let   lastDailySummaryDate = '';
@@ -3037,8 +3058,14 @@ async function serverAutoTrade() {
     return;
   }
 
+  // Reset diagnostic counters every 24h
+  if (Date.now() - diagCounters.resetAt > 24 * 60 * 60 * 1000) {
+    diagCounters = { resetAt: Date.now(), signalCounter: 0, gatekeeperPass: 0, newsGuardPass: 0, macroPass: 0, reachedConsensus: 0, aplusCount: 0, standardCount: 0, executedCount: 0, blockedScore: 0, blockedNews: 0, blockedMacro: 0, blockedOptions: 0, blockedHistory: 0, blockedConsensus: 0, blockedCooldown: 0, blockedHeat: 0 };
+  }
+
   if (openTrades.length >= 2) {
     console.log(`[auto] ${session} — ${openTrades.length} open trades, skipping scan`);
+    diagCounters.blockedHeat++;
     return;
   }
 
@@ -3059,7 +3086,7 @@ async function serverAutoTrade() {
 
   for (const instrument of pairs) {
     // Consensus cooldown — 15 minutes between signal attempts per pair
-    if (Date.now() - (lastConsensus.get(instrument) || 0) < 15 * 60_000) continue;
+    if (Date.now() - (lastConsensus.get(instrument) || 0) < 15 * 60_000) { diagCounters.blockedCooldown++; continue; }
 
     // Post-close cooldown — 15 minutes after any close on this instrument
     const lastClose = postCloseCooldown.get(instrument);
@@ -3067,6 +3094,7 @@ async function serverAutoTrade() {
     console.log(`[COOLDOWN CHECK] ${instrument} — ${lastClose ? `last close ${Math.round((Date.now() - lastClose) / 60000)} min ago, ${cooldownMinsLeft > 0 ? cooldownMinsLeft + ' min remaining' : 'CLEAR'}` : 'no recent close'}`);
     if (lastClose && Date.now() - lastClose < POST_CLOSE_COOLDOWN_MS) {
       console.log(`[COOLDOWN HARD BLOCK] ${instrument} — ${cooldownMinsLeft} min remaining — ABORTING`);
+      diagCounters.blockedCooldown++;
       continue;
     }
 
@@ -3075,6 +3103,7 @@ async function serverAutoTrade() {
       console.log(`[PAIR LOCK] ${instrument} already open in another timeframe — skipping M5`);
       serverRejections.unshift({ ts, instrument, direction: '?', score: 0, session, strategy, rejections: [{ condition: 'Pair Lock', actual: `${instrument} already open`, threshold: 'One position per pair across all systems' }] });
       if (serverRejections.length > 50) serverRejections.pop();
+      diagCounters.blockedCooldown++;
       continue;
     }
 
@@ -3098,8 +3127,10 @@ async function serverAutoTrade() {
           footer: { text: 'Information Filtering — Principle 33' },
         }
       );
+      diagCounters.blockedNews++;
       continue;
     }
+    diagCounters.newsGuardPass++;
 
     const history = await getM5History(instrument);
     if (history.length < 20) {
@@ -3148,6 +3179,7 @@ async function serverAutoTrade() {
       console.log(`[auto] ${instrument} — no ${strategy} signal`);
       continue;
     }
+    diagCounters.signalCounter++;
     // Track signal age — start clock on first qualifying signal appearance
     if (!signalFirstDetected.has(instrument)) signalFirstDetected.set(instrument, Date.now());
 
@@ -3162,10 +3194,12 @@ async function serverAutoTrade() {
       const strongPatterns = ['BULLISH_ENGULFING', 'BEARISH_ENGULFING', 'THREE_SOLDIERS', 'THREE_CROWS'];
       if (directionBias !== 'NEUTRAL' && directionBias !== signal.direction && patterns.some(p => strongPatterns.includes(p))) {
         console.log('[PATTERN BLOCK]', instrument, '—', patterns[0], 'contradicts', signal.direction);
+        diagCounters.blockedScore++;
         continue;
       }
       if (patterns.includes('DOJI')) {
         console.log('[PATTERN SKIP]', instrument, '— DOJI detected, skipping');
+        diagCounters.blockedScore++;
         continue;
       }
       patternAnalysis = { patterns, scoreAdjustment, directionBias, confirms: directionBias === signal.direction || directionBias === 'NEUTRAL' };
@@ -3180,6 +3214,7 @@ async function serverAutoTrade() {
       } else {
         console.log(`[HIGH-THRESH] ${instrument} — score ${signal.score}% < 75% required for volatile asset`);
       }
+      diagCounters.blockedScore++;
       continue;
     }
 
@@ -3236,8 +3271,10 @@ async function serverAutoTrade() {
           });
         }
       }
+      diagCounters.blockedScore++;
       continue;
     }
+    diagCounters.gatekeeperPass++;
 
     // Trend confirmation — 3/3 for forex LONG, 1/3 for indices (mixed candles normal)
     const m5Candles = await getM5Candles(instrument);
@@ -3261,6 +3298,7 @@ async function serverAutoTrade() {
         ],
         timestamp: new Date().toISOString(),
       });
+      diagCounters.blockedMacro++;
       continue;
     }
     console.log(`[TREND CONFIRMED] ${instrument} ${signal.direction} — trend active, proceeding to consensus`);
@@ -3314,6 +3352,7 @@ async function serverAutoTrade() {
           ],
           timestamp: new Date().toISOString(),
         });
+        diagCounters.blockedMacro++;
         continue;
       }
       console.log(`[LONG FILTER] ${instrument} LONG cleared — ${condsMet}/3 meets ${required}/3 required (EMA50up:${c1_ema50Up} LTbias:${c2_weeklyBull} XavierBull:${c3_xavierBull})`);
@@ -3329,6 +3368,7 @@ async function serverAutoTrade() {
           console.log(`[SUPABASE BLOCK] ${instrument} — negative historical edge, skipping`);
           serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Historical Edge', actual: `avg R: ${insight.avgR.toFixed(3)} over ${insight.attempts} trades`, threshold: 'avg R >= -0.1 required' }] });
           if (serverRejections.length > 50) serverRejections.pop();
+          diagCounters.blockedHistory++;
           continue;
         }
         patternInsight = insight;
@@ -3397,12 +3437,14 @@ async function serverAutoTrade() {
         console.log(`[OPTIONS BLOCK] ${instrument} — PCR ${optionsData.putCallRatio} strongly bearish — blocking LONG`);
         serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Options PCR Block', actual: `PCR ${optionsData.putCallRatio} > 3.0`, threshold: 'Strongly bearish positioning — LONG blocked' }] });
         if (serverRejections.length > 50) serverRejections.pop();
+        diagCounters.blockedOptions++;
         continue;
       }
       if (parseFloat(optionsData.putCallRatio) < 0.5 && signal.direction === 'SHORT') {
         console.log(`[OPTIONS BLOCK] ${instrument} — PCR ${optionsData.putCallRatio} strongly bullish — blocking SHORT`);
         serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Options PCR Block', actual: `PCR ${optionsData.putCallRatio} < 0.5`, threshold: 'Strongly bullish positioning — SHORT blocked' }] });
         if (serverRejections.length > 50) serverRejections.pop();
+        diagCounters.blockedOptions++;
         continue;
       }
 
@@ -3424,6 +3466,8 @@ async function serverAutoTrade() {
       }
     }
 
+    diagCounters.macroPass++;
+
     // ── HIGH CONVICTION filter ────────────────────────────────────────────────
     // All five criteria must be true simultaneously for A+ classification
     const HC_MIN_AGE_MS  = 5 * 60 * 1000; // 5 minutes building
@@ -3441,6 +3485,7 @@ async function serverAutoTrade() {
     const requiredVotes = isHighConviction ? 4 : 3;
     console.log(`[auto] ${instrument} — HIGH_CONVICTION: ${isHighConviction} (score:${signal.score} age:${Math.round(signalAgeMs/60000)}min patternOk:${patternAnalysis?.confirms} optionsOk:${optionsData?.confirmsTrade} histOk:${(patternInsight?.attempts ?? 0) >= 10}) — need ${requiredVotes}/4`);
 
+    diagCounters.reachedConsensus++;
     console.log(`[auto] ${instrument} — calling consensus`);
     let consensus;
     try {
@@ -3495,8 +3540,10 @@ async function serverAutoTrade() {
     if (!votesOk) {
       serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Consensus', actual: `${consensus.votes.confirm}/4`, threshold: `${requiredVotes}/4 required${isHighConviction ? ' (HIGH CONVICTION — A+)' : ''}` }], models: consensus.models });
       if (serverRejections.length > 50) serverRejections.pop();
+      diagCounters.blockedConsensus++;
       continue;
     }
+    if (isHighConviction) diagCounters.aplusCount++; else diagCounters.standardCount++;
 
     // ── HIGH CONVICTION ⭐ Discord alert ──────────────────────────────────────
     if (isHighConviction) {
@@ -3573,6 +3620,7 @@ async function serverAutoTrade() {
         console.log(`[auto] ${instrument} — placeOrder blocked: ${result.blocked}`);
       } else if (result.success) {
         const { fill, tradeId: oandaId } = result;
+        diagCounters.executedCount++;
         signalFirstDetected.delete(instrument); // reset age clock after execution
         autoTrades.unshift({ id: Date.now(), timestamp: ts, instrument, direction: signal.direction, units, price: fill, session, strategy, score: signal.score, consensus: consensus.votes, models: consensus.models, oandaOrderId: oandaId });
         if (autoTrades.length > 100) autoTrades.pop();
@@ -4493,6 +4541,66 @@ async function runIntegrationTests() {
   console.log('[TESTS]', passed, 'passed,', failed, 'failed');
   return { passed, failed, total: results.length, allPassed: failed === 0, results };
 }
+
+// ─── DIAGNOSTICS ─────────────────────────────────────────────────────────────
+function calculateConservatism() {
+  const execRate = diagCounters.executedCount / Math.max(diagCounters.signalCounter, 1);
+  if (execRate > 0.15) return 'AGGRESSIVE';
+  if (execRate > 0.08) return 'BALANCED';
+  if (execRate > 0.03) return 'CONSERVATIVE';
+  return 'TOO_CONSERVATIVE';
+}
+
+function getRecommendation() {
+  switch (calculateConservatism()) {
+    case 'TOO_CONSERVATIVE':
+      return 'Lower A+ threshold to 72% or remove historical requirement until 50+ trades accumulated';
+    case 'CONSERVATIVE':
+      return 'System healthy — selective by design. Monitor win rate.';
+    case 'BALANCED':
+      return 'Optimal balance of quality and frequency';
+    case 'AGGRESSIVE':
+      return 'Consider raising threshold if win rate drops below 55%';
+  }
+}
+
+app.get('/diagnostics', requireAuth, async (_req, res) => {
+  const hoursRunning = ((Date.now() - diagCounters.resetAt) / (60 * 60 * 1000)).toFixed(1);
+  res.json({
+    periodHours: parseFloat(hoursRunning),
+    thresholds: {
+      standardScore:          65,
+      aplusScore:             78,
+      consensusStandard:      3,
+      consensusAplus:         4,
+      historicalMinTrades:    10,
+      historicalMinWinRate:   55,
+      signalAgeMinutes:       5,
+    },
+    last24h: {
+      signalsScanned:    diagCounters.signalCounter,
+      passedGatekeeper:  diagCounters.gatekeeperPass,
+      passedNewsGuard:   diagCounters.newsGuardPass,
+      passedMacroFilter: diagCounters.macroPass,
+      reachedConsensus:  diagCounters.reachedConsensus,
+      aplus:             diagCounters.aplusCount,
+      standard:          diagCounters.standardCount,
+      executed:          diagCounters.executedCount,
+      blocked: {
+        scoreThreshold: diagCounters.blockedScore,
+        newsGuard:      diagCounters.blockedNews,
+        macroFilter:    diagCounters.blockedMacro,
+        options:        diagCounters.blockedOptions,
+        historical:     diagCounters.blockedHistory,
+        consensus:      diagCounters.blockedConsensus,
+        cooldown:       diagCounters.blockedCooldown,
+        heatLimit:      diagCounters.blockedHeat,
+      },
+    },
+    conservatismScore: calculateConservatism(),
+    recommendation:    getRecommendation(),
+  });
+});
 
 app.get('/run-tests', requireAuth, async (_req, res) => {
   try {
