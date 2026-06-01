@@ -680,6 +680,7 @@ const serverTradeLog = [];          // newest-first, capped at 500
 const tradeManagementState = new Map(); // tradeId → { movedToBreakeven, partialClosed, peakR, profitAtRiskAlerted }
 const lastKnownTradeIds        = new Set(); // for closed trade detection (management loop)
 const serverAutoTradeOpenInstr = new Set(); // last-seen open instruments (auto-trade loop, for race-free cooldown detection)
+const signalFirstDetected      = new Map(); // instrument → ms timestamp when qualifying signal was first seen (for 5-min age gate)
 let   economicEvents       = [];        // high-impact events this week
 let   dailyStats           = { date: '', trades: 0, winners: 0, losers: 0, totalPnl: 0, bestTrade: '', _bestPnl: -Infinity };
 let   lastDailySummaryDate = '';
@@ -2310,6 +2311,7 @@ async function saveTradeToSupabase(trade) {
       heat_at_entry:      trade.heatAtEntry       ?? null,
       recovery_mode:      trade.recoveryMode      ?? null,
       atr_at_entry:       trade.atrAtEntry        ?? null,
+      trade_source:       trade.tradeSource       ?? null,
     });
     if (error) {
       console.error('[SUPABASE ERROR]', error.message);
@@ -2470,6 +2472,7 @@ async function manageOpenTrades() {
             heatAtEntry:        ctx.heatAtEntry        ?? null,
             recoveryMode:       ctx.recoveryMode       ?? null,
             atrAtEntry:         ctx.atrAtEntry         ?? null,
+            tradeSource:        ctx.tradeSource        ?? null,
           });
           openTradeContexts.delete(id.toString());
         }
@@ -3141,9 +3144,12 @@ async function serverAutoTrade() {
     const signal = serverGenerateSignal(liveHistory, strategy, instrument);
 
     if (!signal) {
+      signalFirstDetected.delete(instrument); // signal gone — reset age clock
       console.log(`[auto] ${instrument} — no ${strategy} signal`);
       continue;
     }
+    // Track signal age — start clock on first qualifying signal appearance
+    if (!signalFirstDetected.has(instrument)) signalFirstDetected.set(instrument, Date.now());
 
     // Pattern analysis — fetch last 3 M5 candles and adjust score / block contradictions
     let patternAnalysis = null;
@@ -3418,6 +3424,23 @@ async function serverAutoTrade() {
       }
     }
 
+    // ── HIGH CONVICTION filter ────────────────────────────────────────────────
+    // All five criteria must be true simultaneously for A+ classification
+    const HC_MIN_AGE_MS  = 5 * 60 * 1000; // 5 minutes building
+    const signalAgeMs    = Date.now() - (signalFirstDetected.get(instrument) || Date.now());
+    const isHighConviction = (
+      signal.score >= 78 &&
+      patternAnalysis?.confirms === true &&
+      (patternAnalysis?.patterns?.length ?? 0) > 0 &&
+      optionsData?.confirmsTrade === true &&
+      optionsData?.institutionalBias !== 'NEUTRAL' &&
+      (patternInsight?.winRate  ?? 0)  >= 55 &&
+      (patternInsight?.attempts ?? 0)  >= 10 &&
+      signalAgeMs >= HC_MIN_AGE_MS
+    );
+    const requiredVotes = isHighConviction ? 4 : 3;
+    console.log(`[auto] ${instrument} — HIGH_CONVICTION: ${isHighConviction} (score:${signal.score} age:${Math.round(signalAgeMs/60000)}min patternOk:${patternAnalysis?.confirms} optionsOk:${optionsData?.confirmsTrade} histOk:${(patternInsight?.attempts ?? 0) >= 10}) — need ${requiredVotes}/4`);
+
     console.log(`[auto] ${instrument} — calling consensus`);
     let consensus;
     try {
@@ -3466,12 +3489,38 @@ async function serverAutoTrade() {
       continue;
     }
 
-    console.log(`[auto] ${instrument} — consensus ${consensus.votes.confirm}/4 — ${consensus.executeAllowed ? 'EXECUTE' : 'BLOCKED'}`);
+    const votesOk = consensus.votes.confirm >= requiredVotes;
+    console.log(`[auto] ${instrument} — consensus ${consensus.votes.confirm}/4 — need ${requiredVotes} — ${votesOk ? 'EXECUTE' : 'BLOCKED'}${isHighConviction ? ' [HIGH CONVICTION]' : ''}`);
 
-    if (!consensus.executeAllowed) {
-      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Consensus', actual: `${consensus.votes.confirm}/4`, threshold: '3/4 required' }], models: consensus.models });
+    if (!votesOk) {
+      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Consensus', actual: `${consensus.votes.confirm}/4`, threshold: `${requiredVotes}/4 required${isHighConviction ? ' (HIGH CONVICTION — A+)' : ''}` }], models: consensus.models });
       if (serverRejections.length > 50) serverRejections.pop();
       continue;
+    }
+
+    // ── HIGH CONVICTION ⭐ Discord alert ──────────────────────────────────────
+    if (isHighConviction) {
+      const modelLines = consensus.models.map(m => {
+        const icon = m.verdict === 'CONFIRM' ? '✅' : '❌';
+        return { name: m.name, value: `${icon} ${m.verdict}`, inline: true };
+      });
+      await sendDiscordEmbed({
+        title: '⭐ HIGH CONVICTION KILL SHOT',
+        color: 0xFFD700,
+        fields: [
+          { name: 'Pair',       value: `${instrument.replace('_', '/')} ${signal.direction}`, inline: true },
+          { name: 'Session',    value: `${session} ${strategy}`,                              inline: true },
+          { name: 'Score',      value: `${signal.score}%`,                                    inline: true },
+          { name: 'Pattern',    value: patternAnalysis.patterns.join(', '),                   inline: true },
+          { name: 'Options',    value: `${optionsData.institutionalBias} (PCR ${optionsData.putCallRatio}) ✅`, inline: true },
+          { name: 'History',    value: `${patternInsight.winRate.toFixed(0)}% win rate (${patternInsight.attempts} trades) ✅`, inline: true },
+          { name: 'Signal Age', value: `${Math.round(signalAgeMs / 60000)} minutes ✅`,       inline: true },
+          { name: 'Council',    value: '4/4 required',                                        inline: true },
+          ...modelLines,
+          { name: 'Verdict',    value: `${consensus.votes.confirm}/4 CONFIRM → HIGHEST CONVICTION\n!execute ${instrument}`, inline: false },
+        ],
+        timestamp: new Date().toISOString(),
+      });
     }
 
     // Recovery mode — halved position sizing
@@ -3485,6 +3534,7 @@ async function serverAutoTrade() {
 
     const tradeContext = {
       score:              signal.score,
+      tradeSource:        isHighConviction ? 'A_PLUS' : 'STANDARD',
       consensusVotes:     consensus.votes.confirm,
       warrenVerdict:      consensus.models.find(m => m.name === 'WARREN')?.verdict  || null,
       georgeVerdict:      consensus.models.find(m => m.name === 'GEORGE')?.verdict  || null,
@@ -3523,11 +3573,12 @@ async function serverAutoTrade() {
         console.log(`[auto] ${instrument} — placeOrder blocked: ${result.blocked}`);
       } else if (result.success) {
         const { fill, tradeId: oandaId } = result;
+        signalFirstDetected.delete(instrument); // reset age clock after execution
         autoTrades.unshift({ id: Date.now(), timestamp: ts, instrument, direction: signal.direction, units, price: fill, session, strategy, score: signal.score, consensus: consensus.votes, models: consensus.models, oandaOrderId: oandaId });
         if (autoTrades.length > 100) autoTrades.pop();
         serverTradeLog.unshift({ id: oandaId, pair: instrument, direction: signal.direction, strategy, session, score: signal.score, entry: parseFloat(fill), sl: parseFloat(formatPrice(sl, instrument)), tp: parseFloat(formatPrice(tp, instrument)), units, type: 'm5', timestamp: Date.now() });
         if (serverTradeLog.length > 500) serverTradeLog.pop();
-        console.log(`[auto] ✓ EXECUTED ${instrument} ${signal.direction} @ ${fill} — ${consensus.votes.confirm}/4 — ${strategy} — ${session}`);
+        console.log(`[auto] ✓ EXECUTED ${instrument} ${signal.direction} @ ${fill} — ${consensus.votes.confirm}/4 — ${strategy} — ${session} — source:${isHighConviction ? 'A_PLUS' : 'STANDARD'}`);
       }
     } catch (e) {
       console.error(`[auto] Order error ${instrument}: ${e.message}`);
