@@ -7128,44 +7128,89 @@ function HistoricalBacktest({ isMobile }) {
 }
 
 // ─── TRADE HISTORY TAB ───────────────────────────────────────────────────────
-function TradeHistoryTab({ isVisible }) {
-  const [trades, setTrades]               = useState([]);
-  const [loading, setLoading]             = useState(true);
-  const [filters, setFilters]             = useState({ pair: 'ALL', outcome: 'ALL', session: 'ALL', dateRange: 'ALL' });
-  const [sortBy, setSortBy]               = useState('close_time');
-  const [search, setSearch]               = useState('');
-  const [selectedTrade, setSelectedTrade] = useState(null);
-  const [page, setPage]                   = useState(1);
+function TradeHistoryTab({ isVisible, closedTrades = [] }) {
+  const [supabaseTrades, setSupabaseTrades] = useState([]);
+  const [loading, setLoading]               = useState(true);
+  const [filters, setFilters]               = useState({ pair: 'ALL', outcome: 'ALL', session: 'ALL', dateRange: 'ALL' });
+  const [sortBy, setSortBy]                 = useState('close_time');
+  const [search, setSearch]                 = useState('');
+  const [selectedTrade, setSelectedTrade]   = useState(null);
+  const [page, setPage]                     = useState(1);
   const PER_PAGE = 20;
 
-  useEffect(() => { if (isVisible) fetchHistory(); }, [filters, sortBy, isVisible]);
+  useEffect(() => { if (isVisible) fetchHistory(); }, [isVisible]);
 
   const fetchHistory = async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ ...filters, sortBy, limit: 500 });
-      const res    = await fetch(`${BRIDGE}/supabase/history?${params}`);
-      if (!res.ok) { console.error('[History] HTTP', res.status); setLoading(false); return; }
-      const data = await res.json();
-      setTrades(data.trades || []);
-    } catch (err) {
-      console.error('[History] fetch error:', err);
-    }
+      const res  = await fetch(`${BRIDGE}/supabase/history?limit=1000`);
+      if (res.ok) { const data = await res.json(); setSupabaseTrades(data.trades || []); }
+    } catch (err) { console.error('[History] fetch error:', err); }
     setLoading(false);
   };
 
-  const filtered  = trades.filter(t =>
-    search === '' ||
-    t.pair?.toLowerCase().includes(search.toLowerCase()) ||
-    t.strategy?.toLowerCase().includes(search.toLowerCase())
-  );
+  // Normalise OANDA closedTrades into the same shape as Supabase rows
+  const normalised = closedTrades.map(t => ({
+    id:           t.oandaId,
+    pair:         t.pair,
+    direction:    t.dir,
+    entry:        t.entryPrice,
+    exit_price:   t.closePrice,
+    pnl:          t.pnl ?? t.realizedPL,
+    r_multiple:   t.rMultiple,
+    session:      t.session,
+    strategy:     t.strategy,
+    close_time:   t.closeTime,
+    open_time:    t.openTime,
+    duration_mins: typeof t.duration === 'string' ? parseInt(t.duration) : (t.duration ?? null),
+    outcome:      (t.pnl ?? t.realizedPL) > 0 ? 'WIN' : (t.pnl ?? t.realizedPL) < 0 ? 'LOSS' : 'BREAKEVEN',
+    _source:      'oanda',
+  }));
+
+  // Merge: Supabase rows enrich matching OANDA trades (keyed by id)
+  const supaMap = new Map(supabaseTrades.map(t => [String(t.id), t]));
+  const merged  = normalised.map(t => {
+    const supa = supaMap.get(String(t.id));
+    return supa ? { ...t, ...supa, _source: 'supabase' } : t;
+  });
+  // Supabase-only rows not in OANDA list (edge case)
+  const oandaIds = new Set(normalised.map(t => String(t.id)));
+  for (const s of supabaseTrades) { if (!oandaIds.has(String(s.id))) merged.push({ ...s, _source: 'supabase' }); }
+
+  // Apply date filter
+  const nowMs = Date.now();
+  const dayMs = (d) => d * 24 * 60 * 60 * 1000;
+  const dateFiltered = merged.filter(t => {
+    if (filters.dateRange === 'ALL') return true;
+    const days  = parseInt(filters.dateRange) || 30;
+    const ts    = t.close_time ? new Date(t.close_time).getTime() : 0;
+    return nowMs - ts <= dayMs(days);
+  });
+
+  // Apply pair / outcome / session / search filters
+  const allFiltered = dateFiltered.filter(t => {
+    if (filters.pair    !== 'ALL' && t.pair      !== filters.pair)    return false;
+    if (filters.outcome !== 'ALL' && t.outcome   !== filters.outcome) return false;
+    if (filters.session !== 'ALL' && t.session   !== filters.session) return false;
+    if (search !== '' &&
+        !t.pair?.toLowerCase().includes(search.toLowerCase()) &&
+        !t.strategy?.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  // Sort
+  const sortKey = { close_time: t => new Date(t.close_time || 0).getTime(), r_multiple: t => t.r_multiple ?? -Infinity, pnl: t => t.pnl ?? -Infinity, score: t => t.score ?? -Infinity };
+  const sorted = [...allFiltered].sort((a, b) => (sortKey[sortBy]?.(b) ?? 0) - (sortKey[sortBy]?.(a) ?? 0));
+
+  const filtered   = sorted;
   const paginated  = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
   const totalPages = Math.ceil(filtered.length / PER_PAGE);
 
-  const wins    = trades.filter(t => t.outcome === 'WIN').length;
-  const winRate = trades.length > 0 ? (wins / trades.length * 100).toFixed(1) : '0.0';
-  const validR  = trades.filter(t => t.r_multiple != null);
-  const avgR    = validR.length > 0 ? (validR.reduce((s, t) => s + t.r_multiple, 0) / validR.length).toFixed(2) : '0.00';
+  const trades   = merged; // alias for summary stats
+  const wins     = trades.filter(t => t.outcome === 'WIN').length;
+  const winRate  = trades.length > 0 ? (wins / trades.length * 100).toFixed(1) : '0.0';
+  const validR   = trades.filter(t => t.r_multiple != null);
+  const avgR     = validR.length > 0 ? (validR.reduce((s, t) => s + t.r_multiple, 0) / validR.length).toFixed(2) : '0.00';
   const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
   const pairs    = ['ALL', ...new Set(trades.map(t => t.pair).filter(Boolean))];
 
@@ -9859,7 +9904,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "history" ? "block" : "none" }}>
-        <TradeHistoryTab isVisible={tab === "history"} />
+        <TradeHistoryTab isVisible={tab === "history"} closedTrades={closedTrades} />
       </div>
 
       <div style={{ display: tab === "analytics" ? "block" : "none" }}>
