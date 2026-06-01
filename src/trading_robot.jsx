@@ -7156,6 +7156,7 @@ function TradeHistoryTab({ isVisible, closedTrades = [] }) {
     direction:    t.dir,
     entry:        t.entryPrice,
     exit_price:   t.closePrice,
+    stop_loss:    t.stopLoss ?? null,
     pnl:          t.pnl ?? t.realizedPL,
     r_multiple:   t.rMultiple,
     session:      t.session,
