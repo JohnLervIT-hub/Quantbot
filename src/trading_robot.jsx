@@ -7213,7 +7213,8 @@ function TradeHistoryTab({ isVisible, closedTrades = [] }) {
   const validR   = trades.filter(t => t.r_multiple != null);
   const avgR     = validR.length > 0 ? (validR.reduce((s, t) => s + t.r_multiple, 0) / validR.length).toFixed(2) : '0.00';
   const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
-  const pairs    = ['ALL', ...new Set(trades.map(t => t.pair).filter(Boolean))];
+  const ALL_PAIRS = ['EUR_USD','GBP_USD','USD_JPY','EUR_GBP','XAU_USD','XAG_USD','NAS100_USD','AU200_AUD','AUD_USD','USD_CAD','NZD_USD','BCO_USD','WTICO_USD','UK100_GBP','JP225_USD','SPX500_USD'];
+  const pairs    = ['ALL', ...ALL_PAIRS];
 
   const CARD = { background: '#161b22', border: '1px solid #21262d', borderRadius: 8 };
   const LBL  = { fontSize: 9, color: '#484f58', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 };
