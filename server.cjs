@@ -2938,7 +2938,7 @@ function serverGenerateSignal(history, strategy, instrument) {
   }
 
   score = Math.min(score, 100);
-  if (score < 65) return null;
+  if (score < 50) return null; // pattern boost applied in serverAutoTrade() before threshold
   const isSilverInst = instrument.includes('XAG');
   const isOilInst    = instrument.includes('BCO') || instrument.includes('WTICO');
   const minHold      = isSilverInst ? 30 : isOilInst ? 20 : 5;
