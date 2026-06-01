@@ -7158,7 +7158,7 @@ function DiagnosticsTab({ isVisible }) {
     <div style={{ padding: 24, textAlign: 'center', color: '#f85149', fontSize: 12 }}>Failed to load — bridge offline?</div>
   );
 
-  const { thresholds, last24h, conservatismScore, recommendation, periodHours } = data;
+  const { thresholds, m5: last24h, swing, conservatismScore, recommendation, periodHours } = data;
   const b = last24h.blocked;
 
   // Funnel steps
@@ -7258,6 +7258,37 @@ function DiagnosticsTab({ isVisible }) {
           ))}
         </div>
       </div>
+
+      {/* ── Swing / Kill Shot ── */}
+      {swing && (
+        <div style={{ ...CARD, padding: '12px 16px', marginBottom: 12 }}>
+          <div style={{ ...LBL, marginBottom: 10 }}>Swing / Kill Shot</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
+            {[
+              { label: 'Scanned',          value: swing.scanned },
+              { label: 'Passed Consensus', value: swing.passedConsensus },
+              { label: 'Queued',           value: swing.queued },
+              { label: 'Executed',         value: swing.executed },
+            ].map(r => (
+              <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '0.5px solid #0d1117' }}>
+                <div style={{ fontSize: 10, color: '#8b949e' }}>{r.label}</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: r.label === 'Executed' && r.value > 0 ? '#3fb950' : '#e6edf3', ...MONO }}>{r.value}</div>
+              </div>
+            ))}
+          </div>
+          {swing.pending?.length > 0 && (
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #21262d' }}>
+              <div style={{ ...LBL, marginBottom: 6 }}>Pending Kill Shots</div>
+              {swing.pending.map(p => (
+                <div key={p.pair} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '0.5px solid #0d1117' }}>
+                  <div style={{ fontSize: 10, color: '#d29922', ...MONO }}>{p.pair}</div>
+                  <div style={{ fontSize: 10, color: '#8b949e', ...MONO }}>score {p.score} · {p.consensus}/4</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Thresholds reference ── */}
       <div style={{ ...CARD, padding: '12px 16px' }}>
