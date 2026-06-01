@@ -249,7 +249,7 @@ async function callClaude(prompt, systemPrompt, maxTokens = 400) {
 }
 
 // ─── PRICE SIMULATOR ─────────────────────────────────────────────────────────
-function usePriceSimulator(basePrice) {
+function usePriceSimulator(basePrice, enabled = true) {
   const [price, setPrice] = useState(basePrice);
   const [history, setHistory] = useState(() => {
     const h = [];
@@ -263,6 +263,7 @@ function usePriceSimulator(basePrice) {
   const drift = useRef((Math.random() - 0.5) * 0.0003);
 
   useEffect(() => {
+    if (!enabled) return;
     const id = setInterval(() => {
       setPrice((prev) => {
         drift.current += (Math.random() - 0.5) * 0.00005;
@@ -275,7 +276,7 @@ function usePriceSimulator(basePrice) {
       });
     }, 800);
     return () => clearInterval(id);
-  }, []);
+  }, [enabled]);
 
   return { price, history };
 }
@@ -2135,12 +2136,33 @@ const SESSION_BADGE_COLORS = {
   AVOID:  { color: "#484f58", bg: "rgba(72,79,88,0.1)",    border: "#30363d" },
 };
 
+// ─── TAB ERROR BOUNDARY ───────────────────────────────────────────────────────
+class TabErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(err) { return { error: err }; }
+  render() {
+    if (this.state.error) return (
+      <div style={{ padding: 24, textAlign: 'center' }}>
+        <div style={{ color: '#f85149', fontSize: 12, marginBottom: 8 }}>
+          Tab error — {this.state.error.message}
+        </div>
+        <button
+          onClick={() => this.setState({ error: null })}
+          style={{ padding: '4px 12px', background: 'transparent', border: '1px solid #30363d', color: '#8b949e', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}>
+          Retry
+        </button>
+      </div>
+    );
+    return this.props.children;
+  }
+}
+
 // ─── PAIR ROW WITH AI CONFIRM ─────────────────────────────────────────────────
 const MOBILE_ACTION_ROW_H = 62;
 
 function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignalUpdate, onRegimeUpdate, onRejection, onClose, openTrades, marketOpen, isMobile, balance, xavierIntel, newsLastFetchedAt = 0 }) {
-  const { price: simPrice, history: simHistory } = usePriceSimulator(basePrice);
   const { price: oandaPrice, history: oandaHistory, isReal } = useOandaPrice(pair);
+  const { price: simPrice, history: simHistory } = usePriceSimulator(basePrice, !isReal);
 
   // Real OANDA data takes priority; simulator is fallback only
   const price   = (isReal && oandaPrice != null) ? oandaPrice   : simPrice;
@@ -2156,7 +2178,7 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
   const decimals = priceDecimals(pair);
   const signalKey = signal ? `${signal.direction}-${signal.score}` : null;
 
-  const regimeData = calcRegime(history);
+  const regimeData = useMemo(() => calcRegime(history), [history]);
   const prevRegime = useRef(null);
   useEffect(() => {
     if (regimeData.regime !== prevRegime.current) {
@@ -8876,10 +8898,13 @@ export default function TradingRobot() {
   const signalCount = Object.values(signalMap).filter(Boolean).length;
 
   useEffect(() => {
+    let isMounted = true;
     const fetchOpenTrades = async () => {
+      if (!isMounted) return;
       try {
         const r = await fetch(`${BRIDGE}/trades`);
         const data = await r.json();
+        if (!isMounted) return;
         if (Array.isArray(data.trades)) {
           setOpenTrades(prev =>
             openTradesFingerprint(prev) === openTradesFingerprint(data.trades) ? prev : data.trades
@@ -8910,8 +8935,8 @@ export default function TradingRobot() {
       } catch {}
     };
     fetchOpenTrades();
-    const id = setInterval(fetchOpenTrades, 3000);
-    return () => clearInterval(id);
+    const id = setInterval(fetchOpenTrades, 15000);
+    return () => { isMounted = false; clearInterval(id); };
   }, []);
 
   // Authoritative OANDA position sync — ensures Risk tab, heat, and circuit breaker
@@ -8947,11 +8972,31 @@ export default function TradingRobot() {
   }, []);
 
   useEffect(() => {
-    fetch(`${BRIDGE}/health`).then(r => r.json()).then(d => {
-      const val = d.autoMode === true;
-      setAutoMode(val);
-      localStorage.setItem("autoMode", String(val));
-    }).catch(() => {});
+    let isMounted = true;
+    const masterPoll = async () => {
+      if (!isMounted) return;
+      try {
+        const [healthData, accountData, recoveryData] = await Promise.all([
+          fetch(`${BRIDGE}/health`).then(r => r.json()).catch(() => null),
+          fetch(`${BRIDGE}/account`).then(r => r.json()).catch(() => null),
+          fetch(`${BRIDGE}/recovery-status`).then(r => r.json()).catch(() => null),
+        ]);
+        if (!isMounted) return;
+        if (healthData) {
+          const val = healthData.autoMode === true;
+          setAutoMode(val);
+          localStorage.setItem("autoMode", String(val));
+        }
+        if (accountData?.account) {
+          setOandaNav(parseFloat(accountData.account.NAV));
+          setOandaUnrealizedPL(parseFloat(accountData.account.unrealizedPL));
+        }
+        if (recoveryData) setRecoveryStatus(recoveryData);
+      } catch {}
+    };
+    masterPoll();
+    const id = setInterval(masterPoll, 15000);
+    return () => { isMounted = false; clearInterval(id); };
   }, []);
 
   // One-time migration: clear stale open-trade entries that were incorrectly
@@ -9373,34 +9418,6 @@ export default function TradingRobot() {
     setAutoModeLoading(false);
   };
 
-  useEffect(() => {
-    const fetchAccount = async () => {
-      try {
-        const r = await fetch(`${BRIDGE}/account`);
-        const data = await r.json();
-        if (data.account) {
-          setOandaNav(parseFloat(data.account.NAV));
-          setOandaUnrealizedPL(parseFloat(data.account.unrealizedPL));
-        }
-      } catch {}
-    };
-    fetchAccount();
-    const id = setInterval(fetchAccount, 5000);
-    return () => clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    const fetchRecovery = async () => {
-      try {
-        const r = await fetch(`${BRIDGE}/recovery-status`);
-        const data = await r.json();
-        setRecoveryStatus(data);
-      } catch {}
-    };
-    fetchRecovery();
-    const id = setInterval(fetchRecovery, 60_000);
-    return () => clearInterval(id);
-  }, []);
 
   const closeTrade = useCallback(async (tradeId, pair) => {
     if (!window.confirm(`Close ${pair} position?`)) return;
@@ -10152,43 +10169,43 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "news" ? "block" : "none" }}>
-        <NewsTab isVisible={tab === "news"} isMobile={isMobile} />
+        <TabErrorBoundary><NewsTab isVisible={tab === "news"} isMobile={isMobile} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "ai" ? "block" : "none" }}>
-        <AIAnalystTab isVisible={tab === "ai"} headlines={liveHeadlines} newsLastFetchedAt={newsLastFetchedAt} prices={livePrices} trades={trades} balance={balance} currentHeadline={currentHeadline} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} signalMap={signalMap} onIntelUpdate={(intel) => { xavierIntelRef.current = intel; }} swingSignals={swingSignals} swingTrades={swingTrades} swingEnabled={swingEnabled} principleWisdom={principleWeights.wisdomMessage} onPrincipleWisdomSeen={principleWeights.clearWisdom} />
+        <TabErrorBoundary><AIAnalystTab isVisible={tab === "ai"} headlines={liveHeadlines} newsLastFetchedAt={newsLastFetchedAt} prices={livePrices} trades={trades} balance={balance} currentHeadline={currentHeadline} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} signalMap={signalMap} onIntelUpdate={(intel) => { xavierIntelRef.current = intel; }} swingSignals={swingSignals} swingTrades={swingTrades} swingEnabled={swingEnabled} principleWisdom={principleWeights.wisdomMessage} onPrincipleWisdomSeen={principleWeights.clearWisdom} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "knowledge" ? "block" : "none", padding: "0 16px", paddingBottom: 16 }}>
-        <KnowledgePanel isVisible={tab === "knowledge"} activeRule={activeRule} session={getCurrentSession()} openTrades={openTrades} balance={balance} prices={livePrices} headlines={liveHeadlines} isMobile={isMobile} />
+        <TabErrorBoundary><KnowledgePanel isVisible={tab === "knowledge"} activeRule={activeRule} session={getCurrentSession()} openTrades={openTrades} balance={balance} prices={livePrices} headlines={liveHeadlines} isMobile={isMobile} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "risk" ? "block" : "none" }}>
-        <RiskTab isVisible={tab === "risk"} trades={trades} openTrades={openTrades} balance={balance} session={getCurrentSession()} />
+        <TabErrorBoundary><RiskTab isVisible={tab === "risk"} trades={trades} openTrades={openTrades} balance={balance} session={getCurrentSession()} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "coach" ? "block" : "none" }}>
-        <AICoachTab isVisible={tab === "coach"} trades={trades} closedTrades={closedTrades} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} />
+        <TabErrorBoundary><AICoachTab isVisible={tab === "coach"} trades={trades} closedTrades={closedTrades} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "history" ? "block" : "none" }}>
-        <TradeHistoryTab isVisible={tab === "history"} closedTrades={closedTrades} />
+        <TabErrorBoundary><TradeHistoryTab isVisible={tab === "history"} closedTrades={closedTrades} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "analytics" ? "block" : "none" }}>
-        <PerformanceDashboard isVisible={tab === "analytics"} trades={trades} closedTrades={closedTrades} balance={displayNav} isMobile={isMobile} />
+        <TabErrorBoundary><PerformanceDashboard isVisible={tab === "analytics"} trades={trades} closedTrades={closedTrades} balance={displayNav} isMobile={isMobile} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "diagnostics" ? "block" : "none" }}>
-        <DiagnosticsTab isVisible={tab === "diagnostics"} />
+        <TabErrorBoundary><DiagnosticsTab isVisible={tab === "diagnostics"} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "schedule" ? "block" : "none" }}>
-        <ScheduleTab isVisible={tab === "schedule"} isMobile={isMobile} autoMode={autoMode} enableAutoMode={enableAutoMode} xavierOpt={xavierOpt} />
+        <TabErrorBoundary><ScheduleTab isVisible={tab === "schedule"} isMobile={isMobile} autoMode={autoMode} enableAutoMode={enableAutoMode} xavierOpt={xavierOpt} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "backtest" ? "block" : "none" }}>
-        <BacktestTab isVisible={tab === "backtest"} closedTrades={closedTrades} trades={trades} isMobile={isMobile} />
+        <TabErrorBoundary><BacktestTab isVisible={tab === "backtest"} closedTrades={closedTrades} trades={trades} isMobile={isMobile} /></TabErrorBoundary>
       </div>
 
       {/* ── Auto Mode Settings Modal ── */}
