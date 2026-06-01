@@ -4992,9 +4992,15 @@ function updateXavierMemory(closedTrade) {
 // ─── CLOSED TRADES PANEL ─────────────────────────────────────────────────────
 function ClosedTradesPanel({ trades, isMobile }) {
   if (trades.length === 0) return null;
-  const wins = trades.filter(t => t.realizedPL > 0);
-  const winRate = Math.round(wins.length / trades.length * 100);
-  const totalPL = trades.reduce((s, t) => s + t.realizedPL, 0);
+  const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
+  const marketClosedTrades = trades.filter(t => {
+    const closeTime = t.closeTime || t.close_time;
+    return closeTime && new Date(closeTime) >= CLEAN_CUTOFF;
+  });
+  if (marketClosedTrades.length === 0) return null;
+  const wins    = marketClosedTrades.filter(t => parseFloat(t.realizedPL || 0) > 0);
+  const winRate = Math.round(wins.length / marketClosedTrades.length * 100);
+  const totalPL = marketClosedTrades.reduce((s, t) => s + parseFloat(t.realizedPL || 0), 0);
 
   return (
     <div style={isMobile
@@ -5007,7 +5013,7 @@ function ClosedTradesPanel({ trades, isMobile }) {
             Closed Trades
           </span>
           <span style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO }}>
-            {trades.length}T · {winRate}% WR
+            {marketClosedTrades.length} trades since June 1 · {winRate}% WR
           </span>
         </div>
         <span style={{ fontSize: 11, fontWeight: 600, fontFamily: FONT_MONO, color: totalPL >= 0 ? "#3fb950" : "#f85149" }}>
@@ -5016,7 +5022,7 @@ function ClosedTradesPanel({ trades, isMobile }) {
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 280, overflowY: "auto" }}>
-        {trades.slice(0, 30).map((t) => {
+        {marketClosedTrades.slice(0, 30).map((t) => {
           const isWin = t.realizedPL > 0;
           const closeDate = t.closeTime ? new Date(t.closeTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
           const decimals = t.pair?.includes("JPY") ? 3 : t.pair?.includes("XAU") || t.pair?.includes("SPX") ? 2 : 5;
