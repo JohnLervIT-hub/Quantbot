@@ -7127,6 +7127,163 @@ function HistoricalBacktest({ isMobile }) {
   );
 }
 
+// ─── DIAGNOSTICS TAB ─────────────────────────────────────────────────────────
+function DiagnosticsTab({ isVisible }) {
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [lastFetch, setLastFetch] = useState(null);
+
+  const fetchDiag = async () => {
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const res   = await fetch(`${BRIDGE}/diagnostics`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) { setData(await res.json()); setLastFetch(new Date()); }
+    } catch (e) { console.error('[Diagnostics]', e); }
+    setLoading(false);
+  };
+
+  useEffect(() => { if (isVisible) fetchDiag(); }, [isVisible]);
+
+  const CARD  = { background: '#161b22', border: '1px solid #21262d', borderRadius: 8 };
+  const LBL   = { fontSize: 9, color: '#484f58', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 };
+  const MONO  = { fontFamily: FONT_MONO };
+
+  const scoreColor = (s) => ({ AGGRESSIVE: '#f85149', BALANCED: '#3fb950', CONSERVATIVE: '#58a6ff', TOO_CONSERVATIVE: '#d29922' })[s] || '#8b949e';
+
+  if (loading) return (
+    <div style={{ padding: 24, textAlign: 'center', color: '#484f58', fontSize: 12 }}>Loading diagnostics…</div>
+  );
+  if (!data) return (
+    <div style={{ padding: 24, textAlign: 'center', color: '#f85149', fontSize: 12 }}>Failed to load — bridge offline?</div>
+  );
+
+  const { thresholds, last24h, conservatismScore, recommendation, periodHours } = data;
+  const b = last24h.blocked;
+
+  // Funnel steps
+  const funnel = [
+    { label: 'Signals Scanned',    value: last24h.signalsScanned,    pct: null },
+    { label: 'Passed News Guard',  value: last24h.passedNewsGuard,   pct: last24h.signalsScanned },
+    { label: 'Passed Gatekeeper',  value: last24h.passedGatekeeper,  pct: last24h.signalsScanned },
+    { label: 'Passed Macro Filter',value: last24h.passedMacroFilter, pct: last24h.signalsScanned },
+    { label: 'Reached Consensus',  value: last24h.reachedConsensus,  pct: last24h.signalsScanned },
+    { label: 'Executed',           value: last24h.executed,          pct: last24h.signalsScanned },
+  ];
+
+  const blockedRows = [
+    { label: 'Score Threshold',  value: b.scoreThreshold },
+    { label: 'News Guard',       value: b.newsGuard },
+    { label: 'Macro Filter',     value: b.macroFilter },
+    { label: 'Options PCR',      value: b.options },
+    { label: 'Historical Edge',  value: b.historical },
+    { label: 'Consensus',        value: b.consensus },
+    { label: 'Cooldown',         value: b.cooldown },
+    { label: 'Heat Limit',       value: b.heatLimit },
+  ];
+
+  const totalBlocked = blockedRows.reduce((s, r) => s + r.value, 0);
+
+  return (
+    <div style={{ padding: 16, paddingBottom: 80 }}>
+
+      {/* ── Header ── */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#e6edf3' }}>System Diagnostics</div>
+          <div style={{ fontSize: 10, color: '#484f58', ...MONO }}>
+            {periodHours}h window · {lastFetch ? `updated ${lastFetch.toLocaleTimeString()}` : '—'}
+          </div>
+        </div>
+        <button onClick={fetchDiag}
+          style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 6, color: '#8b949e', fontSize: 11, padding: '6px 14px', cursor: 'pointer' }}>
+          ↻ Refresh
+        </button>
+      </div>
+
+      {/* ── Conservatism score ── */}
+      <div style={{ ...CARD, padding: '14px 16px', marginBottom: 12, borderLeft: `3px solid ${scoreColor(conservatismScore)}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+          <div style={{ fontSize: 18, fontWeight: 800, color: scoreColor(conservatismScore), ...MONO }}>{conservatismScore}</div>
+          <div style={{ fontSize: 10, color: '#484f58' }}>exec rate: {last24h.signalsScanned > 0 ? (last24h.executed / last24h.signalsScanned * 100).toFixed(1) : '0.0'}%</div>
+        </div>
+        <div style={{ fontSize: 11, color: '#8b949e', lineHeight: 1.5 }}>{recommendation}</div>
+      </div>
+
+      {/* ── Signal funnel ── */}
+      <div style={{ ...CARD, padding: '12px 16px', marginBottom: 12 }}>
+        <div style={{ ...LBL, marginBottom: 10 }}>Signal Funnel — last {periodHours}h</div>
+        {funnel.map((row, i) => {
+          const pct = row.pct > 0 ? Math.round(row.value / row.pct * 100) : (i === 0 ? 100 : 0);
+          const barW = `${Math.min(pct, 100)}%`;
+          const isExec = row.label === 'Executed';
+          return (
+            <div key={row.label} style={{ marginBottom: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                <div style={{ fontSize: 10, color: isExec ? '#3fb950' : '#8b949e', fontWeight: isExec ? 700 : 400 }}>{row.label}</div>
+                <div style={{ fontSize: 10, ...MONO, color: isExec ? '#3fb950' : '#e6edf3' }}>
+                  {row.value}{row.pct > 0 ? ` · ${pct}%` : ''}
+                </div>
+              </div>
+              <div style={{ height: 3, background: '#21262d', borderRadius: 2, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: barW, background: isExec ? '#3fb950' : i === 0 ? '#58a6ff' : '#484f58', borderRadius: 2, transition: 'width 0.4s ease' }} />
+              </div>
+            </div>
+          );
+        })}
+        {/* A+ vs Standard breakdown */}
+        {last24h.executed > 0 && (
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #21262d', display: 'flex', gap: 16 }}>
+            <div>
+              <div style={LBL}>A+ Executed</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#FFD700', ...MONO }}>{last24h.aplus}</div>
+            </div>
+            <div>
+              <div style={LBL}>Standard</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#8b949e', ...MONO }}>{last24h.standard}</div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Block breakdown ── */}
+      <div style={{ ...CARD, padding: '12px 16px', marginBottom: 12 }}>
+        <div style={{ ...LBL, marginBottom: 10 }}>Blocked Signals — {totalBlocked} total</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
+          {blockedRows.map(row => (
+            <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '0.5px solid #0d1117' }}>
+              <div style={{ fontSize: 10, color: '#8b949e' }}>{row.label}</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: row.value > 0 ? '#f85149' : '#484f58', ...MONO }}>{row.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Thresholds reference ── */}
+      <div style={{ ...CARD, padding: '12px 16px' }}>
+        <div style={{ ...LBL, marginBottom: 10 }}>Active Thresholds</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
+          {[
+            { label: 'Standard Score',      value: `${thresholds.standardScore}%` },
+            { label: 'A+ Score',            value: `${thresholds.aplusScore}%` },
+            { label: 'Consensus Standard',  value: `${thresholds.consensusStandard}/4` },
+            { label: 'Consensus A+',        value: `${thresholds.consensusAplus}/4` },
+            { label: 'History Min Trades',  value: thresholds.historicalMinTrades },
+            { label: 'History Win Rate',    value: `${thresholds.historicalMinWinRate}%` },
+            { label: 'Signal Age Min',      value: `${thresholds.signalAgeMinutes} min` },
+          ].map(r => (
+            <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '0.5px solid #0d1117' }}>
+              <div style={{ fontSize: 10, color: '#8b949e' }}>{r.label}</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#58a6ff', ...MONO }}>{r.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
 // ─── TRADE HISTORY TAB ───────────────────────────────────────────────────────
 function TradeHistoryTab({ isVisible, closedTrades = [] }) {
   const [supabaseTrades, setSupabaseTrades] = useState([]);
@@ -7845,7 +8002,8 @@ const MOBILE_TABS = [
   { key: "risk",      label: "Risk",      Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> },
   { key: "coach",     label: "Coach",     Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg> },
   { key: "history",   label: "History",  Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> },
-  { key: "analytics", label: "Stats",    Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><rect x="2" y="12" width="4" height="10" rx="1"/><rect x="9" y="7" width="4" height="15" rx="1"/><rect x="16" y="3" width="4" height="19" rx="1"/></svg> },
+  { key: "analytics",   label: "Stats",  Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><rect x="2" y="12" width="4" height="10" rx="1"/><rect x="9" y="7" width="4" height="15" rx="1"/><rect x="16" y="3" width="4" height="19" rx="1"/></svg> },
+  { key: "diagnostics", label: "Diag",  Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/></svg> },
   { key: "schedule",  label: "Schedule", Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> },
   { key: "backtest",  label: "Backtest", Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> },
 ];
@@ -9588,7 +9746,7 @@ export default function TradingRobot() {
   const activeSess = SESSIONS.find(s => isSessionActive(s));
   const activeSessionName = activeSess?.name ?? "—";
   const activeSessionColor = activeSess?.color ?? "#484f58";
-  const tabs = [["markets", "Markets"], ["news", "News"], ["ai", "Ask Xavier"], ["knowledge", "Knowledge"], ["risk", "Risk"], ["coach", "Coach"], ["history", "History"], ["analytics", "Analytics"], ["schedule", "Schedule"], ["backtest", "Backtest"]];
+  const tabs = [["markets", "Markets"], ["news", "News"], ["ai", "Ask Xavier"], ["knowledge", "Knowledge"], ["risk", "Risk"], ["coach", "Coach"], ["history", "History"], ["analytics", "Analytics"], ["diagnostics", "Diagnostics"], ["schedule", "Schedule"], ["backtest", "Backtest"]];
 
   const handleLogout = () => {
     localStorage.removeItem("auth_token");
@@ -9933,6 +10091,10 @@ export default function TradingRobot() {
 
       <div style={{ display: tab === "analytics" ? "block" : "none" }}>
         <PerformanceDashboard isVisible={tab === "analytics"} trades={trades} closedTrades={closedTrades} balance={displayNav} isMobile={isMobile} />
+      </div>
+
+      <div style={{ display: tab === "diagnostics" ? "block" : "none" }}>
+        <DiagnosticsTab isVisible={tab === "diagnostics"} />
       </div>
 
       <div style={{ display: tab === "schedule" ? "block" : "none" }}>
