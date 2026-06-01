@@ -8,11 +8,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
   const cleanTrades = hasClosed
     ? closedTrades.filter(t => {
         const closeTime = t.closeTime || t.close_time;
-        const rMultiple = t.rMultiple ?? t.r_multiple;
-        return closeTime &&
-          new Date(closeTime) >= CLEAN_CUTOFF &&
-          rMultiple !== null &&
-          rMultiple !== undefined;
+        return closeTime && new Date(closeTime) >= CLEAN_CUTOFF;
       })
     : [];
   const analyticsData = hasClosed ? cleanTrades : trades;
@@ -37,7 +33,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
     );
   }
 
-  const getPL = (t) => t.realizedPL ?? t.pnl ?? 0;
+  const getPL = (t) => parseFloat(t.realizedPL || t.pnl || 0);
   const wins = analyticsData.filter(t => getPL(t) > 0);
   const losses = analyticsData.filter(t => getPL(t) <= 0);
   const winRate = analyticsData.length > 0 ? wins.length / analyticsData.length * 100 : 0;

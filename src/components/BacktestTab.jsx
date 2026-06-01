@@ -19,11 +19,7 @@ export default function BacktestTab({ closedTrades = [], trades = [], isMobile, 
   const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
   const data = closedTrades.filter(t => {
     const closeTime = t.closeTime || t.close_time;
-    const rMultiple = t.rMultiple ?? t.r_multiple;
-    return closeTime &&
-      new Date(closeTime) >= CLEAN_CUTOFF &&
-      rMultiple !== null &&
-      rMultiple !== undefined;
+    return closeTime && new Date(closeTime) >= CLEAN_CUTOFF;
   });
   const allTrades  = closedTrades;
   const cleanCount = data.length;
@@ -48,7 +44,7 @@ export default function BacktestTab({ closedTrades = [], trades = [], isMobile, 
     );
   }
 
-  const getPL = (t) => t.realizedPL ?? 0;
+  const getPL = (t) => parseFloat(t.realizedPL || t.pnl || 0);
   const wins   = data.filter(t => getPL(t) > 0);
   const losses = data.filter(t => getPL(t) <= 0);
   const winRate = data.length > 0 ? wins.length / data.length * 100 : 0;
