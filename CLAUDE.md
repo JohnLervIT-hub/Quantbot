@@ -34,3 +34,28 @@ For **phone testing**, set `VITE_OANDA_BRIDGE=http://YOUR_LAN_IP:3001` and resta
 For **desktop dev**, leave `VITE_OANDA_BRIDGE` unset so the app uses the `/bridge` proxy.
 ## Implementation Skill
 Before any code change, read .claude/QUANTBOT_SKILL.md — it contains protected code rules, design system, and safe modification zones.
+
+## CRITICAL FRONTEND RULES
+
+### React Import — NEVER REMOVE
+trading_robot.jsx MUST always have React as default import on line 1:
+
+```js
+import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
+```
+
+REASON: TabErrorBoundary extends React.Component — needs React in scope.
+Removing default import = blank screen on ALL devices.
+This caused 2+ hours of downtime on 2026-06-01.
+
+### Before Any Frontend Push
+1. Check line 1 of trading_robot.jsx has `React` as default import
+2. Run `npm run build` locally — must show 0 errors
+3. Test in browser before pushing
+4. Never push multiple unrelated changes in one commit
+
+### Vercel Deploy Rules
+- Never redeploy old builds
+- Always push fresh commits to main
+- One logical change per commit
+- Test locally first: `npm run build`
