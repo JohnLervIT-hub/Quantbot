@@ -2168,11 +2168,14 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
     return { blocked: 'NO_FILL', raw: result };
   }
 
-  const fill    = result.orderFillTransaction.price;
-  const tradeId = result.orderFillTransaction.tradeOpened?.tradeID || result.orderFillTransaction.id || null;
-  console.log('[ORDER SUCCESS]', pair, 'tradeID:', tradeId);
+  const fill       = result.orderFillTransaction.price;
+  const tradeId    = result.orderFillTransaction.tradeOpened?.tradeID || null;
+  const txId       = result.orderFillTransaction.id || null;
+  const contextKey = tradeId || txId;
+  console.log('[ORDER SUCCESS]', pair, 'tradeID:', tradeId, 'txID:', txId, 'contextKey:', contextKey);
+  console.log('[CONTEXT SET]', 'tradeId:', tradeId, 'txId:', txId, 'pair:', pair, 'session:', session, 'source:', context?.tradeSource || source);
 
-  if (context && tradeId) {
+  if (context && contextKey) {
     const ctxToStore = {
       ...context,
       openTime:   new Date().toISOString(),
@@ -2180,10 +2183,15 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
       strategy:   strategy   || null,
       spreadCost: SPREAD_COSTS[instrument] ?? null,
     };
-    openTradeContexts.set(tradeId.toString(), ctxToStore);
+    // Store under both possible keys to handle any OANDA ID variance
+    openTradeContexts.set(contextKey.toString(), ctxToStore);
+    if (tradeId && txId && tradeId !== txId) {
+      openTradeContexts.set(txId.toString(), ctxToStore);
+    }
 
     // Persist open-time context to Supabase so it survives server restarts
-    if (supabase) {
+    // Use real OANDA tradeId for the row ID (matches what trade close will query by)
+    if (supabase && tradeId) {
       supabase.from('trades').upsert({
         id:                 tradeId,
         pair:               pair,
@@ -2369,9 +2377,14 @@ async function verifySupabaseColumns() {
 async function saveTradeToSupabase(trade) {
   if (!supabase) return;
   try {
-    let ctx = openTradeContexts.get(trade.id?.toString()) || {};
+    // Try all possible keys — tradeId and txId may differ depending on OANDA response shape
+    let ctx = openTradeContexts.get(trade.id?.toString())
+           || openTradeContexts.get(trade.oandaId?.toString())
+           || openTradeContexts.get(trade.tradeId?.toString())
+           || {};
+    console.log('[JOURNAL DEBUG]', 'trade.id:', trade.id, 'context keys:', Array.from(openTradeContexts.keys()), 'found:', Object.keys(ctx).length > 0);
 
-    // If context is empty (server restarted), recover from partial Supabase row written at open
+    // If context is empty (server restarted or key mismatch), recover from partial Supabase row written at open
     if (!ctx.score && !ctx.consensusVotes) {
       const { data: existing } = await supabase.from('trades').select('*').eq('id', trade.id).maybeSingle();
       if (existing) {
@@ -2406,8 +2419,8 @@ async function saveTradeToSupabase(trade) {
       id:                 trade.id,
       pair:               trade.pair,
       direction:          trade.direction,
-      session:            trade.session,
-      strategy:           trade.strategy || ctx.strategy || null,
+      session:            ctx.session    || trade.session || null,
+      strategy:           ctx.strategy   || trade.strategy || null,
       entry:              trade.entry,
       exit_price:         trade.exitPrice,
       stop_loss:          trade.stopLoss,
