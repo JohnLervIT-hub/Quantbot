@@ -7624,8 +7624,8 @@ export default function TradingRobot() {
           const oneR = stopLossPrice > 0 && entryPrice > 0
             ? Math.abs(entryPrice - stopLossPrice) * absUnits * pipValue
             : 0;
-          const rawR = oneR > 0 ? realizedPL / oneR : 0;
-          const rMultiple = parseFloat(Math.max(-5, Math.min(10, rawR)).toFixed(2));
+          const rawR = oneR > 0 ? realizedPL / oneR : null;
+          const rMultiple = rawR !== null ? parseFloat(Math.max(-5, Math.min(10, rawR)).toFixed(2)) : null;
           console.log("[TRADE CLOSE]", pair,
             "pnl:", realizedPL.toFixed(2),
             "entry:", entryPrice,

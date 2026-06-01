@@ -2575,8 +2575,10 @@ async function manageOpenTrades() {
           const _exitPrice  = parseFloat(trade.averageClosePrice || 0);
           const _units      = parseFloat(trade.initialUnits || 0);
           const _riskPerUnit = _sl ? Math.abs(_entry - _sl) : 0;
-          const _riskTotal   = _riskPerUnit * Math.abs(_units);
-          const _rMult       = _riskTotal > 0 ? pnl / _riskTotal : null;
+          const _isUsdBase   = instr.startsWith('USD_');
+          const _pipValue    = _isUsdBase && _entry > 0 ? 1 / _entry : 1;
+          const _riskTotal   = _riskPerUnit * Math.abs(_units) * _pipValue;
+          const _rMult       = _riskTotal > 0 ? parseFloat(Math.max(-5, Math.min(10, pnl / _riskTotal)).toFixed(2)) : null;
           const _durMins     = trade.openTime ? Math.round((Date.now() - new Date(trade.openTime).getTime()) / 60000) : null;
           const _closeSess   = getServerSession();
           await saveTradeToSupabase({
