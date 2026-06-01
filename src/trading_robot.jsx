@@ -4204,7 +4204,7 @@ function RiskTip({ text, children }) {
   );
 }
 
-function RiskTab({ trades, openTrades = [], balance, session = "AVOID" }) {
+function RiskTab({ trades, closedTrades = [], openTrades = [], balance, session = "AVOID" }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 60000);
@@ -4212,7 +4212,12 @@ function RiskTab({ trades, openTrades = [], balance, session = "AVOID" }) {
   }, []);
 
   const positionCount = openTrades.length;
-  const sessionCount  = trades.length;
+  const todayStr      = new Date().toISOString().slice(0, 10);
+  const todayClosed   = closedTrades.filter(t => {
+    const ct = t.closeTime || t.close_time;
+    return ct && ct.slice(0, 10) === todayStr;
+  });
+  const sessionCount  = todayClosed.length + openTrades.length;
   const heat          = Math.min(positionCount * 1.5, 8);
   const drawdown      = parseFloat((Math.max(0, 100 - balance)).toFixed(2));
   const pnl           = parseFloat((balance - 100).toFixed(4));
@@ -8706,7 +8711,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "risk" ? "block" : "none" }}>
-        <TabErrorBoundary><RiskTab isVisible={tab === "risk"} trades={trades} openTrades={openTrades} balance={balance} session={getCurrentSession()} /></TabErrorBoundary>
+        <TabErrorBoundary><RiskTab isVisible={tab === "risk"} trades={trades} closedTrades={closedTrades} openTrades={openTrades} balance={balance} session={getCurrentSession()} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "coach" ? "block" : "none" }}>
