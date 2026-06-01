@@ -3473,13 +3473,12 @@ async function serverAutoTrade() {
     const HC_MIN_AGE_MS  = 5 * 60 * 1000; // 5 minutes building
     const signalAgeMs    = Date.now() - (signalFirstDetected.get(instrument) || Date.now());
     const isHighConviction = (
-      signal.score >= 78 &&
+      signal.score >= 72 &&
       patternAnalysis?.confirms === true &&
       (patternAnalysis?.patterns?.length ?? 0) > 0 &&
       optionsData?.confirmsTrade === true &&
       optionsData?.institutionalBias !== 'NEUTRAL' &&
-      (patternInsight?.winRate  ?? 0)  >= 55 &&
-      (patternInsight?.attempts ?? 0)  >= 10 &&
+      (!patternInsight || patternInsight.attempts < 10 || patternInsight.winRate >= 55) &&
       signalAgeMs >= HC_MIN_AGE_MS
     );
     const requiredVotes = isHighConviction ? 4 : 3;
@@ -4570,7 +4569,7 @@ app.get('/diagnostics', requireAuth, async (_req, res) => {
     periodHours: parseFloat(hoursRunning),
     thresholds: {
       standardScore:          65,
-      aplusScore:             78,
+      aplusScore:             72,
       consensusStandard:      3,
       consensusAplus:         4,
       historicalMinTrades:    10,
