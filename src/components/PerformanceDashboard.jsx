@@ -51,7 +51,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
 
   const equityCurve = hasClosed
     ? cleanTrades.slice().reverse().reduce((acc, t) => {
-        acc.push(acc[acc.length - 1] + (t.realizedPL || 0));
+        acc.push(acc[acc.length - 1] + getPL(t));
         return acc;
       }, [0])
     : trades.reduce((acc, t) => { acc.push(acc[acc.length - 1] + (t.pnl || 0)); return acc; }, [0]);
@@ -66,7 +66,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
       })
     : trades;
   const filteredCurve = filteredBase.reduce((acc, t) => {
-    acc.push(acc[acc.length - 1] + (hasClosed ? (t.realizedPL || 0) : (t.pnl || 0)));
+    acc.push(acc[acc.length - 1] + (hasClosed ? getPL(t) : (t.pnl || 0)));
     return acc;
   }, [0]);
 
@@ -74,7 +74,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
   const currentVal = filteredCurve[filteredCurve.length - 1];
   const peakIdx = filteredCurve.indexOf(peakVal);
   const afterPeak = filteredCurve.slice(peakIdx);
-  const maxDrawdown = peakVal > 0 && balance > 0 ? Math.min(100, Math.max(0, (peakVal - Math.min(...afterPeak)) / balance * 100)) : 0;
+  const maxDrawdown = filteredCurve.length >= 2 && balance > 0 ? Math.min(100, Math.max(0, (peakVal - Math.min(...afterPeak)) / balance * 100)) : 0;
 
   const pairStats = {};
   analyticsData.forEach(t => {
