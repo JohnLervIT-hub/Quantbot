@@ -4585,6 +4585,36 @@ app.get('/supabase/performance', requireAuth, async (_req, res) => {
   }
 });
 
+// ─── TRADE HISTORY ENDPOINT ──────────────────────────────────────────────────
+app.get('/supabase/history', requireAuth, async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const { pair, outcome, session, dateRange, sortBy, limit } = req.query;
+    let query = supabase.from('trades').select('*');
+
+    if (pair    && pair    !== 'ALL') query = query.eq('pair',    pair);
+    if (outcome && outcome !== 'ALL') query = query.eq('outcome', outcome);
+    if (session && session !== 'ALL') query = query.eq('session', session);
+
+    if (dateRange && dateRange !== 'ALL') {
+      const days  = parseInt(dateRange) || 30;
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+      query = query.gte('close_time', since);
+    }
+
+    const col = ['close_time', 'r_multiple', 'pnl', 'score'].includes(sortBy) ? sortBy : 'close_time';
+    query = query.order(col, { ascending: false });
+
+    if (limit) query = query.limit(Math.min(parseInt(limit) || 500, 1000));
+
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ trades: data || [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── OPTIONS CHAIN SCANNER ────────────────────────────────────────────────────
 const OPTIONS_MAP = {
   'EUR_USD':    'FXE',

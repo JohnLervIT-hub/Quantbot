@@ -7127,6 +7127,235 @@ function HistoricalBacktest({ isMobile }) {
   );
 }
 
+// ─── TRADE HISTORY TAB ───────────────────────────────────────────────────────
+function TradeHistoryTab({ isVisible }) {
+  const [trades, setTrades]               = useState([]);
+  const [loading, setLoading]             = useState(true);
+  const [filters, setFilters]             = useState({ pair: 'ALL', outcome: 'ALL', session: 'ALL', dateRange: '30d' });
+  const [sortBy, setSortBy]               = useState('close_time');
+  const [search, setSearch]               = useState('');
+  const [selectedTrade, setSelectedTrade] = useState(null);
+  const [page, setPage]                   = useState(1);
+  const PER_PAGE = 20;
+
+  useEffect(() => { if (isVisible) fetchHistory(); }, [filters, sortBy, isVisible]);
+
+  const fetchHistory = async () => {
+    setLoading(true);
+    try {
+      const token  = localStorage.getItem('auth_token');
+      const params = new URLSearchParams({ ...filters, sortBy, limit: 500 });
+      const res    = await fetch(`${BRIDGE}/supabase/history?${params}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      const data = await res.json();
+      setTrades(data.trades || []);
+    } catch (err) {
+      console.error('[History] fetch error:', err);
+    }
+    setLoading(false);
+  };
+
+  const filtered  = trades.filter(t =>
+    search === '' ||
+    t.pair?.toLowerCase().includes(search.toLowerCase()) ||
+    t.strategy?.toLowerCase().includes(search.toLowerCase())
+  );
+  const paginated  = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+  const totalPages = Math.ceil(filtered.length / PER_PAGE);
+
+  const wins    = trades.filter(t => t.outcome === 'WIN').length;
+  const winRate = trades.length > 0 ? (wins / trades.length * 100).toFixed(1) : '0.0';
+  const validR  = trades.filter(t => t.r_multiple != null);
+  const avgR    = validR.length > 0 ? (validR.reduce((s, t) => s + t.r_multiple, 0) / validR.length).toFixed(2) : '0.00';
+  const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+  const pairs    = ['ALL', ...new Set(trades.map(t => t.pair).filter(Boolean))];
+
+  const CARD = { background: '#161b22', border: '1px solid #21262d', borderRadius: 8 };
+  const LBL  = { fontSize: 9, color: '#484f58', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 };
+  const pc   = v => v > 0 ? '#3fb950' : v < 0 ? '#f85149' : '#8b949e';
+  const SEL  = { background: '#0d1117', border: '1px solid #21262d', borderRadius: 5, color: '#8b949e', fontSize: 11, padding: '5px 8px', cursor: 'pointer' };
+
+  const fmtTime = iso => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return `${d.toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' })}`;
+  };
+
+  return (
+    <div style={{ padding: 16, paddingBottom: 80 }}>
+
+      {/* ── Summary row ─────────────────────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 14 }}>
+        {[
+          { label: 'Total Trades', value: trades.length,                                              color: '#e6edf3' },
+          { label: 'Win Rate',     value: `${winRate}%`,                                              color: parseFloat(winRate) >= 50 ? '#3fb950' : '#f85149' },
+          { label: 'Avg R',        value: `${parseFloat(avgR) >= 0 ? '+' : ''}${avgR}R`,              color: pc(parseFloat(avgR)) },
+          { label: 'Total P&L',    value: `${totalPnl >= 0 ? '+$' : '-$'}${Math.abs(totalPnl).toFixed(2)}`, color: pc(totalPnl) },
+        ].map(s => (
+          <div key={s.label} style={{ ...CARD, padding: '10px 12px' }}>
+            <div style={LBL}>{s.label}</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: s.color, fontFamily: FONT_MONO }}>{loading ? '—' : s.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Filters ─────────────────────────────────────────────────────────── */}
+      <div style={{ ...CARD, padding: '10px 12px', marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input
+            value={search} onChange={e => { setSearch(e.target.value); setPage(1); }}
+            placeholder="Search pair / strategy…"
+            style={{ background: '#0d1117', border: '1px solid #21262d', borderRadius: 5, color: '#e6edf3', fontSize: 11, padding: '5px 9px', fontFamily: FONT_MONO, width: 160, outline: 'none' }}
+          />
+          <select style={SEL} value={filters.pair}     onChange={e => { setFilters(f => ({ ...f, pair:      e.target.value })); setPage(1); }}>
+            {pairs.map(p => <option key={p} value={p}>{p === 'ALL' ? 'All Pairs' : p.replace('_', '/')}</option>)}
+          </select>
+          <select style={SEL} value={filters.outcome}  onChange={e => { setFilters(f => ({ ...f, outcome:   e.target.value })); setPage(1); }}>
+            {['ALL', 'WIN', 'LOSS', 'BREAKEVEN'].map(o => <option key={o} value={o}>{o === 'ALL' ? 'All Outcomes' : o}</option>)}
+          </select>
+          <select style={SEL} value={filters.session}  onChange={e => { setFilters(f => ({ ...f, session:   e.target.value })); setPage(1); }}>
+            {['ALL', 'LONDON', 'PRIME', 'NY', 'TOKYO', 'SYDNEY'].map(s => <option key={s} value={s}>{s === 'ALL' ? 'All Sessions' : s}</option>)}
+          </select>
+          <select style={SEL} value={filters.dateRange} onChange={e => { setFilters(f => ({ ...f, dateRange: e.target.value })); setPage(1); }}>
+            {[{ v: '7d', l: '7 days' }, { v: '30d', l: '30 days' }, { v: '90d', l: '90 days' }, { v: 'ALL', l: 'All time' }].map(r => <option key={r.v} value={r.v}>{r.l}</option>)}
+          </select>
+          <select style={SEL} value={sortBy} onChange={e => { setSortBy(e.target.value); setPage(1); }}>
+            <option value="close_time">Sort: Date</option>
+            <option value="r_multiple">Sort: R</option>
+            <option value="pnl">Sort: P&L</option>
+            <option value="score">Sort: Score</option>
+          </select>
+          {filtered.length > 0 && (
+            <span style={{ fontSize: 10, color: '#484f58', marginLeft: 'auto', fontFamily: FONT_MONO }}>{filtered.length} trades</span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Trade table ─────────────────────────────────────────────────────── */}
+      <div style={{ ...CARD, overflow: 'hidden', marginBottom: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '88px 54px 52px 74px 74px 52px 66px 62px', gap: '0 6px', padding: '7px 12px', borderBottom: '1px solid #21262d', fontSize: 9, color: '#484f58', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          {['Date', 'Pair', 'Dir', 'Entry', 'Exit', 'R', 'P&L', 'Session'].map(h => <div key={h}>{h}</div>)}
+        </div>
+        {loading ? (
+          <div style={{ padding: '32px 0', textAlign: 'center', color: '#484f58', fontSize: 11 }}>Loading…</div>
+        ) : paginated.length === 0 ? (
+          <div style={{ padding: '32px 0', textAlign: 'center', color: '#484f58', fontSize: 12 }}>No trades found</div>
+        ) : paginated.map((t, i) => (
+          <div key={t.id || i} onClick={() => setSelectedTrade(selectedTrade?.id === t.id ? null : t)}
+            style={{ display: 'grid', gridTemplateColumns: '88px 54px 52px 74px 74px 52px 66px 62px', gap: '0 6px', padding: '7px 12px', borderBottom: '0.5px solid #0d1117', fontSize: 11, cursor: 'pointer', alignItems: 'center', background: selectedTrade?.id === t.id ? 'rgba(88,166,255,0.06)' : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)' }}>
+            <div style={{ fontFamily: FONT_MONO, color: '#484f58', fontSize: 9 }}>{fmtTime(t.close_time)}</div>
+            <div style={{ fontFamily: FONT_MONO, color: '#e6edf3', fontSize: 10, fontWeight: 600 }}>{(t.pair || '—').replace('_', '/')}</div>
+            <div style={{ color: t.direction === 'LONG' ? '#3fb950' : '#f85149', fontSize: 10, fontWeight: 600 }}>{t.direction || '—'}</div>
+            <div style={{ fontFamily: FONT_MONO, color: '#8b949e', fontSize: 10 }}>{t.entry != null ? t.entry.toFixed(4) : '—'}</div>
+            <div style={{ fontFamily: FONT_MONO, color: '#8b949e', fontSize: 10 }}>{t.exit_price != null ? t.exit_price.toFixed(4) : '—'}</div>
+            <div style={{ fontFamily: FONT_MONO, color: pc(t.r_multiple), fontWeight: 700 }}>
+              {t.r_multiple != null ? `${t.r_multiple >= 0 ? '+' : ''}${t.r_multiple.toFixed(2)}R` : '—'}
+            </div>
+            <div style={{ fontFamily: FONT_MONO, color: pc(t.pnl), fontWeight: 600 }}>
+              {t.pnl != null ? `${t.pnl >= 0 ? '+$' : '-$'}${Math.abs(t.pnl).toFixed(2)}` : '—'}
+            </div>
+            <div style={{ fontSize: 9, color: '#8b949e' }}>{t.session || '—'}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Pagination ──────────────────────────────────────────────────────── */}
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 14 }}>
+          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+            style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 5, color: page === 1 ? '#484f58' : '#8b949e', fontSize: 11, padding: '5px 14px', cursor: page === 1 ? 'default' : 'pointer' }}>←</button>
+          <span style={{ fontSize: 11, color: '#484f58', fontFamily: FONT_MONO }}>{page} / {totalPages}</span>
+          <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+            style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 5, color: page === totalPages ? '#484f58' : '#8b949e', fontSize: 11, padding: '5px 14px', cursor: page === totalPages ? 'default' : 'pointer' }}>→</button>
+        </div>
+      )}
+
+      {/* ── Selected trade detail ────────────────────────────────────────────── */}
+      {selectedTrade && (
+        <div style={{ ...CARD, padding: 14, marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#e6edf3' }}>
+              {(selectedTrade.pair || '').replace('_', '/')} {selectedTrade.direction} — Detail
+            </span>
+            <button onClick={() => setSelectedTrade(null)} style={{ background: 'none', border: 'none', color: '#484f58', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>✕</button>
+          </div>
+
+          {/* Core fields grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 12 }}>
+            {[
+              { label: 'Score',        value: selectedTrade.score != null ? `${selectedTrade.score}%` : '—' },
+              { label: 'Strategy',     value: selectedTrade.strategy || '—' },
+              { label: 'Session',      value: selectedTrade.session  || '—' },
+              { label: 'Duration',     value: selectedTrade.duration_mins != null ? `${selectedTrade.duration_mins}m` : '—' },
+              { label: 'Units',        value: selectedTrade.units    != null ? selectedTrade.units : '—' },
+              { label: 'Regime',       value: selectedTrade.regime_at_entry || selectedTrade.market_regime || '—' },
+              { label: 'Heat at Entry',value: selectedTrade.heat_at_entry  != null ? `${selectedTrade.heat_at_entry}R` : '—' },
+              { label: 'EMA50 Side',   value: selectedTrade.ema50_side    || '—' },
+              { label: 'Recovery',     value: selectedTrade.recovery_mode != null ? (selectedTrade.recovery_mode ? 'YES' : 'NO') : '—' },
+            ].map(f => (
+              <div key={f.label}>
+                <div style={LBL}>{f.label}</div>
+                <div style={{ fontSize: 11, color: '#8b949e', fontFamily: FONT_MONO }}>{f.value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Council verdicts */}
+          {(selectedTrade.warren_verdict || selectedTrade.george_verdict || selectedTrade.james_verdict || selectedTrade.ray_verdict) && (
+            <div style={{ borderTop: '1px solid #21262d', paddingTop: 10, marginBottom: 10 }}>
+              <div style={{ ...LBL, marginBottom: 8 }}>Xavier Council · {selectedTrade.consensus_votes != null ? `${selectedTrade.consensus_votes}/4 confirmed` : ''}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
+                {[
+                  { name: 'WARREN', role: 'Risk',    verdict: selectedTrade.warren_verdict },
+                  { name: 'GEORGE', role: 'Pattern', verdict: selectedTrade.george_verdict },
+                  { name: 'JAMES',  role: 'Quant',   verdict: selectedTrade.james_verdict  },
+                  { name: 'RAY',    role: 'Macro',   verdict: selectedTrade.ray_verdict    },
+                ].map(m => (
+                  <div key={m.name} style={{ background: '#0d1117', borderRadius: 5, padding: '6px 8px', border: `1px solid ${m.verdict === 'CONFIRM' ? 'rgba(63,185,80,0.3)' : m.verdict === 'REJECT' ? 'rgba(248,81,73,0.3)' : '#21262d'}` }}>
+                    <div style={{ fontSize: 9, color: '#484f58', marginBottom: 3 }}>{m.name} · {m.role}</div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: m.verdict === 'CONFIRM' ? '#3fb950' : m.verdict === 'REJECT' ? '#f85149' : '#484f58' }}>
+                      {m.verdict === 'CONFIRM' ? '✓ CONFIRM' : m.verdict === 'REJECT' ? '✕ REJECT' : '—'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Candle patterns */}
+          {selectedTrade.candle_patterns?.length > 0 && (
+            <div style={{ borderTop: '1px solid #21262d', paddingTop: 10, marginBottom: 10 }}>
+              <div style={{ ...LBL, marginBottom: 6 }}>Candle Patterns · {selectedTrade.pattern_bias && `Bias: ${selectedTrade.pattern_bias}`}</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {selectedTrade.candle_patterns.map(p => (
+                  <span key={p} style={{ fontSize: 9, padding: '2px 7px', borderRadius: 3, background: 'rgba(88,166,255,0.1)', color: '#58a6ff', fontFamily: FONT_MONO }}>{p}</span>
+                ))}
+                {selectedTrade.pattern_adjustment != null && (
+                  <span style={{ fontSize: 9, padding: '2px 7px', borderRadius: 3, background: selectedTrade.pattern_adjustment >= 0 ? 'rgba(63,185,80,0.1)' : 'rgba(248,81,73,0.1)', color: selectedTrade.pattern_adjustment >= 0 ? '#3fb950' : '#f85149', fontFamily: FONT_MONO }}>
+                    {selectedTrade.pattern_adjustment >= 0 ? '+' : ''}{selectedTrade.pattern_adjustment} score
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Options data */}
+          {selectedTrade.options_pcr != null && (
+            <div style={{ borderTop: '1px solid #21262d', paddingTop: 10 }}>
+              <div style={{ ...LBL, marginBottom: 6 }}>Options at Entry</div>
+              <div style={{ display: 'flex', gap: 20 }}>
+                <div><div style={LBL}>PCR</div><div style={{ fontSize: 11, color: '#8b949e', fontFamily: FONT_MONO }}>{selectedTrade.options_pcr}</div></div>
+                {selectedTrade.options_bias && <div><div style={LBL}>Bias</div><div style={{ fontSize: 11, color: '#8b949e', fontFamily: FONT_MONO }}>{selectedTrade.options_bias}</div></div>}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── PERFORMANCE DASHBOARD ───────────────────────────────────────────────────
 function PerformanceDashboard({ trades, closedTrades = [], balance, isMobile }) {
   const hasClosed = closedTrades.length > 0;
@@ -7548,6 +7777,7 @@ const MOBILE_TABS = [
   { key: "ai",        label: "AI",        Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/><path d="M19 3v4"/><path d="M21 5h-4"/></svg> },
   { key: "risk",      label: "Risk",      Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> },
   { key: "coach",     label: "Coach",     Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg> },
+  { key: "history",   label: "History",  Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> },
   { key: "analytics", label: "Stats",    Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><rect x="2" y="12" width="4" height="10" rx="1"/><rect x="9" y="7" width="4" height="15" rx="1"/><rect x="16" y="3" width="4" height="19" rx="1"/></svg> },
   { key: "schedule",  label: "Schedule", Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> },
   { key: "backtest",  label: "Backtest", Icon: ({ color }) => <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="20" height="20"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> },
@@ -9291,7 +9521,7 @@ export default function TradingRobot() {
   const activeSess = SESSIONS.find(s => isSessionActive(s));
   const activeSessionName = activeSess?.name ?? "—";
   const activeSessionColor = activeSess?.color ?? "#484f58";
-  const tabs = [["markets", "Markets"], ["news", "News"], ["ai", "Ask Xavier"], ["knowledge", "Knowledge"], ["risk", "Risk"], ["coach", "Coach"], ["analytics", "Analytics"], ["schedule", "Schedule"], ["backtest", "Backtest"]];
+  const tabs = [["markets", "Markets"], ["news", "News"], ["ai", "Ask Xavier"], ["knowledge", "Knowledge"], ["risk", "Risk"], ["coach", "Coach"], ["history", "History"], ["analytics", "Analytics"], ["schedule", "Schedule"], ["backtest", "Backtest"]];
 
   const handleLogout = () => {
     localStorage.removeItem("auth_token");
@@ -9628,6 +9858,10 @@ export default function TradingRobot() {
 
       <div style={{ display: tab === "coach" ? "block" : "none" }}>
         <AICoachTab isVisible={tab === "coach"} trades={trades} closedTrades={closedTrades} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} />
+      </div>
+
+      <div style={{ display: tab === "history" ? "block" : "none" }}>
+        <TradeHistoryTab isVisible={tab === "history"} />
       </div>
 
       <div style={{ display: tab === "analytics" ? "block" : "none" }}>
