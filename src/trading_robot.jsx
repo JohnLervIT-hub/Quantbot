@@ -4606,9 +4606,18 @@ function AICoachTab({ trades, closedTrades = [], isMobile, session = "AVOID", st
   const perfData = useMemo(() => {
     // Primary: closedTrades prop (live from OANDA polling)
     // Backup:  qb_closed_trades in localStorage (survives page refresh)
+    const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
     let stored = [];
     try { stored = JSON.parse(localStorage.getItem('qb_closed_trades') || '[]'); } catch {}
-    const all = closedTrades.length > 0 ? closedTrades : stored;
+    const raw = closedTrades.length > 0 ? closedTrades : stored;
+    const all = raw.filter(t => {
+      const closeTime = t.closeTime || t.close_time;
+      const rMultiple = t.rMultiple ?? t.r_multiple;
+      return closeTime &&
+        new Date(closeTime) >= CLEAN_CUTOFF &&
+        rMultiple !== null &&
+        rMultiple !== undefined;
+    });
 
     if (all.length === 0) return { total: 0, wins: 0, winRate: "0.0", avgR: "0.00", bestR: null, worstR: null };
 
@@ -6365,10 +6374,17 @@ function TradeHistoryTab({ isVisible, closedTrades = [] }) {
   const oandaIds = new Set(normalised.map(t => String(t.id)));
   for (const s of supabaseTrades) { if (!oandaIds.has(String(s.id))) merged.push({ ...s, _source: 'supabase' }); }
 
+  // Apply post-June-1 cutoff — exclude pre-fix calibration trades
+  const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
+  const cleanMerged = merged.filter(t => {
+    const closeTime = t.close_time || t.closeTime;
+    return closeTime && new Date(closeTime) >= CLEAN_CUTOFF;
+  });
+
   // Apply date filter
   const nowMs = Date.now();
   const dayMs = (d) => d * 24 * 60 * 60 * 1000;
-  const dateFiltered = merged.filter(t => {
+  const dateFiltered = cleanMerged.filter(t => {
     if (filters.dateRange === 'ALL') return true;
     const days  = parseInt(filters.dateRange) || 30;
     const ts    = t.close_time ? new Date(t.close_time).getTime() : 0;
