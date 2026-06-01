@@ -7207,7 +7207,7 @@ function TradeHistoryTab({ isVisible, closedTrades = [] }) {
   const paginated  = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
   const totalPages = Math.ceil(filtered.length / PER_PAGE);
 
-  const trades   = merged; // alias for summary stats
+  const trades   = filtered; // filter-aware summary stats
   const wins     = trades.filter(t => t.outcome === 'WIN').length;
   const winRate  = trades.length > 0 ? (wins / trades.length * 100).toFixed(1) : '0.0';
   const validR   = trades.filter(t => t.r_multiple != null);

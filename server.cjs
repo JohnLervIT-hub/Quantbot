@@ -677,7 +677,7 @@ let   swingStatus = { status: 'LIVE', message: 'Swing scanner active', lastSigna
 const serverTradeLog = [];          // newest-first, capped at 500
 
 // Upgrade state — trade management, calendar, daily stats
-const tradeManagementState = new Map(); // tradeId → { movedToBreakeven, partialClosed, peakR }
+const tradeManagementState = new Map(); // tradeId → { movedToBreakeven, partialClosed, peakR, profitAtRiskAlerted }
 const lastKnownTradeIds        = new Set(); // for closed trade detection (management loop)
 const serverAutoTradeOpenInstr = new Set(); // last-seen open instruments (auto-trade loop, for race-free cooldown detection)
 let   economicEvents       = [];        // high-impact events this week
@@ -727,12 +727,13 @@ let xavierWeights = { scoreThreshold: 65, newsWindowMins: 120, capitalPreservati
 let lastXavierIntel = { sentiment: null, keyRisk: null, brief: null, bestPair: null, freshNews: null, ts: 0 };
 
 // Pair-specific trail settings — commodities trail tighter/earlier than forex
+// startR: R multiple at which trail activates | trailR: SL distance behind current price (in R units)
 const TRAIL_SETTINGS = {
-  XAG_USD:   { startR: 1.5, trailR: 0.3 },
-  BCO_USD:   { startR: 1.5, trailR: 0.3 },
-  WTICO_USD: { startR: 1.5, trailR: 0.3 },
-  XAU_USD:   { startR: 1.5, trailR: 0.3 },
-  default:   { startR: 2.0, trailR: 0.5 },
+  XAG_USD:   { startR: 1.5, trailR: 0.8 },  // commodity: trail activates at 1.5R, 0.8R behind price
+  BCO_USD:   { startR: 1.5, trailR: 0.8 },  // commodity: trail activates at 1.5R, 0.8R behind price
+  WTICO_USD: { startR: 1.5, trailR: 0.8 },  // commodity: trail activates at 1.5R, 0.8R behind price
+  XAU_USD:   { startR: 1.5, trailR: 0.8 },  // commodity: trail activates at 1.5R, 0.8R behind price
+  default:   { startR: 2.0, trailR: 1.0 },  // forex: trail activates at 2.0R, 1.0R behind price
 };
 
 
@@ -2510,13 +2511,32 @@ async function manageOpenTrades() {
     const currentR   = priceDelta / risk;
 
     if (!tradeManagementState.has(tradeId)) {
-      tradeManagementState.set(tradeId, { movedToBreakeven: false, partialClosed: false, peakR: 0 });
+      tradeManagementState.set(tradeId, { movedToBreakeven: false, partialClosed: false, peakR: 0, profitAtRiskAlerted: false });
     }
     const state   = tradeManagementState.get(tradeId);
     state.peakR   = Math.max(state.peakR, currentR);
 
     // Pair-specific trail settings
     const trail = TRAIL_SETTINGS[instrument] || TRAIL_SETTINGS.default;
+
+    // ── Profit at risk: alert once when large PnL starts reversing ───────────
+    const unrealizedPnl = parseFloat(trade.unrealizedPL || 0);
+    if (unrealizedPnl > 500 && currentR < 0.5 && !state.profitAtRiskAlerted) {
+      state.profitAtRiskAlerted = true;
+      await sendDiscordEmbed({
+        title: '⚠️ PROFIT AT RISK',
+        color: 0xffaa00,
+        fields: [
+          { name: 'Pair',           value: instrument.replace('_', '/'), inline: true },
+          { name: 'Unrealized P&L', value: `$${unrealizedPnl.toFixed(2)}`,            inline: true },
+          { name: 'Current R',      value: `+${currentR.toFixed(2)}R`,                inline: true },
+          { name: 'Action',         value: 'Trail stop tightening',                   inline: false },
+        ],
+        timestamp: new Date().toISOString(),
+      });
+    }
+    // Reset flag when trade recovers above 1R (allows re-alert on next reversal)
+    if (currentR >= 1.0) state.profitAtRiskAlerted = false;
 
     // ── 1R reached: move to breakeven ────────────────────────────────────────
     // Minimum pip distance prevents breakeven firing on tiny 0.2-pip moves
@@ -2573,18 +2593,19 @@ async function manageOpenTrades() {
       }
     }
 
-    // ── Trail stop: start at 2.0R, trail 1R behind current price ────────────
-    if (currentR >= 2.0) {
+    // ── Trail stop: pair-specific start/distance (commodities trail earlier/tighter) ──
+    if (currentR >= trail.startR) {
+      const trailDist  = risk * trail.trailR;
       const trailPrice = dir === 'LONG'
-        ? price - risk
-        : price + risk;
+        ? price - trailDist
+        : price + trailDist;
       const currentSL  = parseFloat(trade.stopLossOrder?.price || sl);
       const improving   = dir === 'LONG'
         ? trailPrice > currentSL
         : trailPrice < currentSL;
       if (improving) {
         await updateTradeSL(tradeId, trailPrice, instrument);
-        console.log(`[TRAIL] ${instrument} ${dir} — SL → ${formatPrice(trailPrice, instrument)} (+${currentR.toFixed(2)}R)`);
+        console.log(`[TRAIL] ${instrument} ${dir} — SL → ${formatPrice(trailPrice, instrument)} (+${currentR.toFixed(2)}R, dist=${trail.trailR}R)`);
       }
     }
   }
