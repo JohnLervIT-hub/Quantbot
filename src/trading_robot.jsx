@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, memo, lazy, Suspense } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
 import { motion, AnimatePresence, animate } from "framer-motion";
 import XavierOnboarding from "./XavierOnboarding";
 import { createChart, CandlestickSeries, LineSeries } from "lightweight-charts";
@@ -11,13 +11,11 @@ import {
   LinearScale,
   Filler,
 } from "chart.js";
+import BacktestTab from './components/BacktestTab';
+import PerformanceDashboard from './components/PerformanceDashboard';
+import DiagnosticsTab from './components/DiagnosticsTab';
 
 Chart.register(LineElement, PointElement, LineController, CategoryScale, LinearScale, Filler);
-// ─── LAZY-LOADED TABS ────────────────────────────────────────────────────────
-const LazyBacktestTab        = lazy(() => import('./components/BacktestTab'));
-const LazyPerformanceDashboard = lazy(() => import('./components/PerformanceDashboard'));
-const LazyDiagnosticsTab     = lazy(() => import('./components/DiagnosticsTab'));
-const LazyFallback = () => <div style={{ padding: 24, color: '#8b949e', textAlign: 'center', fontFamily: "'JetBrains Mono',monospace", fontSize: 12 }}>Loading...</div>;
 
 
 const FONT_MONO = "'JetBrains Mono', monospace";
@@ -8703,33 +8701,21 @@ export default function TradingRobot() {
         <TabErrorBoundary><TradeHistoryTab isVisible={tab === "history"} closedTrades={closedTrades} /></TabErrorBoundary>
       </div>
 
-      {tab === "analytics" && (
-        <TabErrorBoundary>
-          <Suspense fallback={<LazyFallback />}>
-            <LazyPerformanceDashboard trades={trades} closedTrades={closedTrades} balance={displayNav} isMobile={isMobile} />
-          </Suspense>
-        </TabErrorBoundary>
-      )}
+      <div style={{ display: tab === "analytics" ? "block" : "none" }}>
+        <TabErrorBoundary><PerformanceDashboard trades={trades} closedTrades={closedTrades} balance={displayNav} isMobile={isMobile} /></TabErrorBoundary>
+      </div>
 
-      {tab === "diagnostics" && (
-        <TabErrorBoundary>
-          <Suspense fallback={<LazyFallback />}>
-            <LazyDiagnosticsTab isVisible={true} />
-          </Suspense>
-        </TabErrorBoundary>
-      )}
+      <div style={{ display: tab === "diagnostics" ? "block" : "none" }}>
+        <TabErrorBoundary><DiagnosticsTab isVisible={tab === "diagnostics"} /></TabErrorBoundary>
+      </div>
 
       <div style={{ display: tab === "schedule" ? "block" : "none" }}>
         <TabErrorBoundary><ScheduleTab isVisible={tab === "schedule"} isMobile={isMobile} autoMode={autoMode} enableAutoMode={enableAutoMode} xavierOpt={xavierOpt} /></TabErrorBoundary>
       </div>
 
-      {tab === "backtest" && (
-        <TabErrorBoundary>
-          <Suspense fallback={<LazyFallback />}>
-            <LazyBacktestTab closedTrades={closedTrades} trades={trades} isMobile={isMobile} generateSignal={generateSignal} />
-          </Suspense>
-        </TabErrorBoundary>
-      )}
+      <div style={{ display: tab === "backtest" ? "block" : "none" }}>
+        <TabErrorBoundary><BacktestTab closedTrades={closedTrades} trades={trades} isMobile={isMobile} generateSignal={generateSignal} /></TabErrorBoundary>
+      </div>
 
       {/* ── Auto Mode Settings Modal ── */}
       {showAutoSettings && (
