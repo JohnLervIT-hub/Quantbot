@@ -6732,6 +6732,14 @@ function generateSignalM5(history, strategy, pair) {
 }
 
 // ─── AUTONOMOUS BACKTEST SIMULATION ───────────────────────────────────────────
+const BACKTEST_SPREAD_COSTS = {
+  EUR_USD: 0.0002, GBP_USD: 0.0003, USD_JPY: 0.02,  EUR_GBP: 0.0002,
+  XAU_USD: 0.35,   XAG_USD: 0.03,   NAS100_USD: 1.5, AU200_AUD: 1.0,
+  BCO_USD: 0.05,   WTICO_USD: 0.05, AUD_USD: 0.0002, NZD_USD: 0.0002,
+  USD_CAD: 0.0002, GBP_JPY: 0.03,   UK100_GBP: 1.0,  JP225_USD: 30.0,
+  SPX500_USD: 0.5, default: 0.0003,
+};
+
 async function runBtSimulation(closes, candles, strat, sessRange, pair, btConfig = {}) {
   const minScore  = btConfig.minScore  ?? 65;
   const signalFn  = btConfig.signalFn  ?? generateSignal;
