@@ -16,14 +16,34 @@ export default function BacktestTab({ closedTrades = [], trades = [], isMobile, 
   const [xavierInsight, setXavierInsight] = useState(null);
   const [loadingInsight, setLoadingInsight] = useState(false);
 
-  const data = closedTrades;
+  const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
+  const data = closedTrades.filter(t => {
+    const closeTime = t.closeTime || t.close_time;
+    const rMultiple = t.rMultiple ?? t.r_multiple;
+    return closeTime &&
+      new Date(closeTime) >= CLEAN_CUTOFF &&
+      rMultiple !== null &&
+      rMultiple !== undefined;
+  });
+  const allTrades  = closedTrades;
+  const cleanCount = data.length;
+  const totalCount = allTrades.length;
 
-  if (data.length === 0) {
+  if (totalCount === 0) {
     return (
       <div style={{ padding: "60px 16px", textAlign: "center" }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>🧪</div>
         <div style={{ fontSize: 15, fontWeight: 600, color: "#e6edf3", marginBottom: 6 }}>No closed trades</div>
         <div style={{ fontSize: 12, color: "#8b949e" }}>Execute and close trades to see performance analytics here.</div>
+      </div>
+    );
+  }
+  if (cleanCount === 0) {
+    return (
+      <div style={{ padding: "60px 16px", textAlign: "center" }}>
+        <div style={{ fontSize: 36, marginBottom: 12 }}>🧪</div>
+        <div style={{ fontSize: 15, fontWeight: 600, color: "#e6edf3", marginBottom: 6 }}>No clean trades yet</div>
+        <div style={{ fontSize: 12, color: "#8b949e" }}>{totalCount} historical trade{totalCount !== 1 ? "s" : ""} exist but are excluded (pre-June 1 calibration data). New trades will appear here.</div>
       </div>
     );
   }
@@ -144,11 +164,14 @@ export default function BacktestTab({ closedTrades = [], trades = [], isMobile, 
   return (
     <div style={{ padding: "0 16px 24px" }}>
       {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
         <div>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#e6edf3" }}>Backtest Analytics</div>
-          <div style={{ fontSize: 11, color: "#484f58", marginTop: 2 }}>Based on {data.length} closed OANDA trades</div>
+          <div style={{ fontSize: 11, color: "#484f58", marginTop: 2 }}>Based on {cleanCount} clean trades (filtered from {totalCount} total)</div>
         </div>
+      </div>
+      <div style={{ fontSize: 10, color: "#8b949e", padding: "4px 0", marginBottom: 8 }}>
+        ⓘ Showing post-June 1 trades only. Pre-fix calibration trades excluded.
       </div>
 
       {/* Sample size warning */}

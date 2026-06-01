@@ -5,11 +5,16 @@ import { FONT_MONO } from '../lib/config';
 export default function PerformanceDashboard({ trades, closedTrades = [], balance, isMobile }) {
   const hasClosed = closedTrades.length > 0;
   const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
-  const cleanTrades = hasClosed ? closedTrades.filter(t =>
-    new Date(t.close_time) >= CLEAN_CUTOFF &&
-    t.r_multiple !== null &&
-    t.session_name !== null
-  ) : [];
+  const cleanTrades = hasClosed
+    ? closedTrades.filter(t => {
+        const closeTime = t.closeTime || t.close_time;
+        const rMultiple = t.rMultiple ?? t.r_multiple;
+        return closeTime &&
+          new Date(closeTime) >= CLEAN_CUTOFF &&
+          rMultiple !== null &&
+          rMultiple !== undefined;
+      })
+    : [];
   const analyticsData = hasClosed ? cleanTrades : trades;
   const [curveFilter, setCurveFilter] = useState("ALL");
   const [xavierNote, setXavierNote] = useState("");

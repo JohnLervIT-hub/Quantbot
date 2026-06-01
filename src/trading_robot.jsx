@@ -7560,7 +7560,7 @@ export default function TradingRobot() {
   useEffect(() => {
     const fetchClosed = async () => {
       try {
-        const r = await fetch(`${BRIDGE}/closed-trades?count=50`);
+        const r = await fetch(`${BRIDGE}/closed-trades?count=200`);
         const data = await r.json();
         if (!Array.isArray(data.trades)) return;
 
