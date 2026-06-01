@@ -70,7 +70,8 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
   const currentVal = filteredCurve[filteredCurve.length - 1];
   const peakIdx = filteredCurve.indexOf(peakVal);
   const afterPeak = filteredCurve.slice(peakIdx);
-  const maxDrawdown = filteredCurve.length >= 2 && balance > 0 ? Math.min(100, Math.max(0, (peakVal - Math.min(...afterPeak)) / balance * 100)) : 0;
+  const peakToTrough  = filteredCurve.length >= 2 ? Math.max(0, peakVal - Math.min(...afterPeak)) : 0;
+  const maxDrawdown   = balance > 0 ? Math.min(100, Math.max(0, peakToTrough / balance * 100)) : 0;
 
   const pairStats = {};
   analyticsData.forEach(t => {
@@ -263,7 +264,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
             {[
               { label: "Current",      value: hasClosed ? fmtD(currentVal) : fmtPct(currentVal), color: pc(currentVal) },
               { label: "Peak",         value: hasClosed ? fmtD(peakVal)    : fmtPct(peakVal),    color: "#3fb950" },
-              { label: "Max Drawdown", value: `${maxDrawdown.toFixed(1)}%`,                       color: maxDrawdown > 15 ? "#f85149" : maxDrawdown > 8 ? "#d29922" : "#8b949e" },
+              { label: "Max Drawdown", value: hasClosed ? `-$${peakToTrough.toFixed(2)}` : `${maxDrawdown.toFixed(1)}%`, color: hasClosed ? (peakToTrough > 200 ? "#f85149" : peakToTrough > 100 ? "#d29922" : "#8b949e") : (maxDrawdown > 15 ? "#f85149" : maxDrawdown > 8 ? "#d29922" : "#8b949e") },
             ].map(s => (
               <div key={s.label}>
                 <div style={LBL}>{s.label}</div>
