@@ -771,7 +771,7 @@ const TRAIL_SETTINGS = {
 // M5 backtest-validated — 180d spread-adjusted, updated 2026-05-30
 const XAVIER_RULES = {
   TOKYO:  { strategy: 'Momentum',    pairs: ['EUR_GBP', 'USD_JPY', 'GBP_USD'],   minScore: 65 },
-  LONDON: { strategy: 'Momentum',    pairs: ['AU200_AUD', 'GBP_USD', 'EUR_USD'],  minScore: 65 },
+  LONDON: { strategy: 'Momentum',    pairs: ['EUR_GBP', 'GBP_USD', 'EUR_USD', 'AU200_AUD'], minScore: 65 },
   PRIME:  { strategy: 'Breakout',    pairs: ['EUR_GBP', 'XAU_USD', 'EUR_USD'],   minScore: 65 },
   NY:     { strategy: 'Mean Revert', pairs: ['AU200_AUD', 'EUR_USD', 'XAG_USD'], minScore: 65 },
   SYDNEY: { strategy: 'Momentum',    pairs: ['XAU_USD', 'NAS100_USD', 'XAG_USD'], minScore: 65 },
@@ -794,10 +794,11 @@ const SERVER_PAIRS = new Set([
 ]);
 
 // Index pairs — home session only, 75%+ score required (tighter spreads, higher conviction)
+// UK100_GBP removed from M5 auto — Kill Shot manual only (DD too high for M5)
 const INDEX_PAIRS = new Set([
   'SPX500_USD', 'NAS100_USD',  // NY only
   // JP225_USD — swing only (DD too high for M5), Kill Shot manual only
-  'UK100_GBP',                  // London only
+  // UK100_GBP — Kill Shot manual only (removed from M5 auto 2026-06-02)
   'AU200_AUD',                  // Sydney only
 ]);
 
