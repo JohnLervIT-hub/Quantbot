@@ -54,8 +54,29 @@ This caused 2+ hours of downtime on 2026-06-01.
 3. Test in browser before pushing
 4. Never push multiple unrelated changes in one commit
 
+### Staging Workflow (develop → main)
+All changes go to develop branch first:
+```
+git checkout develop
+# make changes, npm run build, test locally
+git add <files> && git commit -m "description"
+git push origin develop          # triggers Vercel preview URL
+```
+Test on the Vercel preview URL. Only merge to main when confirmed working:
+```
+git checkout main
+git merge develop
+git push origin main             # triggers Vercel production deploy
+```
+
 ### Vercel Deploy Rules
 - Never redeploy old builds
-- Always push fresh commits to main
+- develop branch → Vercel preview (configure in Vercel → Settings → Git → Preview Branches)
+- main branch → Vercel production
 - One logical change per commit
 - Test locally first: `npm run build`
+- Test on preview URL before merging to main
+
+### Pre-push Build Guard
+`npm run prepush` runs `npm run build` before every `git push` (enforced via `.git/hooks/pre-push`).
+Fails loudly if the build is broken — prevents broken code reaching Vercel.

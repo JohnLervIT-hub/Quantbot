@@ -9,6 +9,7 @@
     "dev": "vite",
     "prebuild": "node scripts/check-react-import.js",
     "build": "vite build",
+    "prepush": "npm run build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
