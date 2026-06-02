@@ -3327,7 +3327,7 @@ async function serverAutoTrade() {
       'direction:', signal.direction,
       'reasons:', signal.reason.join(' | '));
     // Track signal age — start clock on first qualifying signal appearance
-    if (!signalFirstDetected.has(instrument)) signalFirstDetected.set(instrument, Date.now());
+    if (!signalFirstDetected.has(instrument)) signalFirstDetected.set(instrument, { ts: Date.now(), pattern: null });
 
     // Step 1 — fetch candles and analyze patterns
     let patternAnalysis = null;
@@ -3352,6 +3352,10 @@ async function serverAutoTrade() {
       // DOJI (-15 adjustment already applied above) — threshold check below handles the block
       patternAnalysis = { patterns, scoreAdjustment, directionBias, confirms: directionBias === signal.direction || directionBias === 'NEUTRAL' };
     }
+
+    // Lock in pattern at first detection — persists across scan cycles for bypass check
+    const _fd = signalFirstDetected.get(instrument);
+    if (_fd && patternAnalysis && !_fd.pattern) _fd.pattern = patternAnalysis;
 
     // Step 3 — score threshold check AFTER pattern boost
     const scoreThresholdEffective = recoveryMode ? 75
@@ -3421,12 +3425,13 @@ async function serverAutoTrade() {
     diagCounters.gatekeeperPass++;
 
     // Trend confirmation — skipped for A+ signals (score >= 72) OR when pattern confirms direction
-    const A_PLUS_THRESHOLD = 72;
-    const patternConfirmsTrend = patternAnalysis?.confirms === true && patternAnalysis?.directionBias === signal.direction;
-    if (signal.score >= A_PLUS_THRESHOLD) {
+    // Use stored pattern from first detection so pattern can't disappear between scan cycles
+    const storedPattern      = signalFirstDetected.get(instrument)?.pattern ?? patternAnalysis;
+    const patternConfirmsTrend = storedPattern?.confirms === true && (storedPattern?.patterns?.length ?? 0) > 0;
+    if (signal.score >= 72) {
       console.log(`[TREND SKIP] ${instrument} score:${signal.score}% — A+ threshold, pattern+council confirms direction`);
     } else if (patternConfirmsTrend) {
-      console.log(`[TREND SKIP] ${instrument} pattern confirms trend — skipping confirmTrend() check`);
+      console.log(`[TREND SKIP] ${instrument} pattern:${storedPattern.patterns[0]} confirms trend — skipping`);
     } else {
       const m5Candles = await getM5Candles(instrument);
       const trendOk   = confirmTrend(
@@ -3623,7 +3628,7 @@ async function serverAutoTrade() {
     // ── HIGH CONVICTION filter ────────────────────────────────────────────────
     // All five criteria must be true simultaneously for A+ classification
     const HC_MIN_AGE_MS  = 5 * 60 * 1000; // 5 minutes building
-    const signalAgeMs    = Date.now() - (signalFirstDetected.get(instrument) || Date.now());
+    const signalAgeMs    = Date.now() - (signalFirstDetected.get(instrument)?.ts || Date.now());
     const optionsOk = !optionsData ||
       optionsData.institutionalBias === 'NEUTRAL' ||
       optionsData.confirmsTrade === true;
