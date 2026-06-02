@@ -633,6 +633,7 @@ app.get('/health', (_req, res) => {
       deepseek: Boolean(DEEPSEEK_KEY),
       gemini:   Boolean(GEMINI_KEY),
     },
+    rayStatus: lastRayStatus,
   });
 });
 
@@ -751,6 +752,7 @@ let xavierWeights = { scoreThreshold: 65, newsWindowMins: 120, capitalPreservati
 
 // Xavier intel cache — populated when frontend calls /consensus with xavier data; used by server-side auto-trade
 let lastXavierIntel = { sentiment: null, keyRisk: null, brief: null, bestPair: null, freshNews: null, ts: 0 };
+let lastRayStatus   = 'online'; // updated each consensus call — read by /health
 
 // Pair-specific trail settings — commodities trail tighter/earlier than forex
 // startR: R multiple at which trail activates | trailR: SL distance behind current price (in R units)
@@ -1442,7 +1444,7 @@ async function askGemini(prompt, sys) {
 const MODEL_TAG  = { 'WARREN': 'WARREN', 'GEORGE': 'GEORGE', 'JAMES': 'JAMES', 'RAY': 'RAY' };
 const MODEL_ROLE = { 'WARREN': 'Risk', 'GEORGE': 'Pattern', 'JAMES': 'Quant', 'RAY': 'Macro' };
 
-async function runConsensus(rawParams) {
+async function runConsensus(rawParams, { isHighConviction = false } = {}) {
   // Normalize field names — accept both server-style (sl/tp/rr/instrument) and
   // friendly-style (stopLoss/takeProfit/riskReward/pair) so tests and frontend calls both work
   const params = {
@@ -1466,27 +1468,48 @@ async function runConsensus(rawParams) {
       : raw.includes('quota') || raw.includes('Quota') ? 'Quota exceeded — rate limit'
       : raw.includes('Missing') ? raw
       : raw.slice(0, 80);
-    return { name: NAMES[i], verdict: 'REJECT', reason };
+    return { name: NAMES[i], verdict: 'REJECT', reason, failed: true };
   });
-  const rayAvailable    = settled[3].status === 'fulfilled';
-  const availableModels = rayAvailable ? 4 : 3;
-  const confirms = models.filter(m => m.verdict === 'CONFIRM').length;
+
+  // Track RAY status globally for /health endpoint
+  const rayAvailable = settled[3].status === 'fulfilled';
+  if (!rayAvailable) {
+    const rayErr = settled[3].reason?.message || 'unreachable';
+    lastRayStatus = rayErr.includes('prepayment') || rayErr.includes('credits') ? 'offline — credits depleted'
+      : rayErr.includes('quota') ? 'offline — quota exceeded'
+      : `offline — ${rayErr.slice(0, 60)}`;
+    console.log('[RAY] offline —', lastRayStatus);
+  } else {
+    lastRayStatus = 'online';
+  }
+
+  // Only count models that actually responded — failed models excluded from denominator
+  const activeModels    = models.filter(m => !m.failed);
+  const availableModels = activeModels.length;
+  const confirms        = activeModels.filter(m => m.verdict === 'CONFIRM').length;
+  const requiredVotes   = isHighConviction ? availableModels : Math.ceil(availableModels * 0.75);
+  const votesOk         = confirms >= requiredVotes;
+
+  console.log('[COUNCIL]', 'available:', availableModels, 'required:', requiredVotes, 'confirms:', confirms, 'RAY:', rayAvailable ? 'online' : lastRayStatus);
+
   const voteLog = models.map(m => {
     const role = MODEL_ROLE[m.name] || '?';
-    const icon = m.verdict === 'CONFIRM' ? '✅' : '❌';
-    return `${m.name} (${role}): ${icon} ${m.verdict}\n"${m.reason}"`;
+    const icon = m.failed ? '⚠️' : m.verdict === 'CONFIRM' ? '✅' : '❌';
+    return `${m.name} (${role}): ${icon} ${m.failed ? 'OFFLINE' : m.verdict}\n"${m.reason}"`;
   });
-  if (!rayAvailable) voteLog.push('\n⚠️ RAY (Gemini) offline — threshold adjusted to 2/3 available models');
-  voteLog.push(`\nVerdict: ${confirms}/${availableModels} CONFIRM → ${confirms >= (availableModels - 1) ? 'EXECUTE' : 'BLOCKED'}${!rayAvailable ? ' [RAY OFFLINE]' : ''}`);
+  if (!rayAvailable) voteLog.push(`\n⚠️ RAY offline — running on ${availableModels}/4 models, threshold ${requiredVotes}/${availableModels}`);
+  voteLog.push(`\nVerdict: ${confirms}/${availableModels} CONFIRM → ${votesOk ? 'EXECUTE' : 'BLOCKED'}${!rayAvailable ? ' [RAY OFFLINE]' : ''}`);
   return {
-    votes: { confirm: confirms, reject: models.length - confirms },
-    consensus: confirms >= (availableModels - 1) ? 'CONFIRM' : 'REJECT',
-    confidence: `${Math.round((confirms / availableModels) * 100)}%`,
+    votes: { confirm: confirms, reject: activeModels.length - confirms },
+    consensus: votesOk ? 'CONFIRM' : 'REJECT',
+    confidence: `${Math.round((confirms / Math.max(availableModels, 1)) * 100)}%`,
     models,
     voteLog,
-    executeAllowed: confirms >= (availableModels - 1),
+    executeAllowed: votesOk,
     rayAvailable,
     availableModels,
+    requiredVotes,
+    votesOk,
   };
 }
 
@@ -3691,18 +3714,13 @@ async function serverAutoTrade() {
           confirmsTrade:     optionsData.signal === signal.direction,
         } : null,
         patternAnalysis:    patternAnalysis,
-      });
+      }, { isHighConviction });
     } catch (e) {
       console.error(`[auto] Consensus error ${instrument}: ${e.message}`);
       continue;
     }
 
-    const availableModels  = consensus.rayAvailable !== false ? 4 : 3;
-    const effectiveRequired = isHighConviction ? availableModels : availableModels - 1;
-    if (!consensus.rayAvailable) {
-      console.log(`[auto] ${instrument} — RAY OFFLINE (credits depleted) — threshold ${requiredVotes}/4 → ${effectiveRequired}/${availableModels}`);
-    }
-    const votesOk = consensus.votes.confirm >= effectiveRequired;
+    const { votesOk, requiredVotes: effectiveRequired, availableModels } = consensus;
     console.log(`[auto] ${instrument} — consensus ${consensus.votes.confirm}/${availableModels} — need ${effectiveRequired} — ${votesOk ? 'EXECUTE' : 'BLOCKED'}${isHighConviction ? ' [HIGH CONVICTION]' : ''}${!consensus.rayAvailable ? ' [RAY OFFLINE]' : ''}`);
 
     if (!votesOk) {
