@@ -12,16 +12,24 @@ const MIN_BT_TRADES = 50;
 const TRAINING_DAYS_MS = 120 * 86400000;
 
 // ─── BACKTEST TAB ─────────────────────────────────────────────────────────────
-export default function BacktestTab({ closedTrades = [], trades = [], isMobile, generateSignal }) {
+export default function BacktestTab({ closedTrades = [], trades = [], isMobile, generateSignal, supabaseTrades = [] }) {
   const [xavierInsight, setXavierInsight] = useState(null);
   const [loadingInsight, setLoadingInsight] = useState(false);
 
+  const supaMap = new Map(supabaseTrades.map(s => [String(s.id), s]));
+  const mergedTrades = closedTrades.map(t => {
+    const supa = supaMap.get(String(t.id)) || supaMap.get(String(t.oandaId));
+    return supa
+      ? { ...t, rMultiple: supa.r_multiple, session: supa.session_name || supa.session, pattern: supa.pattern, tradeSource: supa.trade_source }
+      : t;
+  });
+
   const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
-  const data = closedTrades.filter(t => {
+  const data = mergedTrades.filter(t => {
     const closeTime = t.closeTime || t.close_time;
     return closeTime && new Date(closeTime) >= CLEAN_CUTOFF;
   });
-  const allTrades  = closedTrades;
+  const allTrades  = mergedTrades;
   const cleanCount = data.length;
   const totalCount = allTrades.length;
 

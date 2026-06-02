@@ -7378,6 +7378,13 @@ export default function TradingRobot() {
   const [closedTrades, setClosedTrades] = useState(() => {
     try { return JSON.parse(localStorage.getItem("qb_closed_trades") || "[]"); } catch { return []; }
   });
+  const [supabaseTrades, setSupabaseTrades] = useState([]);
+  useEffect(() => {
+    fetch(`${BRIDGE}/supabase/history?limit=500`)
+      .then(r => r.json())
+      .then(d => { if (Array.isArray(d.trades)) setSupabaseTrades(d.trades); })
+      .catch(() => {});
+  }, []);
   const seenClosedIdsRef = useRef(new Set(
     (() => { try { return JSON.parse(localStorage.getItem("qb_closed_trades") || "[]").map(t => t.oandaId); } catch { return []; } })()
   ));
@@ -8768,7 +8775,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "backtest" ? "block" : "none" }}>
-        <TabErrorBoundary><BacktestTab closedTrades={closedTrades} trades={trades} isMobile={isMobile} generateSignal={generateSignal} /></TabErrorBoundary>
+        <TabErrorBoundary><BacktestTab closedTrades={closedTrades} trades={trades} isMobile={isMobile} generateSignal={generateSignal} supabaseTrades={supabaseTrades} /></TabErrorBoundary>
       </div>
 
       {/* ── Auto Mode Settings Modal ── */}
