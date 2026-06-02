@@ -1468,20 +1468,25 @@ async function runConsensus(rawParams) {
       : raw.slice(0, 80);
     return { name: NAMES[i], verdict: 'REJECT', reason };
   });
+  const rayAvailable    = settled[3].status === 'fulfilled';
+  const availableModels = rayAvailable ? 4 : 3;
   const confirms = models.filter(m => m.verdict === 'CONFIRM').length;
   const voteLog = models.map(m => {
     const role = MODEL_ROLE[m.name] || '?';
     const icon = m.verdict === 'CONFIRM' ? '✅' : '❌';
     return `${m.name} (${role}): ${icon} ${m.verdict}\n"${m.reason}"`;
   });
-  voteLog.push(`\nVerdict: ${confirms}/4 CONFIRM → ${confirms >= 3 ? 'EXECUTE' : 'BLOCKED'}`);
+  if (!rayAvailable) voteLog.push('\n⚠️ RAY (Gemini) offline — threshold adjusted to 2/3 available models');
+  voteLog.push(`\nVerdict: ${confirms}/${availableModels} CONFIRM → ${confirms >= (availableModels - 1) ? 'EXECUTE' : 'BLOCKED'}${!rayAvailable ? ' [RAY OFFLINE]' : ''}`);
   return {
     votes: { confirm: confirms, reject: models.length - confirms },
-    consensus: confirms >= 3 ? 'CONFIRM' : 'REJECT',
-    confidence: `${Math.round((confirms / models.length) * 100)}%`,
+    consensus: confirms >= (availableModels - 1) ? 'CONFIRM' : 'REJECT',
+    confidence: `${Math.round((confirms / availableModels) * 100)}%`,
     models,
     voteLog,
-    executeAllowed: confirms >= 3,
+    executeAllowed: confirms >= (availableModels - 1),
+    rayAvailable,
+    availableModels,
   };
 }
 
@@ -3692,11 +3697,16 @@ async function serverAutoTrade() {
       continue;
     }
 
-    const votesOk = consensus.votes.confirm >= requiredVotes;
-    console.log(`[auto] ${instrument} — consensus ${consensus.votes.confirm}/4 — need ${requiredVotes} — ${votesOk ? 'EXECUTE' : 'BLOCKED'}${isHighConviction ? ' [HIGH CONVICTION]' : ''}`);
+    const availableModels  = consensus.rayAvailable !== false ? 4 : 3;
+    const effectiveRequired = isHighConviction ? availableModels : availableModels - 1;
+    if (!consensus.rayAvailable) {
+      console.log(`[auto] ${instrument} — RAY OFFLINE (credits depleted) — threshold ${requiredVotes}/4 → ${effectiveRequired}/${availableModels}`);
+    }
+    const votesOk = consensus.votes.confirm >= effectiveRequired;
+    console.log(`[auto] ${instrument} — consensus ${consensus.votes.confirm}/${availableModels} — need ${effectiveRequired} — ${votesOk ? 'EXECUTE' : 'BLOCKED'}${isHighConviction ? ' [HIGH CONVICTION]' : ''}${!consensus.rayAvailable ? ' [RAY OFFLINE]' : ''}`);
 
     if (!votesOk) {
-      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Consensus', actual: `${consensus.votes.confirm}/4`, threshold: `${requiredVotes}/4 required${isHighConviction ? ' (HIGH CONVICTION — A+)' : ''}` }], models: consensus.models });
+      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Consensus', actual: `${consensus.votes.confirm}/${availableModels}`, threshold: `${effectiveRequired}/${availableModels} required${isHighConviction ? ' (HIGH CONVICTION — A+)' : ''}${!consensus.rayAvailable ? ' (RAY offline)' : ''}` }], models: consensus.models });
       if (serverRejections.length > 50) serverRejections.pop();
       diagCounters.blockedConsensus++;
       continue;
