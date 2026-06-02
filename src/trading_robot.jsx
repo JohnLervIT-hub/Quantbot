@@ -7901,9 +7901,13 @@ export default function TradingRobot() {
   const enableAutoMode = async (enabled) => {
     setAutoModeLoading(true);
     try {
+      const token = localStorage.getItem('auth_token');
       const r = await fetch(`${BRIDGE}/auto-mode`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ enabled }),
       });
       const data = await r.json();
