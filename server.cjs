@@ -3420,32 +3420,37 @@ async function serverAutoTrade() {
     }
     diagCounters.gatekeeperPass++;
 
-    // Trend confirmation — 3/3 for forex LONG, 1/3 for indices (mixed candles normal)
-    const m5Candles = await getM5Candles(instrument);
-    const trendOk   = confirmTrend(
-      [...m5Candles, { open: price, close: price }],
-      signal.direction,
-      instrument,
-    );
-    if (!trendOk) {
-      const threshold = INDEX_INSTRUMENTS.has(instrument) ? '1/3' : '2/3';
-      console.log(`[TREND WAIT] ${instrument} — signal ${signal.score}% detected but trend not confirmed yet. Waiting for momentum to develop.`);
-      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Trend Not Confirmed', actual: `< ${threshold} checks (last3 candles, price moving, EMA separating)`, threshold: `${threshold} required` }] });
-      if (serverRejections.length > 50) serverRejections.pop();
-      await sendDiscordEmbed({
-        title: '⏳ Signal Waiting — Trend',
-        color: 0x0088ff,
-        fields: [
-          { name: 'Pair',      value: instrument.replace('_', '/'),   inline: true },
-          { name: 'Score',     value: `${signal.score}%`,             inline: true },
-          { name: 'Reason',    value: 'Trend not confirmed yet',      inline: true },
-        ],
-        timestamp: new Date().toISOString(),
-      });
-      diagCounters.blockedMacro++;
-      continue;
+    // Trend confirmation — skipped for A+ signals (score >= 72): pattern + council sufficient
+    const A_PLUS_THRESHOLD = 72;
+    if (signal.score >= A_PLUS_THRESHOLD) {
+      console.log(`[TREND SKIP] ${instrument} score:${signal.score}% — A+ threshold, pattern+council confirms direction`);
+    } else {
+      const m5Candles = await getM5Candles(instrument);
+      const trendOk   = confirmTrend(
+        [...m5Candles, { open: price, close: price }],
+        signal.direction,
+        instrument,
+      );
+      if (!trendOk) {
+        const threshold = INDEX_INSTRUMENTS.has(instrument) ? '1/3' : '2/3';
+        console.log(`[TREND WAIT] ${instrument} — signal ${signal.score}% detected but trend not confirmed yet. Waiting for momentum to develop.`);
+        serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Trend Not Confirmed', actual: `< ${threshold} checks (last3 candles, price moving, EMA separating)`, threshold: `${threshold} required` }] });
+        if (serverRejections.length > 50) serverRejections.pop();
+        await sendDiscordEmbed({
+          title: '⏳ Signal Waiting — Trend',
+          color: 0x0088ff,
+          fields: [
+            { name: 'Pair',      value: instrument.replace('_', '/'),   inline: true },
+            { name: 'Score',     value: `${signal.score}%`,             inline: true },
+            { name: 'Reason',    value: 'Trend not confirmed yet',      inline: true },
+          ],
+          timestamp: new Date().toISOString(),
+        });
+        diagCounters.blockedMacro++;
+        continue;
+      }
+      console.log(`[TREND CONFIRMED] ${instrument} ${signal.direction} — trend active, proceeding to consensus`);
     }
-    console.log(`[TREND CONFIRMED] ${instrument} ${signal.direction} — trend active, proceeding to consensus`);
 
     // ── Macro trend filter — LONG trades only ──────────────────────────────────
     // SHORT logic is working well — untouched.
