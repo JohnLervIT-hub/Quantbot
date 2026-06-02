@@ -120,8 +120,8 @@ const PAIR_DISPLAY_NAMES = {
 const STRATEGIES = ["Trend Follow", "Mean Revert", "Breakout", "Momentum", "Range Scalp"];
 
 const STRATEGY_SESSION_MATRIX = {
-  SYDNEY: { primary: "Mean Revert", fallback: "Trend Follow" },
-  TOKYO:  { primary: "Mean Revert", fallback: "Range Scalp"  },
+  SYDNEY: { primary: "Momentum", fallback: "Trend Follow" },
+  TOKYO:  { primary: "Momentum", fallback: "Range Scalp"  },
   LONDON: { primary: "Momentum",   fallback: "Breakout"      },
   PRIME:  { primary: "Breakout",   fallback: "Mean Revert"   },
   NY:     { primary: "Mean Revert", fallback: "Momentum"     },
@@ -187,11 +187,11 @@ function getNextSessionInfo() {
   // UTC open hours for each tradeable session (AVOID has no strategy — skip it)
   // SYDNEY 22-04, TOKYO 04-08, LONDON 08-13, PRIME 13-17, NY 17-20, AVOID 20-22
   const BOUNDARIES = [
-    { h: 4,  session: "TOKYO",  strategy: "Mean Revert" },
+    { h: 4,  session: "TOKYO",  strategy: "Momentum"    },
     { h: 8,  session: "LONDON", strategy: "Momentum"    },
     { h: 13, session: "PRIME",  strategy: "Breakout"    },
     { h: 17, session: "NY",     strategy: "Mean Revert" },
-    { h: 22, session: "SYDNEY", strategy: "Mean Revert" },
+    { h: 22, session: "SYDNEY", strategy: "Momentum"    },
   ];
   const now = new Date();
   const nowMins = now.getUTCHours() * 60 + now.getUTCMinutes();
@@ -7033,8 +7033,8 @@ function useAutonomousBacktest() {
 
 function useXavierStrategy(session) {
   const XAVIER_RULES = {
-    TOKYO:  "Mean Revert",
-    SYDNEY: "Mean Revert",
+    TOKYO:  "Momentum",
+    SYDNEY: "Momentum",
     LONDON: "Momentum",
     PRIME:  "Breakout",
     NY:     "Mean Revert",
