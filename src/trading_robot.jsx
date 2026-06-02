@@ -7333,6 +7333,70 @@ function LoginPage() {
   );
 }
 
+// ─── SUPABASE SINGLE SOURCE OF TRUTH HOOK ────────────────────────────────────
+const useSupabaseData = () => {
+  const [supaData, setSupaData] = useState({
+    trades: [], total: 0, wins: 0, losses: 0,
+    winRate: 0, avgR: 0, totalPnl: 0,
+    loading: true, lastUpdated: null,
+  });
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchSupa = async () => {
+      try {
+        const token = localStorage.getItem('auth_token');
+        const res = await window.fetch(`${BRIDGE}/supabase/history?limit=500`, {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        });
+        const data = await res.json();
+        const raw = data.trades || [];
+
+        // Normalise Supabase snake_case → camelCase aliases for component compatibility
+        const trades = raw.map(t => ({
+          ...t,
+          closeTime:  t.close_time  || t.closeTime,
+          openTime:   t.open_time   || t.openTime,
+          realizedPL: t.pnl         ?? t.realizedPL,
+          rMultiple:  t.r_multiple  ?? t.rMultiple,
+          session:    t.session_name || t.session,
+          dir:        t.direction    || t.dir,
+        }));
+
+        const wins    = trades.filter(t => t.outcome === 'WIN');
+        const losses  = trades.filter(t => t.outcome === 'LOSS');
+        const rTrades = trades.filter(t => t.r_multiple != null);
+        const avgR    = rTrades.length > 0
+          ? rTrades.reduce((s, t) => s + t.r_multiple, 0) / rTrades.length
+          : 0;
+        const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+
+        if (isMounted) setSupaData({
+          trades,
+          total:      trades.length,
+          wins:       wins.length,
+          losses:     losses.length,
+          winRate:    trades.length > 0 ? (wins.length / trades.length * 100).toFixed(1) : 0,
+          avgR:       avgR.toFixed(3),
+          totalPnl:   totalPnl.toFixed(2),
+          loading:    false,
+          lastUpdated: new Date(),
+        });
+      } catch (err) {
+        console.error('[SUPA]', err.message);
+        if (isMounted) setSupaData(prev => ({ ...prev, loading: false }));
+      }
+    };
+
+    fetchSupa();
+    const interval = setInterval(fetchSupa, 30000);
+    return () => { isMounted = false; clearInterval(interval); };
+  }, []);
+
+  return supaData;
+};
+
 export default function TradingRobot() {
   const [strategy, setStrategy] = useState(() => localStorage.getItem("active_strategy") || "Mean Revert");
   const [trades, setTrades] = useState([]);
@@ -7378,13 +7442,7 @@ export default function TradingRobot() {
   const [closedTrades, setClosedTrades] = useState(() => {
     try { return JSON.parse(localStorage.getItem("qb_closed_trades") || "[]"); } catch { return []; }
   });
-  const [supabaseTrades, setSupabaseTrades] = useState([]);
-  useEffect(() => {
-    fetch(`${BRIDGE}/supabase/history?limit=500`)
-      .then(r => r.json())
-      .then(d => { if (Array.isArray(d.trades)) setSupabaseTrades(d.trades); })
-      .catch(() => {});
-  }, []);
+  const supabaseData = useSupabaseData();
   const seenClosedIdsRef = useRef(new Set(
     (() => { try { return JSON.parse(localStorage.getItem("qb_closed_trades") || "[]").map(t => t.oandaId); } catch { return []; } })()
   ));
@@ -8755,7 +8813,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "coach" ? "block" : "none" }}>
-        <TabErrorBoundary><AICoachTab isVisible={tab === "coach"} trades={trades} closedTrades={closedTrades} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} /></TabErrorBoundary>
+        <TabErrorBoundary><AICoachTab isVisible={tab === "coach"} trades={trades} closedTrades={supabaseData.trades} isMobile={isMobile} session={getCurrentSession()} strategy={strategy} openTrades={openTrades} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "history" ? "block" : "none" }}>
@@ -8763,7 +8821,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "analytics" ? "block" : "none" }}>
-        <TabErrorBoundary><PerformanceDashboard trades={trades} closedTrades={closedTrades} balance={displayNav} isMobile={isMobile} /></TabErrorBoundary>
+        <TabErrorBoundary><PerformanceDashboard trades={supabaseData.trades} totalPnl={supabaseData.totalPnl} winRate={supabaseData.winRate} avgR={supabaseData.avgR} balance={displayNav} isMobile={isMobile} supaLoading={supabaseData.loading} supaLastUpdated={supabaseData.lastUpdated} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "diagnostics" ? "block" : "none" }}>
@@ -8775,7 +8833,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "backtest" ? "block" : "none" }}>
-        <TabErrorBoundary><BacktestTab closedTrades={closedTrades} trades={trades} isMobile={isMobile} generateSignal={generateSignal} supabaseTrades={supabaseTrades} /></TabErrorBoundary>
+        <TabErrorBoundary><BacktestTab trades={supabaseData.trades} loading={supabaseData.loading} isMobile={isMobile} generateSignal={generateSignal} lastUpdated={supabaseData.lastUpdated} /></TabErrorBoundary>
       </div>
 
       {/* ── Auto Mode Settings Modal ── */}

@@ -2,16 +2,14 @@ import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { FONT_MONO } from '../lib/config';
 
-export default function PerformanceDashboard({ trades, closedTrades = [], balance, isMobile }) {
-  const hasClosed = closedTrades.length > 0;
+export default function PerformanceDashboard({ trades = [], balance, isMobile, supaLoading = false, supaLastUpdated = null }) {
+  const hasClosed = trades.length > 0;
   const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
-  const cleanTrades = hasClosed
-    ? closedTrades.filter(t => {
-        const closeTime = t.closeTime || t.close_time;
-        return closeTime && new Date(closeTime) >= CLEAN_CUTOFF;
-      })
-    : [];
-  const analyticsData = hasClosed ? cleanTrades : trades;
+  const cleanTrades = trades.filter(t => {
+    const closeTime = t.close_time || t.closeTime;
+    return closeTime && new Date(closeTime) >= CLEAN_CUTOFF;
+  });
+  const analyticsData = cleanTrades;
   const [curveFilter, setCurveFilter] = useState("ALL");
   const [xavierNote, setXavierNote] = useState("");
   const [xavierLoading, setXavierLoading] = useState(false);
@@ -25,7 +23,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
         </div>
         <div style={{ fontSize: 12, color: "#8b949e" }}>
           {hasClosed
-            ? `${closedTrades.length} historical trade${closedTrades.length !== 1 ? "s" : ""} exist but are excluded (pre-June 1 calibration data). New trades will appear here.`
+            ? `${trades.length} historical trade${trades.length !== 1 ? "s" : ""} exist but are excluded (pre-June 1 calibration data). New trades will appear here.`
             : "Execute trades in the Markets tab to see analytics here."
           }
         </div>
@@ -45,24 +43,20 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
   const maxLoss = losses.length > 0 ? Math.min(...losses.map(t => getPL(t))) : 0;
   const profitFactor = avgLoss > 0 && losses.length > 0 ? (avgWin * wins.length) / (avgLoss * losses.length) : 0;
 
-  const equityCurve = hasClosed
-    ? cleanTrades.slice().reverse().reduce((acc, t) => {
-        acc.push(acc[acc.length - 1] + getPL(t));
-        return acc;
-      }, [0])
-    : trades.reduce((acc, t) => { acc.push(acc[acc.length - 1] + (t.pnl || 0)); return acc; }, [0]);
+  const equityCurve = cleanTrades.slice().reverse().reduce((acc, t) => {
+    acc.push(acc[acc.length - 1] + getPL(t));
+    return acc;
+  }, [0]);
 
   const filterMs = { ALL: Infinity, TODAY: 86400000, WEEK: 604800000, MONTH: 2592000000 };
   const nowMs = Date.now();
-  const filteredBase = hasClosed
-    ? cleanTrades.slice().reverse().filter(t => {
-        if (curveFilter === "ALL") return true;
-        const ts = t.closeTime ? new Date(t.closeTime).getTime() : 0;
-        return nowMs - ts <= filterMs[curveFilter];
-      })
-    : trades;
+  const filteredBase = cleanTrades.slice().reverse().filter(t => {
+    if (curveFilter === "ALL") return true;
+    const ts = (t.close_time || t.closeTime) ? new Date(t.close_time || t.closeTime).getTime() : 0;
+    return nowMs - ts <= filterMs[curveFilter];
+  });
   const filteredCurve = filteredBase.reduce((acc, t) => {
-    acc.push(acc[acc.length - 1] + (hasClosed ? getPL(t) : (t.pnl || 0)));
+    acc.push(acc[acc.length - 1] + getPL(t));
     return acc;
   }, [0]);
 
@@ -106,8 +100,8 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
     if (p > 0) sessionStats[sess].wins++;
   });
 
-  const longs = analyticsData.filter(t => t.dir === "LONG");
-  const shorts = analyticsData.filter(t => t.dir === "SHORT");
+  const longs = analyticsData.filter(t => (t.dir || t.direction) === "LONG");
+  const shorts = analyticsData.filter(t => (t.dir || t.direction) === "SHORT");
   const longWr = longs.length > 0 ? longs.filter(t => getPL(t) > 0).length / longs.length * 100 : 0;
   const shortWr = shorts.length > 0 ? shorts.filter(t => getPL(t) > 0).length / shorts.length * 100 : 0;
   const longPnl = longs.reduce((s, t) => s + getPL(t), 0);
@@ -131,7 +125,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
   const handleXavierAnalyze = async () => {
     setXavierLoading(true);
     try {
-      const prompt = `Analyze this trading performance in 3-4 sentences. Be direct and data-driven. One specific actionable recommendation.\n\nWin Rate: ${winRate.toFixed(1)}%, Total P&L: ${hasClosed ? fmtD(totalPnl) : fmtPct(totalPnl)}, Expectancy: ${hasClosed ? fmtD(expectancy) : fmtPct(expectancy)}, Profit Factor: ${profitFactor.toFixed(2)}, Trades: ${analyticsData.length}, Avg Win: ${hasClosed ? fmtD(avgWin) : fmtPct(avgWin)}, Avg Loss: ${hasClosed ? fmtD(avgLoss) : fmtPct(avgLoss)}, Best Pair: ${bestPair}, Max Drawdown: ${maxDrawdown.toFixed(1)}%, Recent 5-trade WR: ${recentWr.toFixed(0)}% vs ${winRate.toFixed(0)}% overall (${trend}).`;
+      const prompt = `Analyze this trading performance in 3-4 sentences. Be direct and data-driven. One specific actionable recommendation.\n\nWin Rate: ${winRate.toFixed(1)}%, Total P&L: ${fmtD(totalPnl)}, Expectancy: ${fmtD(expectancy)}, Profit Factor: ${profitFactor.toFixed(2)}, Trades: ${analyticsData.length}, Avg Win: ${fmtD(avgWin)}, Avg Loss: ${fmtD(avgLoss)}, Best Pair: ${bestPair}, Max Drawdown: ${maxDrawdown.toFixed(1)}%, Recent 5-trade WR: ${recentWr.toFixed(0)}% vs ${winRate.toFixed(0)}% overall (${trend}).`;
       const result = await callClaude(prompt, "You are Xavier, an AI trading coach. Talk like a prop desk veteran — direct, occasionally blunt, data-driven. Contractions always. No bullet points. Max 150 words.");
       setXavierNote(result);
     } catch {
@@ -148,7 +142,7 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
     return                  <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 4, background: "#2d2a1a", color: "#d29922", fontFamily: FONT_MONO }}>NEUTRAL</span>;
   };
 
-  const metrics = hasClosed ? [
+  const metrics = [
     { label: "Clean Trades",   value: cleanTrades.length,         color: "#e6edf3" },
     { label: "Win Rate",       value: `${winRate.toFixed(1)}%`,  color: winRate >= 50 ? "#3fb950" : "#f85149" },
     { label: "Total P&L",     value: fmtD(totalPnl),             color: pc(totalPnl) },
@@ -157,15 +151,6 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
     { label: "Max Win",       value: fmtD(maxWin),               color: "#3fb950" },
     { label: "Max Loss",      value: fmtD(maxLoss),              color: "#f85149" },
     { label: "Best Pair",     value: bestPair,                    color: "#a5d6ff" },
-  ] : [
-    { label: "Pending Fills", value: trades.length,              color: "#e6edf3" },
-    { label: "Win Rate",      value: `${winRate.toFixed(1)}%`,   color: "#484f58" },
-    { label: "Total P&L",    value: fmtPct(totalPnl),            color: pc(totalPnl) },
-    { label: "Expectancy",   value: fmtPct(expectancy, 3),       color: pc(expectancy) },
-    { label: "Profit Factor",value: profitFactor.toFixed(2),     color: "#8b949e" },
-    { label: "Max Win",      value: fmtPct(maxWin),              color: "#3fb950" },
-    { label: "Max Loss",     value: fmtPct(maxLoss),             color: "#f85149" },
-    { label: "Best Pair",    value: bestPair,                     color: "#a5d6ff" },
   ];
 
   return (
@@ -173,36 +158,25 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
 
       {/* ── Banner ─────────────────────────────────────────────────────────── */}
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ marginBottom: 16 }}>
-        {hasClosed ? (
-          <>
-            <div style={{ fontSize: 10, color: "#8b949e", padding: "6px 12px", background: "#16171d", border: "1px solid #2e303a", borderRadius: 6, marginBottom: 8, textAlign: "center", fontStyle: "italic" }}>
-              Pre-June 1 trades excluded from performance metrics — contained system calibration data
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              <div style={{ padding: "10px 14px", borderRadius: 10, background: "#0f2217", border: "1px solid #238636" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: "#3fb950" }}>Clean trades (post-fix)</div>
-                <div style={{ fontSize: 10, color: "#8b949e", marginTop: 2 }}>{cleanTrades.length} trade{cleanTrades.length !== 1 ? "s" : ""} · accurate performance data</div>
-                {cleanTrades.length < 30 && cleanTrades.length > 0 && (
-                  <div style={{ fontSize: 10, color: "#d29922", marginTop: 4 }}>{30 - cleanTrades.length} more for stable stats</div>
-                )}
-              </div>
-              <div style={{ padding: "10px 14px", borderRadius: 10, background: "#161b22", border: "1px solid #21262d" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: "#8b949e" }}>All time (50 trades)</div>
-                <div style={{ fontSize: 10, color: "#484f58", marginTop: 2 }}>{closedTrades.length} trade{closedTrades.length !== 1 ? "s" : ""} · historical reference only</div>
-              </div>
-            </div>
-          </>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderRadius: 10, background: analyticsData.length < 30 ? "#2d2a1a" : "#161b22", border: `1px solid ${analyticsData.length < 30 ? "#d29922" : "#21262d"}` }}>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3" }}>Signal Analytics</div>
-              <div style={{ fontSize: 10, color: "#8b949e", marginTop: 2 }}>{trades.length} signal records · simulated P&L</div>
-            </div>
-            {analyticsData.length < 30 && (
-              <div style={{ fontSize: 10, color: "#d29922", textAlign: "right" }}>{30 - analyticsData.length} more trades for stable stats</div>
+        <div style={{ fontSize: 10, color: "#8b949e", padding: "6px 12px", background: "#16171d", border: "1px solid #2e303a", borderRadius: 6, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center", fontStyle: "italic" }}>
+          <span>Pre-June 1 trades excluded from performance metrics — contained system calibration data</span>
+          <span style={{ color: supaLoading ? "#484f58" : "#3fb950", fontStyle: "normal", fontFamily: FONT_MONO, whiteSpace: "nowrap", marginLeft: 8 }}>
+            {supaLoading ? "Loading…" : `Supabase ✅${supaLastUpdated ? ` · ${Math.round((Date.now() - supaLastUpdated.getTime()) / 1000)}s ago` : ''}`}
+          </span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div style={{ padding: "10px 14px", borderRadius: 10, background: "#0f2217", border: "1px solid #238636" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#3fb950" }}>Clean trades (post-fix)</div>
+            <div style={{ fontSize: 10, color: "#8b949e", marginTop: 2 }}>{cleanTrades.length} trade{cleanTrades.length !== 1 ? "s" : ""} · accurate performance data</div>
+            {cleanTrades.length < 30 && cleanTrades.length > 0 && (
+              <div style={{ fontSize: 10, color: "#d29922", marginTop: 4 }}>{30 - cleanTrades.length} more for stable stats</div>
             )}
           </div>
-        )}
+          <div style={{ padding: "10px 14px", borderRadius: 10, background: "#161b22", border: "1px solid #21262d" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#8b949e" }}>All time</div>
+            <div style={{ fontSize: 10, color: "#484f58", marginTop: 2 }}>{trades.length} trade{trades.length !== 1 ? "s" : ""} · historical reference only</div>
+          </div>
+        </div>
       </motion.div>
 
       {/* ── Section 1: 8 metric cards ──────────────────────────────────────── */}
@@ -220,16 +194,14 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} style={{ ...CARD, marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3" }}>Equity Curve</div>
-            {hasClosed && (
-              <div style={{ display: "flex", gap: 4 }}>
-                {["ALL", "MONTH", "WEEK", "TODAY"].map(f => (
-                  <button key={f} onClick={() => setCurveFilter(f)}
-                    style={{ fontSize: 9, padding: "3px 8px", borderRadius: 4, border: curveFilter === f ? "1px solid #58a6ff" : "1px solid #30363d", background: curveFilter === f ? "#1f2d3d" : "transparent", color: curveFilter === f ? "#58a6ff" : "#8b949e", cursor: "pointer", fontFamily: FONT_MONO, letterSpacing: "0.04em" }}>
-                    {f}
-                  </button>
-                ))}
-              </div>
-            )}
+            <div style={{ display: "flex", gap: 4 }}>
+              {["ALL", "MONTH", "WEEK", "TODAY"].map(f => (
+                <button key={f} onClick={() => setCurveFilter(f)}
+                  style={{ fontSize: 9, padding: "3px 8px", borderRadius: 4, border: curveFilter === f ? "1px solid #58a6ff" : "1px solid #30363d", background: curveFilter === f ? "#1f2d3d" : "transparent", color: curveFilter === f ? "#58a6ff" : "#8b949e", cursor: "pointer", fontFamily: FONT_MONO, letterSpacing: "0.04em" }}>
+                  {f}
+                </button>
+              ))}
+            </div>
           </div>
           {(() => {
             const data = filteredCurve;
@@ -262,9 +234,9 @@ export default function PerformanceDashboard({ trades, closedTrades = [], balanc
           })()}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 10, paddingTop: 10, borderTop: "0.5px solid #21262d" }}>
             {[
-              { label: "Current",      value: hasClosed ? fmtD(currentVal) : fmtPct(currentVal), color: pc(currentVal) },
-              { label: "Peak",         value: hasClosed ? fmtD(peakVal)    : fmtPct(peakVal),    color: "#3fb950" },
-              { label: "Max Drawdown", value: hasClosed ? `-$${peakToTrough.toFixed(2)}` : `${maxDrawdown.toFixed(1)}%`, color: hasClosed ? (peakToTrough > 200 ? "#f85149" : peakToTrough > 100 ? "#d29922" : "#8b949e") : (maxDrawdown > 15 ? "#f85149" : maxDrawdown > 8 ? "#d29922" : "#8b949e") },
+              { label: "Current",      value: fmtD(currentVal),                    color: pc(currentVal) },
+              { label: "Peak",         value: fmtD(peakVal),                        color: "#3fb950" },
+              { label: "Max Drawdown", value: `-$${peakToTrough.toFixed(2)}`,       color: peakToTrough > 200 ? "#f85149" : peakToTrough > 100 ? "#d29922" : "#8b949e" },
             ].map(s => (
               <div key={s.label}>
                 <div style={LBL}>{s.label}</div>

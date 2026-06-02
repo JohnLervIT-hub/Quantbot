@@ -12,24 +12,16 @@ const MIN_BT_TRADES = 50;
 const TRAINING_DAYS_MS = 120 * 86400000;
 
 // ─── BACKTEST TAB ─────────────────────────────────────────────────────────────
-export default function BacktestTab({ closedTrades = [], trades = [], isMobile, generateSignal, supabaseTrades = [] }) {
+export default function BacktestTab({ trades = [], loading = false, lastUpdated = null, isMobile, generateSignal }) {
   const [xavierInsight, setXavierInsight] = useState(null);
   const [loadingInsight, setLoadingInsight] = useState(false);
 
-  const supaMap = new Map(supabaseTrades.map(s => [String(s.id), s]));
-  const mergedTrades = closedTrades.map(t => {
-    const supa = supaMap.get(String(t.id)) || supaMap.get(String(t.oandaId));
-    return supa
-      ? { ...t, rMultiple: supa.r_multiple, session: supa.session_name || supa.session, pattern: supa.pattern, tradeSource: supa.trade_source }
-      : t;
-  });
-
   const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
-  const data = mergedTrades.filter(t => {
-    const closeTime = t.closeTime || t.close_time;
+  const data = trades.filter(t => {
+    const closeTime = t.close_time || t.closeTime;
     return closeTime && new Date(closeTime) >= CLEAN_CUTOFF;
   });
-  const allTrades  = mergedTrades;
+  const allTrades  = trades;
   const cleanCount = data.length;
   const totalCount = allTrades.length;
 
@@ -52,7 +44,7 @@ export default function BacktestTab({ closedTrades = [], trades = [], isMobile, 
     );
   }
 
-  const getPL = (t) => parseFloat(t.realizedPL || t.pnl || 0);
+  const getPL = (t) => parseFloat(t.pnl ?? t.realizedPL ?? 0);
   const wins   = data.filter(t => getPL(t) > 0);
   const losses = data.filter(t => getPL(t) <= 0);
   const winRate = data.length > 0 ? wins.length / data.length * 100 : 0;
@@ -64,8 +56,8 @@ export default function BacktestTab({ closedTrades = [], trades = [], isMobile, 
   const profitFactor = grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? 999 : 0;
   const expectancy$ = avgWin * (winRate / 100) - avgLoss * (1 - winRate / 100);
 
-  const rTrades = data.filter(t => t.rMultiple != null);
-  const avgR = rTrades.length > 0 ? rTrades.reduce((s, t) => s + t.rMultiple, 0) / rTrades.length : null;
+  const rTrades = data.filter(t => (t.r_multiple ?? t.rMultiple) != null);
+  const avgR = rTrades.length > 0 ? rTrades.reduce((s, t) => s + (t.r_multiple ?? t.rMultiple), 0) / rTrades.length : null;
   const TARGET_R = 0.583;
 
   // Equity curve
@@ -176,6 +168,10 @@ export default function BacktestTab({ closedTrades = [], trades = [], isMobile, 
       </div>
       <div style={{ fontSize: 10, color: "#8b949e", padding: "4px 0", marginBottom: 8 }}>
         ⓘ Showing post-June 1 trades only. Pre-fix calibration trades excluded.
+        {' · '}
+        <span style={{ color: loading ? "#484f58" : "#3fb950" }}>
+          {loading ? "Loading…" : `Supabase ✅${lastUpdated ? ` · ${Math.round((Date.now() - lastUpdated.getTime()) / 1000)}s ago` : ''}`}
+        </span>
       </div>
 
       {/* Sample size warning */}
