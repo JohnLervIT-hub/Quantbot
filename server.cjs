@@ -3114,15 +3114,15 @@ function confirmTrend(candles, direction, instrument = '') {
 
   // Check 2 — price is moving (not flat) over last 10 bars
   const priceChange = Math.abs(last10[last10.length - 1].close - last10[0].close) / last10[0].close;
-  const isMoving    = priceChange > 0.001;
+  const isMoving    = priceChange > 0.0005;
 
   // Check 3 — true EMA9 separating from EMA21
   const closes        = candles.map(c => c.close);
   const ema9          = calcEMAFromArr(closes, 9);
   const ema21         = calcEMAFromArr(closes, 21);
   const emaSeparating = direction === 'LONG'
-    ? ema9 > ema21 * 1.0002
-    : ema9 < ema21 * 0.9998;
+    ? ema9 > ema21 * 1.0001
+    : ema9 < ema21 * 0.9999;
 
   const confirmCount   = [last3Confirm, isMoving, emaSeparating].filter(Boolean).length;
   // Indices move in waves — mixed candles normal. Price movement alone sufficient.
@@ -3420,10 +3420,13 @@ async function serverAutoTrade() {
     }
     diagCounters.gatekeeperPass++;
 
-    // Trend confirmation — skipped for A+ signals (score >= 72): pattern + council sufficient
+    // Trend confirmation — skipped for A+ signals (score >= 72) OR when pattern confirms direction
     const A_PLUS_THRESHOLD = 72;
+    const patternConfirmsTrend = patternAnalysis?.confirms === true && patternAnalysis?.directionBias === signal.direction;
     if (signal.score >= A_PLUS_THRESHOLD) {
       console.log(`[TREND SKIP] ${instrument} score:${signal.score}% — A+ threshold, pattern+council confirms direction`);
+    } else if (patternConfirmsTrend) {
+      console.log(`[TREND SKIP] ${instrument} pattern confirms trend — skipping confirmTrend() check`);
     } else {
       const m5Candles = await getM5Candles(instrument);
       const trendOk   = confirmTrend(
