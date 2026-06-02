@@ -5,6 +5,7 @@ const crypto  = require('crypto');
 const jwt     = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const helmet    = require('helmet');
+const Groq      = require('groq-sdk');
 
 const { createClient } = require('@supabase/supabase-js');
 const supabase = process.env.SUPABASE_URL
@@ -185,6 +186,8 @@ const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY  || process.env.VITE_ANTHROP
 const OPENAI_KEY    = process.env.OPENAI_API_KEY     || process.env.VITE_OPENAI_API_KEY;
 const DEEPSEEK_KEY  = process.env.DEEPSEEK_API_KEY   || process.env.VITE_DEEPSEEK_API_KEY;
 const GEMINI_KEY    = process.env.GEMINI_API_KEY     || process.env.VITE_GEMINI_API_KEY;
+const GROQ_KEY      = process.env.GROQ_API_KEY       || process.env.VITE_GROQ_API_KEY;
+const groqClient    = GROQ_KEY ? new Groq({ apiKey: GROQ_KEY }) : null;
 // Normalise auto-mode so the runtime toggle (which writes AUTO_MODE_ENABLED) always wins
 if (!process.env.AUTO_MODE_ENABLED && process.env.VITE_AUTO_MODE) {
   process.env.AUTO_MODE_ENABLED = process.env.VITE_AUTO_MODE;
@@ -632,6 +635,7 @@ app.get('/health', (_req, res) => {
       openai:   Boolean(OPENAI_KEY),
       deepseek: Boolean(DEEPSEEK_KEY),
       gemini:   Boolean(GEMINI_KEY),
+      ray:      Boolean(groqClient),
     },
     rayStatus: lastRayStatus,
   });
@@ -1421,23 +1425,19 @@ async function askDeepSeek(prompt, sys) {
   return { name: 'JAMES', ...parseVerdict(text) };
 }
 
-async function askGemini(prompt, sys) {
-  if (!GEMINI_KEY) throw new Error('Missing VITE_GEMINI_API_KEY');
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: sys || SYS_GEM }] },
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      }),
-    }
-  );
-  const d = await r.json();
-  if (!r.ok) throw new Error(apiErr(d, `Gemini HTTP ${r.status}`));
-  const text = d.candidates?.[0]?.content?.parts?.find(p => p.text)?.text;
-  if (!text) throw new Error('Gemini empty response');
+async function askRay(prompt, sys) {
+  if (!groqClient) throw new Error('Missing GROQ_API_KEY');
+  const completion = await groqClient.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      { role: 'system', content: sys || SYS_GEM },
+      { role: 'user',   content: prompt },
+    ],
+    max_tokens:  500,
+    temperature: 0.1,
+  });
+  const text = completion.choices[0]?.message?.content || '';
+  if (!text) throw new Error('Groq empty response');
   return { name: 'RAY', ...parseVerdict(text) };
 }
 
@@ -1458,7 +1458,7 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
     askClaude(buildClaudePrompt(params),    SYS_CLAUDE),
     askGPT(buildGPTPrompt(params),          SYS_GPT),
     askDeepSeek(buildDeepSeekPrompt(params),SYS_DEEP),
-    askGemini(buildGeminiPrompt(params),    SYS_GEM),
+    askRay(buildGeminiPrompt(params),    SYS_GEM),
   ]);
   const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
   const models = settled.map((r, i) => {
@@ -1745,7 +1745,7 @@ app.post('/swing-consensus', async (req, res) => {
       askClaude(buildClaudeSwingPrompt(p),    SYS_CLAUDE_SWING),
       askGPT(buildGPTSwingPrompt(p),          SYS_GPT_SWING),
       askDeepSeek(buildDeepSeekSwingPrompt(p),SYS_DEEP_SWING),
-      askGemini(buildGeminiSwingPrompt(p),    SYS_GEM_SWING),
+      askRay(buildGeminiSwingPrompt(p),    SYS_GEM_SWING),
     ]);
     const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
     const models = settled.map((r, i) => {
@@ -3951,7 +3951,7 @@ async function runSwingConsensus(p) {
     askClaude(buildClaudeSwingPrompt(p),     SYS_CLAUDE_SWING),
     askGPT(buildGPTSwingPrompt(p),           SYS_GPT_SWING),
     askDeepSeek(buildDeepSeekSwingPrompt(p), SYS_DEEP_SWING),
-    askGemini(buildGeminiSwingPrompt(p),     SYS_GEM_SWING),
+    askRay(buildGeminiSwingPrompt(p),     SYS_GEM_SWING),
   ]);
   const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
   const models = settled.map((r, i) => {
@@ -5143,7 +5143,7 @@ app.get('/patterns/test/:instrument', requireAuth, async (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`OANDA bridge live on port ${PORT}`);
-  console.log(`  AI: Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | OpenAI ${OPENAI_KEY ? '✓' : '✗'} | DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | Gemini ${GEMINI_KEY ? '✓' : '✗'}`);
+  console.log(`  AI: Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | OpenAI ${OPENAI_KEY ? '✓' : '✗'} | DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | RAY/Groq ${GROQ_KEY ? '✓' : '✗'} | Gemini(news) ${GEMINI_KEY ? '✓' : '✗'}`);
   console.log(`  Auto mode: ${process.env.AUTO_MODE_ENABLED === 'true' ? 'ENABLED ⚡' : 'disabled (set AUTO_MODE_ENABLED=true to activate)'}`);
 
   // ── Environment audit — shows exactly which variables are present ──────────
@@ -5153,7 +5153,7 @@ app.listen(PORT, '0.0.0.0', () => {
     'ANTHROPIC_API_KEY',
     'OPENAI_API_KEY',
     'DEEPSEEK_API_KEY',
-    'GEMINI_API_KEY',
+    'GROQ_API_KEY',
     'AUTO_MODE_ENABLED',
     'DISCORD_WEBHOOK_URL',
     'DISCORD_BOT_TOKEN',
@@ -5165,10 +5165,11 @@ app.listen(PORT, '0.0.0.0', () => {
     'VITE_ANTHROPIC_KEY',    // local dev fallback
     'VITE_OPENAI_API_KEY',   // local dev fallback
     'VITE_DEEPSEEK_API_KEY', // local dev fallback
-    'VITE_GEMINI_API_KEY',   // local dev fallback
+    'VITE_GROQ_API_KEY',     // local dev fallback
+    'VITE_GEMINI_API_KEY',   // local dev fallback (news commentary)
     'VITE_AUTO_MODE',        // local dev fallback
   ];
-  const SENSITIVE_ENV = new Set(['OANDA_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GEMINI_API_KEY', 'DISCORD_BOT_TOKEN', 'JWT_SECRET', 'DASHBOARD_PASSWORD', 'SUPABASE_ANON_KEY']);
+  const SENSITIVE_ENV = new Set(['OANDA_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROQ_API_KEY', 'GEMINI_API_KEY', 'DISCORD_BOT_TOKEN', 'JWT_SECRET', 'DASHBOARD_PASSWORD', 'SUPABASE_ANON_KEY']);
   console.log('── ENV AUDIT ─────────────────────────────');
   REQUIRED_VARS.forEach(v => {
     const val = process.env[v];
