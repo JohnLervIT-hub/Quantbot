@@ -3061,7 +3061,9 @@ function serverGenerateSignal(history, strategy, instrument) {
       if (Math.abs(momentum) > 0.006)                                                        { score += 10; reason.push('Strong momentum'); }
       if ((direction === 'LONG' && ema9 > ema21) || (direction === 'SHORT' && ema9 < ema21)) { score += 5;  reason.push('EMA confirms'); }
       const sess = getServerSession();
-      if (sess === 'NY' || sess === 'PRIME')                                                  { score += 5;  reason.push(`${sess} session`); }
+      const SESSION_BONUS = { PRIME: 10, NY: 8, LONDON: 7, TOKYO: 6, SYDNEY: 5, AVOID: 0 };
+      const sessionBonus  = SESSION_BONUS[sess] || 0;
+      if (sessionBonus > 0) { score += sessionBonus; reason.push(`${sess} session`); }
     }
   }
 
