@@ -4994,13 +4994,14 @@ function ClosedTradesPanel({ trades, isMobile }) {
   if (trades.length === 0) return null;
   const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
   const marketClosedTrades = trades.filter(t => {
-    const closeTime = t.closeTime || t.close_time;
-    return closeTime && new Date(closeTime) >= CLEAN_CUTOFF;
+    const ct = t.close_time || t.closeTime;
+    return ct && new Date(ct) >= CLEAN_CUTOFF;
   });
   if (marketClosedTrades.length === 0) return null;
-  const wins    = marketClosedTrades.filter(t => parseFloat(t.realizedPL || 0) > 0);
+  const getPnl = (t) => parseFloat(t.pnl ?? t.realizedPL ?? 0);
+  const wins    = marketClosedTrades.filter(t => getPnl(t) > 0);
   const winRate = Math.round(wins.length / marketClosedTrades.length * 100);
-  const totalPL = marketClosedTrades.reduce((s, t) => s + parseFloat(t.realizedPL || 0), 0);
+  const totalPL = marketClosedTrades.reduce((s, t) => s + getPnl(t), 0);
 
   return (
     <div style={isMobile
@@ -5013,7 +5014,7 @@ function ClosedTradesPanel({ trades, isMobile }) {
             Closed Trades
           </span>
           <span style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO }}>
-            {marketClosedTrades.length} trades since June 1 · {winRate}% WR
+            {marketClosedTrades.length} since June 1 · {winRate}% WR
           </span>
         </div>
         <span style={{ fontSize: 11, fontWeight: 600, fontFamily: FONT_MONO, color: totalPL >= 0 ? "#3fb950" : "#f85149" }}>
@@ -5023,12 +5024,15 @@ function ClosedTradesPanel({ trades, isMobile }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 280, overflowY: "auto" }}>
         {marketClosedTrades.slice(0, 30).map((t) => {
-          const isWin = t.realizedPL > 0;
-          const closeDate = t.closeTime ? new Date(t.closeTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
-          const decimals = t.pair?.includes("JPY") ? 3 : t.pair?.includes("XAU") || t.pair?.includes("SPX") ? 2 : 5;
+          const pnl   = getPnl(t);
+          const isWin = pnl > 0;
+          const dir   = t.direction || t.dir || '—';
+          const rVal  = t.r_multiple ?? t.rMultiple;
+          const ct    = t.close_time || t.closeTime;
+          const closeDate = ct ? new Date(ct).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
+          const pair  = (t.pair || '—').replace('_', '/');
           return (
-            <div
-              key={t.oandaId}
+            <div key={t.id || t.oandaId}
               style={{
                 display: "flex", alignItems: "center", gap: 6,
                 padding: "7px 10px", borderRadius: 7,
@@ -5038,23 +5042,22 @@ function ClosedTradesPanel({ trades, isMobile }) {
                 fontSize: 11,
               }}
             >
-              <span style={{ fontFamily: FONT_MONO, fontWeight: 600, color: "#e6edf3", minWidth: 62 }}>{t.pair}</span>
-              <span style={{ fontWeight: 600, color: t.dir === "LONG" ? "#3fb950" : "#f85149", minWidth: 34 }}>{t.dir}</span>
+              <span style={{ fontFamily: FONT_MONO, fontWeight: 600, color: "#e6edf3", minWidth: 62 }}>{pair}</span>
+              <span style={{ fontWeight: 600, color: dir === "LONG" ? "#3fb950" : "#f85149", minWidth: 40 }}>{dir}</span>
               <span style={{ color: "#484f58", fontFamily: FONT_MONO, flex: 1, fontSize: 10 }}>
-                {t.entryPrice?.toFixed(decimals)} → {t.closePrice?.toFixed(decimals)}
+                {t.entry != null ? parseFloat(t.entry).toFixed(4) : '—'} → {t.exit_price != null ? parseFloat(t.exit_price).toFixed(4) : '—'}
               </span>
               <span style={{ fontFamily: FONT_MONO, fontWeight: 600, color: isWin ? "#3fb950" : "#f85149", minWidth: 60, textAlign: "right" }}>
-                {isWin ? "+" : ""}${t.realizedPL?.toFixed(2)}
+                {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
               </span>
-              <span style={{ color: isWin ? "#3fb950" : "#f85149", fontFamily: FONT_MONO, fontSize: 10, minWidth: 44, textAlign: "right" }}>
-                {t.pips >= 0 ? "+" : ""}{t.pips}p
-              </span>
-              {t.rMultiple != null && (
-                <span style={{ color: isWin ? "#3fb950" : "#f85149", fontFamily: FONT_MONO, fontSize: 10, minWidth: 36, textAlign: "right" }}>
-                  {t.rMultiple >= 0 ? "+" : ""}{t.rMultiple}R
+              {rVal != null && (
+                <span style={{ color: isWin ? "#3fb950" : "#f85149", fontFamily: FONT_MONO, fontSize: 10, minWidth: 40, textAlign: "right" }}>
+                  {rVal >= 0 ? "+" : ""}{parseFloat(rVal).toFixed(2)}R
                 </span>
               )}
-              <span style={{ color: "#484f58", fontSize: 10, minWidth: 34, textAlign: "right" }}>{t.duration}</span>
+              {t.session_name && (
+                <span style={{ color: "#484f58", fontSize: 9, minWidth: 44, textAlign: "right" }}>{t.session_name}</span>
+              )}
               <span style={{ color: "#484f58", fontSize: 10, minWidth: 30, textAlign: "right" }}>{closeDate}</span>
             </div>
           );
@@ -6335,7 +6338,7 @@ function ScheduleTab({ isMobile, autoMode = false, enableAutoMode, xavierOpt = {
 }
 
 // ─── TRADE HISTORY TAB ───────────────────────────────────────────────────────
-function TradeHistoryTab({ isVisible, closedTrades = [] }) {
+function TradeHistoryTab({ isVisible }) {
   const [supabaseTrades, setSupabaseTrades] = useState([]);
   const [loading, setLoading]               = useState(true);
   const [filters, setFilters]               = useState({ pair: 'ALL', outcome: 'ALL', session: 'ALL', dateRange: 'ALL' });
@@ -6356,39 +6359,10 @@ function TradeHistoryTab({ isVisible, closedTrades = [] }) {
     setLoading(false);
   };
 
-  // Normalise OANDA closedTrades into the same shape as Supabase rows
-  const normalised = closedTrades.map(t => ({
-    id:           t.oandaId,
-    pair:         t.pair?.replace('/', '_'),
-    direction:    t.dir,
-    entry:        t.entryPrice,
-    exit_price:   t.closePrice,
-    stop_loss:    t.stopLoss ?? null,
-    pnl:          t.pnl ?? t.realizedPL,
-    r_multiple:   t.rMultiple,
-    session:      t.session,
-    strategy:     t.strategy,
-    close_time:   t.closeTime,
-    open_time:    t.openTime,
-    duration_mins: typeof t.duration === 'string' ? parseInt(t.duration) : (t.duration ?? null),
-    outcome:      (t.pnl ?? t.realizedPL) > 0 ? 'WIN' : (t.pnl ?? t.realizedPL) < 0 ? 'LOSS' : 'BREAKEVEN',
-    _source:      'oanda',
-  }));
-
-  // Merge: Supabase rows enrich matching OANDA trades (keyed by id)
-  const supaMap = new Map(supabaseTrades.map(t => [String(t.id), t]));
-  const merged  = normalised.map(t => {
-    const supa = supaMap.get(String(t.id));
-    return supa ? { ...t, ...supa, _source: 'supabase' } : t;
-  });
-  // Supabase-only rows not in OANDA list (edge case)
-  const oandaIds = new Set(normalised.map(t => String(t.id)));
-  for (const s of supabaseTrades) { if (!oandaIds.has(String(s.id))) merged.push({ ...s, _source: 'supabase' }); }
-
-  // Apply post-June-1 cutoff — exclude pre-fix calibration trades
+  // Pure Supabase data — no OANDA merge
   const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
-  const cleanMerged = merged.filter(t => {
-    const closeTime = t.close_time || t.closeTime;
+  const cleanMerged = supabaseTrades.filter(t => {
+    const closeTime = t.close_time;
     return closeTime && new Date(closeTime) >= CLEAN_CUTOFF;
   });
 
@@ -6406,7 +6380,7 @@ function TradeHistoryTab({ isVisible, closedTrades = [] }) {
   const allFiltered = dateFiltered.filter(t => {
     if (filters.pair    !== 'ALL' && t.pair      !== filters.pair)    return false;
     if (filters.outcome !== 'ALL' && t.outcome   !== filters.outcome) return false;
-    if (filters.session !== 'ALL' && t.session   !== filters.session) return false;
+    if (filters.session !== 'ALL' && (t.session_name || t.session) !== filters.session) return false;
     if (search !== '' &&
         !t.pair?.toLowerCase().includes(search.toLowerCase()) &&
         !t.strategy?.toLowerCase().includes(search.toLowerCase())) return false;
@@ -6499,7 +6473,9 @@ function TradeHistoryTab({ isVisible, closedTrades = [] }) {
         {loading ? (
           <div style={{ padding: '32px 0', textAlign: 'center', color: '#484f58', fontSize: 11 }}>Loading…</div>
         ) : paginated.length === 0 ? (
-          <div style={{ padding: '32px 0', textAlign: 'center', color: '#484f58', fontSize: 12 }}>No trades found</div>
+          <div style={{ padding: '32px 16px', textAlign: 'center', color: '#484f58', fontSize: 12 }}>
+            {supabaseTrades.length === 0 ? 'No trades recorded yet. Xavier will populate this as trades close.' : 'No trades match current filters'}
+          </div>
         ) : paginated.map((t, i) => (
           <div key={t.id || i} onClick={() => setSelectedTrade(selectedTrade?.id === t.id ? null : t)}
             style={{ display: 'grid', gridTemplateColumns: '88px 54px 52px 74px 74px 52px 66px 62px 52px', gap: '0 6px', padding: '7px 12px', borderBottom: '0.5px solid #0d1117', fontSize: 11, cursor: 'pointer', alignItems: 'center', background: selectedTrade?.id === t.id ? 'rgba(88,166,255,0.06)' : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)' }}>
@@ -7439,35 +7415,10 @@ export default function TradingRobot() {
   const [oandaNav, setOandaNav] = useState(null);
   const [oandaUnrealizedPL, setOandaUnrealizedPL] = useState(null);
   const [paperTrades, setPaperTrades] = useState([]);
-  const [closedTrades, setClosedTrades] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("qb_closed_trades") || "[]"); } catch { return []; }
-  });
+  const [closedTrades, setClosedTrades] = useState([]);
   const supabaseData = useSupabaseData();
-  const seenClosedIdsRef = useRef(new Set(
-    (() => { try { return JSON.parse(localStorage.getItem("qb_closed_trades") || "[]").map(t => t.oandaId); } catch { return []; } })()
-  ));
+  const seenClosedIdsRef = useRef(new Set());
 
-  // One-time heal: replace Unknown/blank strategy on stored closed trades
-  useEffect(() => {
-    try {
-      const stratMap = JSON.parse(localStorage.getItem('qb_trade_strategies') || '{}');
-      const stored   = JSON.parse(localStorage.getItem('qb_closed_trades') || '[]');
-      const UNKNOWN  = new Set(['Unknown', 'UNKNOWN', '—', '', null, undefined]);
-      let changed = false;
-      const healed = stored.map(t => {
-        if (!UNKNOWN.has(t.strategy)) return t;
-        const fixed = stratMap[String(t.oandaId || t.id)]
-          || deriveStrategyFromSession(deriveSession(t.openTime))
-          || 'Mean Revert';
-        changed = true;
-        return { ...t, strategy: fixed };
-      });
-      if (changed) {
-        localStorage.setItem('qb_closed_trades', JSON.stringify(healed));
-        setClosedTrades(healed);
-      }
-    } catch {}
-  }, []); // eslint-disable-line
 
   // One-time seed: XAG/USD LONDON loss (2026-05-27) — occurred before xavier_memory existed
   useEffect(() => {
@@ -7506,8 +7457,8 @@ export default function TradingRobot() {
 
   const oandaNavRef = useRef(null);
   const xavierIntelRef = useRef(null);
-  const reinforcement    = useTradeReinforcement(closedTrades);
-  const principleWeights = useXavierPrincipleWeights(closedTrades);
+  const reinforcement    = useTradeReinforcement(supabaseData.trades);
+  const principleWeights = useXavierPrincipleWeights(supabaseData.trades);
 
   // Reset reinforcement thresholds to defaults on mount — clears any biased data from sim runs
   useEffect(() => {
@@ -7627,22 +7578,6 @@ export default function TradingRobot() {
     return () => { isMounted = false; clearInterval(id); };
   }, []);
 
-  // One-time migration: clear stale open-trade entries that were incorrectly
-  // saved to qb_closed_trades at open time with 0 P&L. Start fresh so only
-  // real closed trades with realized P&L are stored.
-  useEffect(() => {
-    if (!localStorage.getItem('qb_closed_trades_v2')) {
-      localStorage.removeItem('qb_closed_trades');
-      seenClosedIdsRef.current.clear();
-      setClosedTrades([]);
-      localStorage.setItem('qb_closed_trades_v2', '1');
-    }
-  }, []); // eslint-disable-line
-
-  // Persist closed trades to localStorage on change
-  useEffect(() => {
-    localStorage.setItem("qb_closed_trades", JSON.stringify(closedTrades.slice(0, 200)));
-  }, [closedTrades]);
 
   // Sync journal from OANDA open positions — adds entries for trades not placed in this session
   const journalledOandaIdsRef = useRef(new Set());
@@ -7675,108 +7610,42 @@ export default function TradingRobot() {
     });
   }, [openTrades]);
 
-  // Close detection — polls OANDA closed trades, detects new closes, computes P&L
+  // Close detection — polls Supabase for new closed trades, fires Xavier memory + notifications
+  const supabaseInitializedRef = useRef(false);
   useEffect(() => {
     const fetchClosed = async () => {
       try {
-        const r = await fetch(`${BRIDGE}/closed-trades?count=200`);
+        const r = await fetch(`${BRIDGE}/supabase/history?limit=500`);
         const data = await r.json();
-        if (!Array.isArray(data.trades)) return;
+        const allTrades = data.trades || [];
 
-        // Build strategy lookup — merge persisted map + live server trade log
-        // Persisted map survives Railway restarts; server log fills in the latest entries
-        let serverStrategyMap = {};
-        try { serverStrategyMap = JSON.parse(localStorage.getItem('qb_trade_strategies') || '{}'); } catch {}
-        try {
-          const tlr = await fetch(`${BRIDGE}/trade-log`);
-          const tld = await tlr.json();
-          if (Array.isArray(tld.trades)) {
-            tld.trades.forEach(tl => { if (tl.id) serverStrategyMap[String(tl.id)] = tl.strategy; });
-            localStorage.setItem('qb_trade_strategies', JSON.stringify(serverStrategyMap));
-          }
-        } catch {}
-
-        const newEntries = [];
-        for (const t of data.trades) {
-          if (seenClosedIdsRef.current.has(t.id)) continue;
-          seenClosedIdsRef.current.add(t.id);
-
-          const instrument = t.instrument || "";
-          const pair = instrument.replace("_", "/");
-          const initialUnits = parseInt(t.initialUnits || 0);
-          const dir = initialUnits > 0 ? "LONG" : "SHORT";
-          const entryPrice = parseFloat(t.price || 0);
-          const closePrice = parseFloat(t.averageClosePrice || 0);
-          const realizedPL = parseFloat(t.realizedPL || 0);
-          const pipSize = PIP_SIZE[pair] || 0.0001;
-          const rawPips = (closePrice - entryPrice) / pipSize;
-          const pips = parseFloat((dir === "LONG" ? rawPips : -rawPips).toFixed(1));
-
-          const openMs = new Date(t.openTime).getTime();
-          const closeMs = new Date(t.closeTime || Date.now()).getTime();
-          const diffMins = Math.round(Math.max((closeMs - openMs) / 60_000, 0));
-          const duration = diffMins >= 60
-            ? `${Math.floor(diffMins / 60)}h ${diffMins % 60}m`
-            : `${diffMins}m`;
-
-          const stopLossPrice = parseFloat(t.stopLossOrder?.price || 0);
-          const absUnits = Math.abs(initialUnits);
-          // USD-base pairs (USD/JPY, USD/CAD) need price conversion to get USD P&L per unit
-          const isUsdBase = pair.startsWith("USD/");
-          const pipValue = isUsdBase ? 1 / entryPrice : 1;
-          const oneR = stopLossPrice > 0 && entryPrice > 0
-            ? Math.abs(entryPrice - stopLossPrice) * absUnits * pipValue
-            : 0;
-          const rawR = oneR > 0 ? realizedPL / oneR : null;
-          const rMultiple = rawR !== null ? parseFloat(Math.max(-5, Math.min(10, rawR)).toFixed(2)) : null;
-          console.log("[TRADE CLOSE]", pair,
-            "pnl:", realizedPL.toFixed(2),
-            "entry:", entryPrice,
-            "sl:", stopLossPrice || "none",
-            "oneR:", oneR.toFixed(4),
-            "rMultiple:", rMultiple);
-
-          newEntries.push({
-            id:         t.id,
-            oandaId:    t.id,
-            pair,
-            dir,
-            direction:  dir,
-            entry:      entryPrice,
-            entryPrice,
-            stopLoss:   stopLossPrice || null,
-            closePrice,
-            pnl:        parseFloat(realizedPL.toFixed(2)),
-            realizedPL: parseFloat(realizedPL.toFixed(2)),
-            pips,
-            rMultiple,
-            duration,
-            session:    deriveSession(t.openTime),
-            strategy:   serverStrategyMap[String(t.id)] || localStorage.getItem('active_strategy') || deriveStrategyFromSession(deriveSession(t.openTime)),
-            openTime:   t.openTime,
-            closeTime:  t.closeTime,
-            timestamp:  new Date(t.closeTime || Date.now()).getTime(),
-          });
+        if (!supabaseInitializedRef.current) {
+          // First load: mark all existing trades as seen — no notifications for history
+          allTrades.forEach(t => seenClosedIdsRef.current.add(String(t.id)));
+          supabaseInitializedRef.current = true;
+          return;
         }
 
-        if (newEntries.length > 0) {
-          setClosedTrades(prev => [...newEntries, ...prev].slice(0, 200));
-          for (const entry of newEntries) {
-            notifyRef.current?.(entry.realizedPL > 0 ? 'take_profit' : 'stop_loss', entry);
-            // Feed Xavier's memory on every trade close
-            updateXavierMemory({
-              id:        entry.oandaId,
-              pair:      entry.pair,
-              direction: entry.dir,
-              session:   deriveSession(entry.openTime),
-              strategy:  entry.strategy,
-              score:     0,
-              pnl:       entry.realizedPL,
-              rMultiple: entry.rMultiple || 0,
-              duration:  entry.duration,
-              timestamp: Date.now(),
-            });
-          }
+        for (const t of allTrades) {
+          if (seenClosedIdsRef.current.has(String(t.id))) continue;
+          seenClosedIdsRef.current.add(String(t.id));
+
+          const pnl = parseFloat(t.pnl || 0);
+          notifyRef.current?.(pnl > 0 ? 'take_profit' : 'stop_loss', {
+            pair: (t.pair || '').replace('_', '/'), realizedPL: pnl, dir: t.direction,
+          });
+          updateXavierMemory({
+            id:        t.id,
+            pair:      t.pair,
+            direction: t.direction,
+            session:   t.session_name || t.session,
+            strategy:  t.strategy,
+            score:     t.score || 0,
+            pnl,
+            rMultiple: t.r_multiple || 0,
+            duration:  t.duration_mins ? `${t.duration_mins}m` : '—',
+            timestamp: Date.now(),
+          });
         }
       } catch {}
     };
@@ -8787,7 +8656,7 @@ export default function TradingRobot() {
           )}
           <div>
             <OpenPositionsPanel openTrades={openTrades} livePrices={livePrices} onClose={closeTrade} isMobile={isMobile} mgmtRef={tradeMgmtRef} nav={displayNav} />
-            <ClosedTradesPanel trades={closedTrades} isMobile={isMobile} />
+            <ClosedTradesPanel trades={supabaseData.trades} isMobile={isMobile} />
             <PaperTradesPanel trades={paperTrades} isMobile={isMobile} />
             <TradeLog trades={trades} isMobile={isMobile} />
             <RejectionLogPanel log={rejectionLog} isMobile={isMobile} />
@@ -8809,7 +8678,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "risk" ? "block" : "none" }}>
-        <TabErrorBoundary><RiskTab isVisible={tab === "risk"} trades={trades} closedTrades={closedTrades} openTrades={openTrades} balance={balance} session={getCurrentSession()} /></TabErrorBoundary>
+        <TabErrorBoundary><RiskTab isVisible={tab === "risk"} trades={trades} closedTrades={supabaseData.trades} openTrades={openTrades} balance={balance} session={getCurrentSession()} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "coach" ? "block" : "none" }}>
@@ -8817,7 +8686,7 @@ export default function TradingRobot() {
       </div>
 
       <div style={{ display: tab === "history" ? "block" : "none" }}>
-        <TabErrorBoundary><TradeHistoryTab isVisible={tab === "history"} closedTrades={closedTrades} /></TabErrorBoundary>
+        <TabErrorBoundary><TradeHistoryTab isVisible={tab === "history"} /></TabErrorBoundary>
       </div>
 
       <div style={{ display: tab === "analytics" ? "block" : "none" }}>
