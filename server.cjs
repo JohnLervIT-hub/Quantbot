@@ -3319,6 +3319,11 @@ async function serverAutoTrade() {
       continue;
     }
     diagCounters.signalCounter++;
+    console.log('[SCORE DEBUG]', instrument,
+      'score:', signal.score,
+      'rsi:', signal.rsi,
+      'direction:', signal.direction,
+      'reasons:', signal.reason.join(' | '));
     // Track signal age — start clock on first qualifying signal appearance
     if (!signalFirstDetected.has(instrument)) signalFirstDetected.set(instrument, Date.now());
 
