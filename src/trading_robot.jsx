@@ -6750,6 +6750,7 @@ const BACKTEST_SPREAD_COSTS = {
 };
 
 const TRAINING_DAYS_MS = 180 * 24 * 60 * 60 * 1000; // 180-day walk-forward training window
+const MIN_BT_TRADES = 30; // minimum resolved trades for valid M15 backtest result
 
 async function runBtSimulation(closes, candles, strat, sessRange, pair, btConfig = {}) {
   const minScore  = btConfig.minScore  ?? 65;
