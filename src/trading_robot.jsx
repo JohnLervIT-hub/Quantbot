@@ -490,10 +490,32 @@ function generateSignal(history, strategy, pair) {
 
 // ─── REGIME / GATEKEEPER ENGINE ──────────────────────────────────────────────
 const PIP_SIZE = {
-  "EUR/USD": 0.0001, "GBP/USD": 0.0001, "USD/JPY": 0.01,
-  "AUD/USD": 0.0001, "USD/CAD": 0.0001,
-  "XAU/USD": 0.01, "SPX500_USD": 0.1,
+  // Forex — slash format
+  'EUR/USD': 0.0001, 'GBP/USD': 0.0001, 'USD/JPY': 0.01,
+  'EUR/GBP': 0.0001, 'AUD/USD': 0.0001, 'USD/CAD': 0.0001,
+  'NZD/USD': 0.0001, 'GBP/JPY': 0.01,
+  // Forex — underscore format
+  'EUR_USD': 0.0001, 'GBP_USD': 0.0001, 'USD_JPY': 0.01,
+  'EUR_GBP': 0.0001, 'AUD_USD': 0.0001, 'USD_CAD': 0.0001,
+  'NZD_USD': 0.0001, 'GBP_JPY': 0.01,
+  // Metals — both formats
+  'XAU/USD': 0.01,  'XAG/USD': 0.001,
+  'XAU_USD': 0.01,  'XAG_USD': 0.001,
+  // Indices — points not pips (both formats)
+  'NAS100/USD': 1.0, 'JP225/USD': 1.0, 'AU200/AUD': 1.0,
+  'UK100/GBP':  1.0, 'SPX500/USD': 1.0, 'US30/USD': 1.0,
+  'NAS100_USD': 1.0, 'JP225_USD': 1.0, 'AU200_AUD': 1.0,
+  'UK100_GBP':  1.0, 'SPX500_USD': 1.0, 'US30_USD': 1.0,
+  // Oil — both formats
+  'BCO/USD': 0.01,   'WTICO/USD': 0.01,
+  'BCO_USD': 0.01,   'WTICO_USD': 0.01,
+  default: 0.0001,
 };
+const getPipSize = (pair) =>
+  PIP_SIZE[pair] ||
+  PIP_SIZE[pair?.replace('/', '_')] ||
+  PIP_SIZE[pair?.replace('_', '/')] ||
+  0.0001;
 const TYPICAL_SPREAD_PIPS = {
   EUR_USD: 1.2, GBP_USD: 1.8, USD_JPY: 1.2, AUD_USD: 1.5,
   USD_CAD: 1.8, EUR_GBP: 1.5, NZD_USD: 2.0, XAU_USD: 35.0,
@@ -559,7 +581,7 @@ const SESSION_TRADE_LIMITS = { PRIME: 4, LONDON: 4, NY: 4, TOKYO: 2, SYDNEY: 3, 
 function runGatekeepers(history, signal, openTrades, pair, strategy = "") {
   const rejections = [];
   const pairKey = pair.replace("/", "_");
-  const pip     = PIP_SIZE[pair] || 0.0001;
+  const pip     = getPipSize(pair);
   const bars    = history.slice(-21);
   const tr    = bars.slice(1).map((p, i) => Math.abs(p - bars[i]));
   const atr5  = tr.slice(-5).reduce((a, b) => a + b, 0) / 5;
@@ -1028,7 +1050,7 @@ function CandleChart({ pair, history, signal }) {
 // ─── TRADE STRUCTURE PANEL ────────────────────────────────────────────────────
 function TradeStructurePanel({ signal, history, pair }) {
   if (!signal) return null;
-  const pip     = PIP_SIZE[pair] || 0.0001;
+  const pip     = getPipSize(pair);
   const bars    = history.slice(-21);
   const tr      = bars.slice(1).map((p, i) => Math.abs(p - bars[i]));
   const atr5    = tr.slice(-5).reduce((a, b) => a + b, 0) / 5 || 0.0001;
@@ -1248,7 +1270,7 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
     const headlineFinal = newsAgeMin > 30 ? `[stale — ${newsAgeMin}min old] ${currentHeadline}` : currentHeadline;
 
     // Derived values for role-specific prompts
-    const pip        = PIP_SIZE[pair] || 0.0001;
+    const pip        = getPipSize(pair);
     const atr        = regimeData?.atr5 || 0.001;
     const atrPips    = (atr / pip).toFixed(1);
     const sl         = signal.direction === "LONG" ? (price - atr * 1.5).toFixed(5) : (price + atr * 1.5).toFixed(5);
@@ -2212,7 +2234,7 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
 
   useEffect(() => { if (showAI) setChartExpanded(true); }, [showAI]);
 
-  const chartPip       = PIP_SIZE[pair] || 0.0001;
+  const chartPip       = getPipSize(pair);
   const chartAtr       = regimeData?.atr5 || 0.001;
   const chartSLVal     = signal ? (signal.direction === "LONG" ? price - chartAtr * 1.5 : price + chartAtr * 1.5) : null;
   const chartTPVal     = signal ? (signal.direction === "LONG" ? price + chartAtr * 3 : price - chartAtr * 3) : null;
@@ -7700,7 +7722,7 @@ export default function TradingRobot() {
         const currentPrice = prices[pair] || 0;
         const openMs     = trade.openTime ? new Date(trade.openTime).getTime() : nowMs;
         const hoursSinceOpen = (nowMs - openMs) / 3_600_000;
-        const pip        = PIP_SIZE[pair] || 0.0001;
+        const pip        = getPipSize(pair);
         const dec        = pair.includes("JPY") ? 3 : pair.includes("XAU") || pair.includes("SPX") ? 2 : 5;
 
         if (!tradeMgmtRef.current[tradeId]) {
@@ -7846,7 +7868,7 @@ export default function TradingRobot() {
           const ctxBars = history.slice(-21);
           const ctxTr = ctxBars.slice(1).map((v, i) => Math.abs(v - ctxBars[i]));
           const atr = ctxTr.length ? ctxTr.reduce((a, b) => a + b, 0) / ctxTr.length : 0;
-          const pip = PIP_SIZE[pair] || 0.0001;
+          const pip = getPipSize(pair);
           const atrPips = atr / pip;
           const sl = signal.direction === "LONG" ? price - atr * 1.5 : price + atr * 1.5;
           const tp = signal.direction === "LONG" ? price + atr * 3.0 : price - atr * 3.0;
