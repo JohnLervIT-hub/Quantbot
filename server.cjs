@@ -798,6 +798,10 @@ const SERVER_PAIRS = new Set([
   'AU200_AUD',  // validated in LONDON + NY sessions
 ]);
 
+// Phase tracking — Phase 2 pairs trade at 50% size until promoted via real performance
+// Mutable: auto-promotes to phase 1 after 10 trades with avgR > 0.3 in last 30 days
+const PAIR_PHASE = { NAS100_USD: 2 };
+
 // Security allowlist — instruments permitted anywhere in the system (order, test, kill shot)
 // BCO_USD and WTICO_USD intentionally excluded — manual-only, not routable via any automated path
 const APPROVED_PAIRS = new Set([
@@ -2676,6 +2680,39 @@ async function saveTradeToSupabase(trade) {
     } else {
       console.log('[SUPABASE] trade saved:', trade.pair, trade.pnl);
     }
+
+    // Phase promotion — check NAS100_USD after every closed trade
+    if (!error && trade.pair === 'NAS100_USD' && PAIR_PHASE['NAS100_USD'] === 2) {
+      try {
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+        const { data: nas100Trades } = await supabase
+          .from('trades')
+          .select('r_multiple')
+          .eq('pair', 'NAS100_USD')
+          .gte('created_at', thirtyDaysAgo)
+          .not('r_multiple', 'is', null);
+        if (nas100Trades && nas100Trades.length >= 10) {
+          const avgR = nas100Trades.reduce((s, t) => s + (t.r_multiple || 0), 0) / nas100Trades.length;
+          if (avgR > 0.3) {
+            PAIR_PHASE['NAS100_USD'] = 1;
+            console.log('[PROMOTED] NAS100_USD → Phase 1 avgR:', avgR.toFixed(2));
+            await sendDiscordEmbed({
+              title: '🏆 NAS100 PROMOTED TO PHASE 1',
+              description: `NAS100_USD promoted to Phase 1\nAverage R: ${avgR.toFixed(2)}R over ${nas100Trades.length} trades\nFull position size now active`,
+              color: 0x3fb950,
+              timestamp: new Date().toISOString(),
+            });
+          } else {
+            console.log('[PHASE 2] NAS100_USD still earning — avgR:', avgR.toFixed(2), `(${nas100Trades.length} trades, need >0.3R)`);
+          }
+        } else {
+          console.log('[PHASE 2] NAS100_USD earning validation —', nas100Trades?.length ?? 0, 'trades in 30d (need 10)');
+        }
+      } catch (promoteErr) {
+        console.error('[PHASE PROMOTE ERROR]', promoteErr.message);
+      }
+    }
+
     await updatePattern(trade);
     if (trade.pnl < 0 && Math.abs(trade.rMultiple) >= 0.10) {
       await saveLesson(trade);
@@ -3918,9 +3955,12 @@ async function serverAutoTrade() {
     if (recoveryMode) {
       console.log(`[RECOVERY MODE] active — using reduced sizing for ${instrument}`);
     }
-    const unitSize = recoveryMode
+    const baseUnitSize = recoveryMode
       ? (RECOVERY_UNITS[instrument] || RECOVERY_UNITS.default)
       : (NORMAL_UNITS[instrument]   || NORMAL_UNITS.default);
+    const phase = PAIR_PHASE[instrument] || 1;
+    const unitSize = phase === 2 ? Math.floor(baseUnitSize * 0.5) : baseUnitSize;
+    if (phase === 2) console.log('[PHASE 2]', instrument, '— reduced size 50%, earning validation through trades');
     const units = signal.direction === 'LONG' ? unitSize : -unitSize;
 
     const tradeContext = {
@@ -4475,9 +4515,13 @@ async function executeKillShot(pending) {
     recoveryMode:   false,
   };
 
+  const ksPhase = PAIR_PHASE[instrument] || 1;
+  const ksUnits = ksPhase === 2 ? Math.floor(Math.abs(units) * 0.5) : Math.abs(units);
+  if (ksPhase === 2) console.log('[PHASE 2]', instrument, '— reduced size 50%, earning validation through trades');
+
   const result = await placeOrder({
     instrument, direction,
-    units: Math.abs(units),
+    units: ksUnits,
     entry: liveEntry, stopLoss: liveSl, takeProfit: liveTp1,
     source: 'Kill-Shot-Auto', score, session, strategy: 'Kill Shot',
     approved: true,
