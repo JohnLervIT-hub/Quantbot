@@ -628,12 +628,13 @@ app.get('/health', (_req, res) => {
     ok: true,
     autoMode: process.env.AUTO_MODE_ENABLED === 'true',
     models: {
-      claude:   Boolean(ANTHROPIC_KEY),
-      george:   Boolean(OPENROUTER_API_KEY),
-      deepseek: Boolean(DEEPSEEK_KEY),
-      gemini:   Boolean(GEMINI_KEY),
-      ray:      Boolean(OPENROUTER_API_KEY),
+      warren: { name: 'Claude Haiku',   provider: 'Anthropic',   status: ANTHROPIC_KEY        ? 'online' : 'offline' },
+      george: { name: 'Qwen 2.5 72B',  provider: 'OpenRouter',  status: OPENROUTER_API_KEY   ? 'online' : 'offline' },
+      james:  { name: 'DeepSeek',       provider: 'DeepSeek',    status: DEEPSEEK_KEY         ? 'online' : 'offline' },
+      ray:    { name: 'Qwen 2.5 72B',  provider: 'OpenRouter',  status: OPENROUTER_API_KEY   ? 'online' : 'offline' },
     },
+    totalModels: 4,
+    gemini: 'replaced by OpenRouter ✅',
     rayStatus: lastRayStatus,
   });
 });
@@ -1220,7 +1221,7 @@ VERDICT: CONFIRM or REJECT
 REASON: (one sentence, max 15 words, cite the key number, trader language — no corporate phrases)`;
 }
 
-function buildGeminiPrompt(p) {
+function buildRayPrompt(p) {
   const rayPatternBlock = p.patternAnalysis?.patterns?.length > 0
     ? `\nCANDLESTICK PATTERNS:\nPatterns: ${p.patternAnalysis.patterns.join(', ')}\nScore adjustment: ${p.patternAnalysis.scoreAdjustment > 0 ? '+' : ''}${p.patternAnalysis.scoreAdjustment}\nDirection bias: ${p.patternAnalysis.directionBias}`
     : '';
@@ -1350,7 +1351,7 @@ VERDICT: CONFIRM or REJECT
 REASON: (one sentence, max 15 words, cite the R:R number)`;
 }
 
-function buildGeminiSwingPrompt(p) {
+function buildRaySwingPrompt(p) {
   const xavierBlock = (p.xavierKeyRisk || p.xavierSentiment)
     ? `\nXavier AI read:\n- Sentiment: ${p.xavierSentiment || 'UNKNOWN'}\n- Key risk: ${p.xavierKeyRisk || 'none'}\n- Best pair: ${p.xavierBestPair || 'none'}`
     : '';
@@ -1477,7 +1478,7 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
     askDeepSeek(buildDeepSeekPrompt(params), SYS_DEEP)
       .then(r => { if (r?.verdict) jamesResult = r; })
       .catch(e => console.log('[JAMES] offline —', e.message.slice(0, 80))),
-    askOpenRouter(buildGeminiPrompt(params), SYS_GEM)
+    askOpenRouter(buildRayPrompt(params), SYS_GEM)
       .then(r => { if (r?.verdict) rayResult = r; })
       .catch(e => {
         const msg = e.message;
@@ -1862,7 +1863,7 @@ app.post('/swing-consensus', async (req, res) => {
       askClaude(buildClaudeSwingPrompt(p),    SYS_CLAUDE_SWING),
       askOpenRouter(buildGPTSwingPrompt(p), SYS_GPT_SWING, { model: 'qwen/qwen-2.5-72b-instruct', name: 'GEORGE' }),
       askDeepSeek(buildDeepSeekSwingPrompt(p),SYS_DEEP_SWING),
-      askOpenRouter(buildGeminiSwingPrompt(p),    SYS_GEM_SWING),
+      askOpenRouter(buildRaySwingPrompt(p),    SYS_GEM_SWING),
     ]);
     const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
     const models = settled.map((r, i) => {
@@ -4087,7 +4088,7 @@ async function runSwingConsensus(p) {
     askClaude(buildClaudeSwingPrompt(p),     SYS_CLAUDE_SWING),
     askOpenRouter(buildGPTSwingPrompt(p), SYS_GPT_SWING, { model: 'qwen/qwen-2.5-72b-instruct', name: 'GEORGE' }),
     askDeepSeek(buildDeepSeekSwingPrompt(p), SYS_DEEP_SWING),
-    askOpenRouter(buildGeminiSwingPrompt(p),     SYS_GEM_SWING),
+    askOpenRouter(buildRaySwingPrompt(p),     SYS_GEM_SWING),
   ]);
   const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
   const models = settled.map((r, i) => {
@@ -5287,7 +5288,7 @@ app.get('/patterns/test/:instrument', requireAuth, async (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`OANDA bridge live on port ${PORT}`);
-  console.log(`  AI: Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | OpenRouter/George ${OPENROUTER_API_KEY ? '✓' : '✗'} | DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | OpenRouter/Ray ${OPENROUTER_API_KEY ? '✓' : '✗'} | Gemini(news) ${GEMINI_KEY ? '✓' : '✗'}`);
+  console.log(`  AI: Warren/Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | George/Qwen ${OPENROUTER_API_KEY ? '✓' : '✗'} | James/DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | Ray/Qwen ${OPENROUTER_API_KEY ? '✓' : '✗'}`);
   console.log(`  Auto mode: ${process.env.AUTO_MODE_ENABLED === 'true' ? 'ENABLED ⚡' : 'disabled (set AUTO_MODE_ENABLED=true to activate)'}`);
 
   // ── Environment audit — shows exactly which variables are present ──────────
@@ -5308,10 +5309,9 @@ app.listen(PORT, '0.0.0.0', () => {
     'VITE_ANTHROPIC_KEY',    // local dev fallback
     'VITE_DEEPSEEK_API_KEY', // local dev fallback
     'OPENROUTER_API_KEY',    // George + Ray consensus models via OpenRouter
-    'VITE_GEMINI_API_KEY',   // local dev fallback (news commentary)
     'VITE_AUTO_MODE',        // local dev fallback
   ];
-  const SENSITIVE_ENV = new Set(['OANDA_TOKEN', 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY', 'OPENROUTER_API_KEY', 'GEMINI_API_KEY', 'DISCORD_BOT_TOKEN', 'JWT_SECRET', 'DASHBOARD_PASSWORD', 'SUPABASE_ANON_KEY']);
+  const SENSITIVE_ENV = new Set(['OANDA_TOKEN', 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY', 'OPENROUTER_API_KEY', 'DISCORD_BOT_TOKEN', 'JWT_SECRET', 'DASHBOARD_PASSWORD', 'SUPABASE_ANON_KEY']);
   console.log('── ENV AUDIT ─────────────────────────────');
   REQUIRED_VARS.forEach(v => {
     const val = process.env[v];
