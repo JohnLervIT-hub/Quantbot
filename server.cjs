@@ -5,7 +5,6 @@ const crypto  = require('crypto');
 const jwt     = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const helmet    = require('helmet');
-const Groq      = require('groq-sdk');
 
 const { createClient } = require('@supabase/supabase-js');
 const supabase = process.env.SUPABASE_URL
@@ -183,11 +182,10 @@ const H       = { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'applicati
 
 // Accept both Railway-style (no prefix) and local dev VITE_ prefix
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY  || process.env.VITE_ANTHROPIC_KEY;
-const OPENAI_KEY    = process.env.OPENAI_API_KEY     || process.env.VITE_OPENAI_API_KEY;
 const DEEPSEEK_KEY  = process.env.DEEPSEEK_API_KEY   || process.env.VITE_DEEPSEEK_API_KEY;
 const GEMINI_KEY    = process.env.GEMINI_API_KEY     || process.env.VITE_GEMINI_API_KEY;
-const GROQ_KEY      = process.env.GROQ_API_KEY       || process.env.VITE_GROQ_API_KEY;
-const groqClient    = GROQ_KEY ? new Groq({ apiKey: GROQ_KEY }) : null;
+const GLM_API_KEY   = process.env.GLM_API_KEY;
+const QWEN_API_KEY  = process.env.QWEN_API_KEY;
 // Normalise auto-mode so the runtime toggle (which writes AUTO_MODE_ENABLED) always wins
 if (!process.env.AUTO_MODE_ENABLED && process.env.VITE_AUTO_MODE) {
   process.env.AUTO_MODE_ENABLED = process.env.VITE_AUTO_MODE;
@@ -632,10 +630,10 @@ app.get('/health', (_req, res) => {
     autoMode: process.env.AUTO_MODE_ENABLED === 'true',
     models: {
       claude:   Boolean(ANTHROPIC_KEY),
-      openai:   Boolean(OPENAI_KEY),
+      george:   Boolean(GLM_API_KEY),
       deepseek: Boolean(DEEPSEEK_KEY),
       gemini:   Boolean(GEMINI_KEY),
-      ray:      Boolean(groqClient),
+      ray:      Boolean(QWEN_API_KEY),
     },
     rayStatus: lastRayStatus,
   });
@@ -1415,22 +1413,18 @@ async function askClaude(prompt, sys) {
   return { name: 'WARREN', ...parseWarrenResponse(text) };
 }
 
-async function askGPT(prompt, sys) {
-  if (!OPENAI_KEY) throw new Error('Missing VITE_OPENAI_API_KEY');
-  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+async function askGLM(prompt, sys) {
+  if (!GLM_API_KEY) throw new Error('Missing GLM_API_KEY');
+  const r = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_KEY}` },
-    body: JSON.stringify({ model: 'gpt-5.5', max_completion_tokens: 1500, messages: [{ role: 'system', content: sys || SYS_GPT }, { role: 'user', content: prompt }] }),
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GLM_API_KEY}` },
+    body: JSON.stringify({ model: 'glm-4-5-flash', messages: [{ role: 'user', content: `${sys ? sys + '\n\n' : ''}${prompt}` }], max_tokens: 500, temperature: 0 }),
   });
   const d = await r.json();
-  if (!r.ok) throw new Error(apiErr(d, `OpenAI HTTP ${r.status}`));
-  const msg = d.choices?.[0]?.message;
-  const text = msg?.content || msg?.refusal;
-  if (!text) {
-    const reason = d.choices?.[0]?.finish_reason || 'unknown';
-    console.warn(`[GPT-5.5] Empty response — finish_reason: ${reason} — using REJECT as safe fallback`);
-    return { name: 'GEORGE', verdict: 'REJECT', reason: `Model response empty — ${reason}` };
-  }
+  if (!r.ok) throw new Error(apiErr(d, `GLM HTTP ${r.status}`));
+  const text = d.choices?.[0]?.message?.content;
+  if (!text) throw new Error('GLM empty response');
+  console.log('[GEORGE/GLM] response received');
   return { name: 'GEORGE', ...parseVerdict(text) };
 }
 
@@ -1448,19 +1442,18 @@ async function askDeepSeek(prompt, sys) {
   return { name: 'JAMES', ...parseVerdict(text) };
 }
 
-async function askRay(prompt, sys) {
-  if (!groqClient) throw new Error('Missing GROQ_API_KEY');
-  const completion = await groqClient.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
-    messages: [
-      { role: 'system', content: sys || SYS_GEM },
-      { role: 'user',   content: prompt },
-    ],
-    max_tokens:  500,
-    temperature: 0.1,
+async function askQwen(prompt, sys) {
+  if (!QWEN_API_KEY) throw new Error('Missing QWEN_API_KEY');
+  const r = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` },
+    body: JSON.stringify({ model: 'qwen2.5-72b-instruct', messages: [{ role: 'user', content: `${sys ? sys + '\n\n' : ''}${prompt}` }], max_tokens: 500, temperature: 0 }),
   });
-  const text = completion.choices[0]?.message?.content || '';
-  if (!text) throw new Error('Groq empty response');
+  const d = await r.json();
+  if (!r.ok) throw new Error(apiErr(d, `Qwen HTTP ${r.status}`));
+  const text = d.choices?.[0]?.message?.content;
+  if (!text) throw new Error('Qwen empty response');
+  console.log('[RAY/QWEN] response received');
   return { name: 'RAY', ...parseVerdict(text) };
 }
 
@@ -1485,13 +1478,13 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
     askClaude(buildClaudePrompt(params), SYS_CLAUDE)
       .then(r => { if (r?.verdict) warrenResult = r; })
       .catch(e => console.log('[WARREN] offline —', e.message.slice(0, 80))),
-    askGPT(buildGPTPrompt(params), SYS_GPT)
+    askGLM(buildGPTPrompt(params), SYS_GPT)
       .then(r => { if (r?.verdict) georgeResult = r; })
       .catch(e => console.log('[GEORGE] offline —', e.message.slice(0, 80))),
     askDeepSeek(buildDeepSeekPrompt(params), SYS_DEEP)
       .then(r => { if (r?.verdict) jamesResult = r; })
       .catch(e => console.log('[JAMES] offline —', e.message.slice(0, 80))),
-    askRay(buildGeminiPrompt(params), SYS_GEM)
+    askQwen(buildGeminiPrompt(params), SYS_GEM)
       .then(r => { if (r?.verdict) rayResult = r; })
       .catch(e => {
         const msg = e.message;
@@ -1874,9 +1867,9 @@ app.post('/swing-consensus', async (req, res) => {
     }
     const settled = await Promise.allSettled([
       askClaude(buildClaudeSwingPrompt(p),    SYS_CLAUDE_SWING),
-      askGPT(buildGPTSwingPrompt(p),          SYS_GPT_SWING),
+      askGLM(buildGPTSwingPrompt(p),          SYS_GPT_SWING),
       askDeepSeek(buildDeepSeekSwingPrompt(p),SYS_DEEP_SWING),
-      askRay(buildGeminiSwingPrompt(p),    SYS_GEM_SWING),
+      askQwen(buildGeminiSwingPrompt(p),    SYS_GEM_SWING),
     ]);
     const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
     const models = settled.map((r, i) => {
@@ -1938,17 +1931,6 @@ app.get('/recovery-status', requireAuth, (_req, res) => {
 });
 
 // ─── RECOVERY MODE TEST TRIGGER ──────────────────────────────────────────────
-app.get('/test-gpt-raw', async (_req, res) => {
-  if (!OPENAI_KEY) return res.status(500).json({ error: 'No OPENAI_KEY' });
-  const r = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_KEY}` },
-    body: JSON.stringify({ model: 'gpt-5.5', max_completion_tokens: 120, messages: [{ role: 'system', content: 'You are a trading assistant.' }, { role: 'user', content: 'Reply CONFIRM or REJECT for a LONG EUR/USD trade.' }] }),
-  });
-  const d = await r.json();
-  res.json({ status: r.status, ok: r.ok, raw: d });
-});
-
 app.get('/test-recovery-trigger', async (req, res) => {
   const realPeak = peakBalance;
   peakBalance = peakBalance * 1.031; // inflate peak so current balance looks 3%+ below
@@ -4107,9 +4089,9 @@ function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
 async function runSwingConsensus(p) {
   const settled = await Promise.allSettled([
     askClaude(buildClaudeSwingPrompt(p),     SYS_CLAUDE_SWING),
-    askGPT(buildGPTSwingPrompt(p),           SYS_GPT_SWING),
+    askGLM(buildGPTSwingPrompt(p),           SYS_GPT_SWING),
     askDeepSeek(buildDeepSeekSwingPrompt(p), SYS_DEEP_SWING),
-    askRay(buildGeminiSwingPrompt(p),     SYS_GEM_SWING),
+    askQwen(buildGeminiSwingPrompt(p),     SYS_GEM_SWING),
   ]);
   const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
   const models = settled.map((r, i) => {
@@ -5301,7 +5283,7 @@ app.get('/patterns/test/:instrument', requireAuth, async (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`OANDA bridge live on port ${PORT}`);
-  console.log(`  AI: Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | OpenAI ${OPENAI_KEY ? '✓' : '✗'} | DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | RAY/Groq ${GROQ_KEY ? '✓' : '✗'} | Gemini(news) ${GEMINI_KEY ? '✓' : '✗'}`);
+  console.log(`  AI: Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | GLM/George ${GLM_API_KEY ? '✓' : '✗'} | DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | Qwen/Ray ${QWEN_API_KEY ? '✓' : '✗'} | Gemini(news) ${GEMINI_KEY ? '✓' : '✗'}`);
   console.log(`  Auto mode: ${process.env.AUTO_MODE_ENABLED === 'true' ? 'ENABLED ⚡' : 'disabled (set AUTO_MODE_ENABLED=true to activate)'}`);
 
   // ── Environment audit — shows exactly which variables are present ──────────
