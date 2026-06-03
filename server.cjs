@@ -1383,23 +1383,57 @@ REASON: (one sentence, max 15 words, name the specific macro factor)`;
 }
 
 function parseVerdict(text) {
-  const lines = (text || '').split('\n').reduce((a, l) => {
-    const i = l.indexOf(':'); if (i > 0) a[l.slice(0, i).trim()] = l.slice(i + 1).trim(); return a;
-  }, {});
-  return { verdict: (lines.VERDICT || '').includes('CONFIRM') ? 'CONFIRM' : 'REJECT', reason: lines.REASON || '—' };
+  if (!text) return { verdict: 'REJECT', reason: 'No response' };
+
+  const lines = text.split('\n');
+  let verdictLine = '';
+  let reasonLine = '';
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('VERDICT:')) {
+      verdictLine = trimmed.slice('VERDICT:'.length).trim();
+    }
+    if (trimmed.startsWith('REASON:')) {
+      reasonLine = trimmed.slice('REASON:'.length).trim();
+    }
+  }
+
+  const verdict = verdictLine.toUpperCase().includes('CONFIRM') ? 'CONFIRM' : 'REJECT';
+  const reason = reasonLine || '—';
+
+  return { verdict, reason };
 }
 
 function apiErr(d, fallback) { return d?.error?.message || d?.error?.type || fallback; }
 
 function parseWarrenResponse(text) {
   if (!text) return { verdict: 'REJECT', reason: 'Empty response' };
-  const upperText = text.toUpperCase();
-  const verdict = upperText.includes('CONFIRM') ? 'CONFIRM' : 'REJECT';
-  const reason = text
-    .replace(/CONFIRM|REJECT/gi, '')
-    .replace(/[{}"\[\]]/g, '')
-    .trim()
-    .slice(0, 150) || 'No reason provided';
+
+  console.log('[WARREN RAW]', JSON.stringify(text).slice(0, 300));
+
+  const lines = text.split('\n');
+  let verdictLine = '';
+  let reasonLine = '';
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('VERDICT:')) {
+      verdictLine = trimmed.slice('VERDICT:'.length).trim().toUpperCase();
+    }
+    if (trimmed.startsWith('REASON:')) {
+      reasonLine = trimmed.slice('REASON:'.length).trim();
+    }
+  }
+
+  const verdict = verdictLine.includes('CONFIRM') ? 'CONFIRM' : 'REJECT';
+
+  const reason = reasonLine ||
+    text.split('\n').find(l => l.trim().length > 10 && !l.includes('VERDICT:')) ||
+    'No reason provided';
+
+  console.log('[WARREN PARSED]', 'verdictLine:', verdictLine, 'verdict:', verdict, 'reason:', reason.slice(0, 100));
+
   return { verdict, reason };
 }
 
