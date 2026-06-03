@@ -1389,18 +1389,30 @@ function parseVerdict(text) {
 
 function apiErr(d, fallback) { return d?.error?.message || d?.error?.type || fallback; }
 
+function parseWarrenResponse(text) {
+  if (!text) return { verdict: 'REJECT', reason: 'Empty response' };
+  const upperText = text.toUpperCase();
+  const verdict = upperText.includes('CONFIRM') ? 'CONFIRM' : 'REJECT';
+  const reason = text
+    .replace(/CONFIRM|REJECT/gi, '')
+    .replace(/[{}"\[\]]/g, '')
+    .trim()
+    .slice(0, 150) || 'No reason provided';
+  return { verdict, reason };
+}
+
 async function askClaude(prompt, sys) {
   if (!ANTHROPIC_KEY) throw new Error('Missing VITE_ANTHROPIC_KEY');
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 120, system: sys || SYS_CLAUDE, messages: [{ role: 'user', content: prompt }] }),
+    body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 120, temperature: 0, system: sys || SYS_CLAUDE, messages: [{ role: 'user', content: prompt }] }),
   });
   const d = await r.json();
   if (!r.ok) throw new Error(apiErr(d, `Claude HTTP ${r.status}`));
   const text = d.content?.find(b => b.type === 'text')?.text;
   if (!text) throw new Error('Claude empty response');
-  return { name: 'WARREN', ...parseVerdict(text) };
+  return { name: 'WARREN', ...parseWarrenResponse(text) };
 }
 
 async function askGPT(prompt, sys) {
@@ -3838,6 +3850,7 @@ async function serverAutoTrade() {
       diagCounters.blockedConsensus++;
       continue;
     }
+    console.log('[COUNCIL PASSED]', instrument, 'proceeding to execute');
     if (isHighConviction) diagCounters.aplusCount++; else diagCounters.standardCount++;
 
     // ── HIGH CONVICTION ⭐ Discord alert ──────────────────────────────────────
