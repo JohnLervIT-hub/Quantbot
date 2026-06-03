@@ -2,6 +2,12 @@ import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { FONT_MONO } from '../lib/config';
 
+const STRATEGY_SESSION_MAP = {
+  SYDNEY: 'Momentum', TOKYO: 'Momentum', LONDON: 'Momentum',
+  PRIME:  'Breakout', NY:    'Mean Revert',
+};
+const deriveStrategyFromSession = (session) => STRATEGY_SESSION_MAP[session] || 'Mean Revert';
+
 export default function PerformanceDashboard({ trades = [], balance, isMobile, supaLoading = false, supaLastUpdated = null }) {
   const hasClosed = trades.length > 0;
   const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
