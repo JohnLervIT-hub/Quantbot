@@ -1880,25 +1880,23 @@ app.post('/swing-consensus', async (req, res) => {
         : raw.includes('Missing') ? raw : raw.slice(0, 80);
       return { name: NAMES[i], verdict: 'REJECT', reason };
     });
-    const confirms = models.filter(m => m.verdict === 'CONFIRM').length;
-    // Weighted rule: WARREN MUST confirm AND total confirms >= 3
-    const claudeConfirmed = models[0]?.verdict === 'CONFIRM';
-    const executeAllowed  = claudeConfirmed && confirms >= 3;
+    const confirms       = models.filter(m => m.verdict === 'CONFIRM').length;
+    const available      = models.length;
+    const required       = Math.ceil(available * 0.75);
+    const executeAllowed = confirms >= required;
+    const claudeConfirmed = models[0]?.verdict === 'CONFIRM'; // kept for frontend display only
     const voteLog = models.map(m => {
       const role = MODEL_ROLE[m.name] || '?';
       const icon = m.verdict === 'CONFIRM' ? '✅' : '❌';
       return `${m.name} (${role}): ${icon} ${m.verdict}\n"${m.reason}"`;
     });
-    const resultLine = executeAllowed
-      ? `\nVerdict: ${confirms}/4 CONFIRM → KILL SHOT EXECUTE`
-      : !claudeConfirmed
-        ? `\nVerdict: BLOCKED — WARREN rejected`
-        : `\nVerdict: BLOCKED — only ${confirms}/4 CONFIRM, need 3/4`;
-    voteLog.push(resultLine);
+    voteLog.push(executeAllowed
+      ? `\nVerdict: ${confirms}/${available} CONFIRM → KILL SHOT EXECUTE`
+      : `\nVerdict: BLOCKED — ${confirms}/${available} CONFIRM, need ${required}/${available}`);
     res.json({
-      votes: { confirm: confirms, reject: models.length - confirms },
+      votes: { confirm: confirms, reject: available - confirms },
       consensus: executeAllowed ? 'CONFIRM' : 'REJECT',
-      confidence: `${Math.round((confirms / models.length) * 100)}%`,
+      confidence: `${Math.round((confirms / available) * 100)}%`,
       models, voteLog,
       executeAllowed,
       claudeConfirmed,
@@ -4088,7 +4086,7 @@ function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
   return { direction, score, entry: last, sl, tp1, tp2, tp3, ema21, ema50, rsi, atr, reasons };
 }
 
-// ─── SERVER-SIDE SWING CONSENSUS (weighted: Claude MUST confirm + 1 other) ───
+// ─── SERVER-SIDE SWING CONSENSUS (3/4 majority — no model has veto power) ────
 async function runSwingConsensus(p) {
   const settled = await Promise.allSettled([
     askClaude(buildClaudeSwingPrompt(p),     SYS_CLAUDE_SWING),
@@ -4102,20 +4100,19 @@ async function runSwingConsensus(p) {
     const raw = r.reason?.message || 'Model unreachable';
     return { name: NAMES[i], verdict: 'REJECT', reason: raw.slice(0, 80) };
   });
-  const claudeConfirmed = models[0]?.verdict === 'CONFIRM';
-  const othersConfirmed = models.slice(1).filter(m => m.verdict === 'CONFIRM');
-  const passes          = claudeConfirmed && othersConfirmed.length >= 1;
   const confirms        = models.filter(m => m.verdict === 'CONFIRM').length;
+  const available       = models.length;
+  const required        = Math.ceil(available * 0.75);
+  const passes          = confirms >= required;
+  const claudeConfirmed = models[0]?.verdict === 'CONFIRM'; // kept for frontend display only
   const voteLog = models.map(m => {
     const role = MODEL_ROLE[m.name] || '?';
     const icon = m.verdict === 'CONFIRM' ? '✅' : '❌';
     return `${m.name} (${role}): ${icon} ${m.verdict}\n"${m.reason}"`;
   });
   voteLog.push(passes
-    ? `\nVerdict: WARREN + ${othersConfirmed[0]?.name || '?'} CONFIRM → KILL SHOT EXECUTE`
-    : !claudeConfirmed
-      ? '\nVerdict: BLOCKED — WARREN rejected'
-      : '\nVerdict: BLOCKED — WARREN confirmed, no supporting council member');
+    ? `\nVerdict: ${confirms}/${available} CONFIRM → KILL SHOT EXECUTE`
+    : `\nVerdict: BLOCKED — ${confirms}/${available} CONFIRM, need ${required}/${available}`);
   return { passes, confirms, claudeConfirmed, models, voteLog };
 }
 
