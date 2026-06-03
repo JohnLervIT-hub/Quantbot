@@ -184,7 +184,6 @@ const H       = { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'applicati
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY  || process.env.VITE_ANTHROPIC_KEY;
 const DEEPSEEK_KEY  = process.env.DEEPSEEK_API_KEY   || process.env.VITE_DEEPSEEK_API_KEY;
 const GEMINI_KEY    = process.env.GEMINI_API_KEY     || process.env.VITE_GEMINI_API_KEY;
-const GLM_API_KEY   = process.env.GLM_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 // Normalise auto-mode so the runtime toggle (which writes AUTO_MODE_ENABLED) always wins
 if (!process.env.AUTO_MODE_ENABLED && process.env.VITE_AUTO_MODE) {
@@ -630,7 +629,7 @@ app.get('/health', (_req, res) => {
     autoMode: process.env.AUTO_MODE_ENABLED === 'true',
     models: {
       claude:   Boolean(ANTHROPIC_KEY),
-      george:   Boolean(GLM_API_KEY),
+      george:   Boolean(OPENROUTER_API_KEY),
       deepseek: Boolean(DEEPSEEK_KEY),
       gemini:   Boolean(GEMINI_KEY),
       ray:      Boolean(OPENROUTER_API_KEY),
@@ -1413,20 +1412,6 @@ async function askClaude(prompt, sys) {
   return { name: 'WARREN', ...parseWarrenResponse(text) };
 }
 
-async function askGLM(prompt, sys) {
-  if (!GLM_API_KEY) throw new Error('Missing GLM_API_KEY');
-  const r = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GLM_API_KEY}` },
-    body: JSON.stringify({ model: 'glm-4-5-flash', messages: [{ role: 'user', content: `${sys ? sys + '\n\n' : ''}${prompt}` }], max_tokens: 500, temperature: 0 }),
-  });
-  const d = await r.json();
-  if (!r.ok) throw new Error(apiErr(d, `GLM HTTP ${r.status}`));
-  const text = d.choices?.[0]?.message?.content;
-  if (!text) throw new Error('GLM empty response');
-  console.log('[GEORGE/GLM] response received');
-  return { name: 'GEORGE', ...parseVerdict(text) };
-}
 
 async function askDeepSeek(prompt, sys) {
   if (!DEEPSEEK_KEY) throw new Error('Missing VITE_DEEPSEEK_API_KEY');
@@ -1442,7 +1427,7 @@ async function askDeepSeek(prompt, sys) {
   return { name: 'JAMES', ...parseVerdict(text) };
 }
 
-async function askOpenRouter(prompt, sys) {
+async function askOpenRouter(prompt, sys, { model = 'qwen/qwen-2.5-72b-instruct', name = 'RAY' } = {}) {
   if (!OPENROUTER_API_KEY) throw new Error('Missing OPENROUTER_API_KEY');
   const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
@@ -1452,14 +1437,14 @@ async function askOpenRouter(prompt, sys) {
       'HTTP-Referer': 'https://quantbot-phi.vercel.app',
       'X-Title': 'Xavier QuantBot',
     },
-    body: JSON.stringify({ model: 'qwen/qwen-2.5-72b-instruct', messages: [{ role: 'user', content: `${sys ? sys + '\n\n' : ''}${prompt}` }], max_tokens: 500, temperature: 0 }),
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: `${sys ? sys + '\n\n' : ''}${prompt}` }], max_tokens: 500, temperature: 0 }),
   });
   const d = await r.json();
   if (!r.ok) throw new Error(apiErr(d, `OpenRouter HTTP ${r.status}`));
   const text = d.choices?.[0]?.message?.content;
   if (!text) throw new Error('OpenRouter empty response');
-  console.log('[RAY/QWEN] response received');
-  return { name: 'RAY', ...parseVerdict(text) };
+  console.log(`[${name}/QWEN] response received`);
+  return { name, ...parseVerdict(text) };
 }
 
 const MODEL_TAG  = { 'WARREN': 'WARREN', 'GEORGE': 'GEORGE', 'JAMES': 'JAMES', 'RAY': 'RAY' };
@@ -1483,7 +1468,7 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
     askClaude(buildClaudePrompt(params), SYS_CLAUDE)
       .then(r => { if (r?.verdict) warrenResult = r; })
       .catch(e => console.log('[WARREN] offline —', e.message.slice(0, 80))),
-    askGLM(buildGPTPrompt(params), SYS_GPT)
+    askOpenRouter(buildGPTPrompt(params), SYS_GPT, { model: 'qwen/qwen-2.5-72b-instruct:free', name: 'GEORGE' })
       .then(r => { if (r?.verdict) georgeResult = r; })
       .catch(e => console.log('[GEORGE] offline —', e.message.slice(0, 80))),
     askDeepSeek(buildDeepSeekPrompt(params), SYS_DEEP)
@@ -1872,7 +1857,7 @@ app.post('/swing-consensus', async (req, res) => {
     }
     const settled = await Promise.allSettled([
       askClaude(buildClaudeSwingPrompt(p),    SYS_CLAUDE_SWING),
-      askGLM(buildGPTSwingPrompt(p),          SYS_GPT_SWING),
+      askOpenRouter(buildGPTSwingPrompt(p), SYS_GPT_SWING, { model: 'qwen/qwen-2.5-72b-instruct:free', name: 'GEORGE' }),
       askDeepSeek(buildDeepSeekSwingPrompt(p),SYS_DEEP_SWING),
       askOpenRouter(buildGeminiSwingPrompt(p),    SYS_GEM_SWING),
     ]);
@@ -4094,7 +4079,7 @@ function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
 async function runSwingConsensus(p) {
   const settled = await Promise.allSettled([
     askClaude(buildClaudeSwingPrompt(p),     SYS_CLAUDE_SWING),
-    askGLM(buildGPTSwingPrompt(p),           SYS_GPT_SWING),
+    askOpenRouter(buildGPTSwingPrompt(p), SYS_GPT_SWING, { model: 'qwen/qwen-2.5-72b-instruct:free', name: 'GEORGE' }),
     askDeepSeek(buildDeepSeekSwingPrompt(p), SYS_DEEP_SWING),
     askOpenRouter(buildGeminiSwingPrompt(p),     SYS_GEM_SWING),
   ]);
@@ -5288,7 +5273,7 @@ app.get('/patterns/test/:instrument', requireAuth, async (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`OANDA bridge live on port ${PORT}`);
-  console.log(`  AI: Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | GLM/George ${GLM_API_KEY ? '✓' : '✗'} | DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | OpenRouter/Ray ${OPENROUTER_API_KEY ? '✓' : '✗'} | Gemini(news) ${GEMINI_KEY ? '✓' : '✗'}`);
+  console.log(`  AI: Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | OpenRouter/George ${OPENROUTER_API_KEY ? '✓' : '✗'} | DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | OpenRouter/Ray ${OPENROUTER_API_KEY ? '✓' : '✗'} | Gemini(news) ${GEMINI_KEY ? '✓' : '✗'}`);
   console.log(`  Auto mode: ${process.env.AUTO_MODE_ENABLED === 'true' ? 'ENABLED ⚡' : 'disabled (set AUTO_MODE_ENABLED=true to activate)'}`);
 
   // ── Environment audit — shows exactly which variables are present ──────────
@@ -5296,7 +5281,6 @@ app.listen(PORT, '0.0.0.0', () => {
     'OANDA_TOKEN',
     'OANDA_ACCOUNT_ID',
     'ANTHROPIC_API_KEY',
-    'OPENAI_API_KEY',
     'DEEPSEEK_API_KEY',
     'OPENROUTER_API_KEY',
     'AUTO_MODE_ENABLED',
@@ -5308,13 +5292,12 @@ app.listen(PORT, '0.0.0.0', () => {
     'TELEGRAM_BOT_TOKEN',
     'TELEGRAM_CHAT_ID',
     'VITE_ANTHROPIC_KEY',    // local dev fallback
-    'VITE_OPENAI_API_KEY',   // local dev fallback
     'VITE_DEEPSEEK_API_KEY', // local dev fallback
-    'OPENROUTER_API_KEY',    // RAY consensus model via OpenRouter
+    'OPENROUTER_API_KEY',    // George + Ray consensus models via OpenRouter
     'VITE_GEMINI_API_KEY',   // local dev fallback (news commentary)
     'VITE_AUTO_MODE',        // local dev fallback
   ];
-  const SENSITIVE_ENV = new Set(['OANDA_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'OPENROUTER_API_KEY', 'GEMINI_API_KEY', 'DISCORD_BOT_TOKEN', 'JWT_SECRET', 'DASHBOARD_PASSWORD', 'SUPABASE_ANON_KEY']);
+  const SENSITIVE_ENV = new Set(['OANDA_TOKEN', 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY', 'OPENROUTER_API_KEY', 'GEMINI_API_KEY', 'DISCORD_BOT_TOKEN', 'JWT_SECRET', 'DASHBOARD_PASSWORD', 'SUPABASE_ANON_KEY']);
   console.log('── ENV AUDIT ─────────────────────────────');
   REQUIRED_VARS.forEach(v => {
     const val = process.env[v];
