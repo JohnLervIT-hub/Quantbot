@@ -6727,6 +6727,8 @@ const BACKTEST_SPREAD_COSTS = {
   SPX500_USD: 0.5, default: 0.0003,
 };
 
+const TRAINING_DAYS_MS = 180 * 24 * 60 * 60 * 1000; // 180-day walk-forward training window
+
 async function runBtSimulation(closes, candles, strat, sessRange, pair, btConfig = {}) {
   const minScore  = btConfig.minScore  ?? 65;
   const signalFn  = btConfig.signalFn  ?? generateSignal;
