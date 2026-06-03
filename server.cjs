@@ -183,7 +183,6 @@ const H       = { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'applicati
 // Accept both Railway-style (no prefix) and local dev VITE_ prefix
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY  || process.env.VITE_ANTHROPIC_KEY;
 const DEEPSEEK_KEY  = process.env.DEEPSEEK_API_KEY   || process.env.VITE_DEEPSEEK_API_KEY;
-const GEMINI_KEY    = process.env.GEMINI_API_KEY     || process.env.VITE_GEMINI_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 // Normalise auto-mode so the runtime toggle (which writes AUTO_MODE_ENABLED) always wins
 if (!process.env.AUTO_MODE_ENABLED && process.env.VITE_AUTO_MODE) {
@@ -1670,26 +1669,33 @@ const CAT_NAMES = {
   macro: 'Macro / Central Banks',
 };
 
-async function getGeminiCommentary(category, headlines) {
-  if (!GEMINI_KEY) return null;
+async function getNewsCommentary(category, headlines) {
+  if (!OPENROUTER_API_KEY) return null;
   const list = headlines.slice(0, 10).map(h => `- ${h.title}`).join('\n');
   const catName = CAT_NAMES[category] || category;
   const prompt = `You are a concise forex market analyst. Based on these recent ${catName} headlines, write exactly 2 sentences: (1) the dominant market theme right now, (2) the key directional bias traders should watch. Max 50 words total. Be specific — name pairs, assets, or data.\n\nHeadlines:\n${list}`;
   try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: 'You are a decisive, concise forex market analyst.' }] },
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        }),
-      }
-    );
+    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+        'HTTP-Referer': 'https://quantbot-phi.vercel.app',
+        'X-Title': 'Xavier QuantBot',
+      },
+      body: JSON.stringify({
+        model: 'qwen/qwen-2.5-72b-instruct',
+        messages: [
+          { role: 'system', content: 'You are a decisive, concise forex market analyst.' },
+          { role: 'user',   content: prompt },
+        ],
+        max_tokens: 120,
+        temperature: 0.3,
+      }),
+    });
     const d = await r.json();
     if (!r.ok) return null;
-    return d.candidates?.[0]?.content?.parts?.find(p => p.text)?.text?.trim() || null;
+    return d.choices?.[0]?.message?.content?.trim() || null;
   } catch {
     return null;
   }
@@ -1709,7 +1715,7 @@ app.get('/news', async (req, res) => {
     if (!r.ok) throw new Error(`RSS HTTP ${r.status}`);
     const xml = await r.text();
     const items = parseRSS(xml);
-    const commentary = await getGeminiCommentary(category, items);
+    const commentary = await getNewsCommentary(category, items);
     newsCache.set(category, { items, commentary, fetchedAt: Date.now() });
     res.json({ category, items, commentary, fetchedAt: new Date().toISOString(), cached: false });
   } catch (e) {
