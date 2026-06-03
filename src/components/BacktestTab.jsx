@@ -359,14 +359,19 @@ export default function BacktestTab({ trades = [], loading = false, lastUpdated 
 function HistoricalBacktest({ isMobile, generateSignal }) {
   const BT_STRATEGIES = ["Mean Revert", "Trend Follow", "Breakout", "Momentum", "Range Scalp"];
   const STRAT_COLOR   = { "Mean Revert": "#1D9E75", "Trend Follow": "#58a6ff", "Breakout": "#F97316", "Momentum": "#8B5CF6", "Range Scalp": "#d29922" };
-  const BT_PAIRS      = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "XAU/USD", "NZD/USD", "SPX500_USD"];
+  const BT_PAIRS      = [
+    "EUR_USD", "GBP_USD", "USD_JPY", "EUR_GBP",
+    "AUD_USD", "USD_CAD", "NZD_USD",
+    "XAU_USD", "XAG_USD",
+    "NAS100_USD", "AU200_AUD", "UK100_GBP", "JP225_USD", "SPX500_USD",
+  ];
   const BT_TIMEFRAMES = ["M5", "M15", "H1"];
   const BT_DURATIONS  = ["7 days", "30 days", "90 days", "180 days", "365 days"];
   const BT_SESSIONS   = ["All", "Tokyo", "London", "Prime", "NY", "Sydney"];
   const SESSION_UTC   = { All: null, Tokyo: { start: 0, end: 9 }, London: { start: 7, end: 16 }, Prime: { start: 13, end: 17 }, NY: { start: 17, end: 20 }, Sydney: { start: 22, end: 4 } };
 
   const [btStrategy,   setBtStrategy]   = useState("All");
-  const [btPair,       setBtPair]       = useState("EUR/USD");
+  const [btPair,       setBtPair]       = useState("EUR_USD");
   const [btTf,         setBtTf]         = useState("M15");
   const [btDur,        setBtDur]        = useState("30 days");
   const [btSess,       setBtSess]       = useState("All");
