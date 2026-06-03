@@ -643,6 +643,8 @@ app.get('/health', (_req, res) => {
 
 app.post('/ai', async (req, res) => {
   const { prompt, systemPrompt, maxTokens } = req.body;
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim())
+    return res.status(400).json({ error: { message: 'Missing required field: prompt' } });
   if (!ANTHROPIC_KEY)
     return res.status(503).json({ error: { message: 'Missing VITE_ANTHROPIC_KEY in .env' } });
   try {
@@ -650,7 +652,7 @@ app.post('/ai', async (req, res) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: maxTokens || 400,
         system: systemPrompt || 'You are an expert trading assistant.',
         messages: [{ role: 'user', content: prompt }],

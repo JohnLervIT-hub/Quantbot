@@ -238,6 +238,11 @@ function MarketSession({ isMobile }) {
   );
 }
 
+function getAuthHeaders() {
+  const token = localStorage.getItem('auth_token');
+  return token ? { 'Authorization': `Bearer ${token}` } : {};
+}
+
 // ─── ANTHROPIC API CALL ──────────────────────────────────────────────────────
 async function callClaude(prompt, systemPrompt, maxTokens = 400) {
   const resp = await fetch(`${BRIDGE}/ai`, {
@@ -324,7 +329,7 @@ function useOandaPrice(pair) {
   useEffect(() => {
     const tick = async () => {
       try {
-        const r    = await fetch(`${BRIDGE}/prices?instruments=${instrument}`);
+        const r    = await fetch(`${BRIDGE}/prices?instruments=${instrument}`, { headers: getAuthHeaders() });
         const data = await r.json();
         const px   = data.prices?.[0];
         if (!px) return;
@@ -1224,7 +1229,7 @@ function AISignalConfirm({ pair, signal, price, history, currentHeadline, onConf
     // Fetch fresh OANDA price for this pair
     let freshEntry = price;
     try {
-      const pResp = await fetch(`${BRIDGE}/prices?instruments=${pair.replace("/", "_")}`).then(r => r.json());
+      const pResp = await fetch(`${BRIDGE}/prices?instruments=${pair.replace("/", "_")}`, { headers: getAuthHeaders() }).then(r => r.json());
       if (pResp.prices?.[0]) {
         const px = pResp.prices[0];
         freshEntry = (parseFloat(px.bids[0].price) + parseFloat(px.asks[0].price)) / 2;
@@ -1766,7 +1771,7 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
     setChatLoading(true);
     let freshPrices = null;
     try {
-      const priceResp = await fetch(`${BRIDGE}/prices?instruments=EUR_USD,GBP_USD,USD_JPY,XAU_USD,AUD_USD,NZD_USD,USD_CAD`).then(r => r.json());
+      const priceResp = await fetch(`${BRIDGE}/prices?instruments=EUR_USD,GBP_USD,USD_JPY,XAU_USD,AUD_USD,NZD_USD,USD_CAD`, { headers: getAuthHeaders() }).then(r => r.json());
       if (priceResp.prices) {
         freshPrices = {};
         priceResp.prices.forEach(p => {
@@ -3065,7 +3070,7 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
       // Fetch fresh OANDA price
       let freshMid = parseFloat(livePrices?.[pair] || sig.entry);
       try {
-        const pResp = await fetch(`${BRIDGE}/prices?instruments=${instrument}`).then(r => r.json());
+        const pResp = await fetch(`${BRIDGE}/prices?instruments=${instrument}`, { headers: getAuthHeaders() }).then(r => r.json());
         if (pResp.prices?.[0]) {
           const px = pResp.prices[0];
           freshMid = (parseFloat(px.bids[0].price) + parseFloat(px.asks[0].price)) / 2;
@@ -3269,7 +3274,7 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
       // Fetch fresh OANDA price for this pair
       let freshMid = parseFloat(livePrices?.[pair] || sig.entry);
       try {
-        const pResp = await fetch(`${BRIDGE}/prices?instruments=${instrument}`).then(r => r.json());
+        const pResp = await fetch(`${BRIDGE}/prices?instruments=${instrument}`, { headers: getAuthHeaders() }).then(r => r.json());
         if (pResp.prices?.[0]) {
           const px = pResp.prices[0];
           freshMid = (parseFloat(px.bids[0].price) + parseFloat(px.asks[0].price)) / 2;
@@ -8048,7 +8053,7 @@ export default function TradingRobot() {
       const syms = [...new Set(activeSwing.map(t => t.pair.replace("/", "_")))].join(",");
       let priceMap = {};
       try {
-        const pr = await fetch(`${BRIDGE}/prices?instruments=${syms}`);
+        const pr = await fetch(`${BRIDGE}/prices?instruments=${syms}`, { headers: getAuthHeaders() });
         const pd = pr.ok ? await pr.json() : null;
         (pd?.prices || []).forEach(p => {
           const mid = p.bids && p.asks ? ((parseFloat(p.bids[0]?.price) + parseFloat(p.asks[0]?.price)) / 2) : null;
@@ -8141,7 +8146,7 @@ export default function TradingRobot() {
         try {
           let freshMid = parseFloat(currentSig.entry) || 0;
           try {
-            const pr = await fetch(`${BRIDGE}/prices?instruments=${sym}`).then(r => r.json());
+            const pr = await fetch(`${BRIDGE}/prices?instruments=${sym}`, { headers: getAuthHeaders() }).then(r => r.json());
             const px = pr.prices?.[0];
             if (px) freshMid = (parseFloat(px.bids[0].price) + parseFloat(px.asks[0].price)) / 2;
           } catch {}
