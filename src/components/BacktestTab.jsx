@@ -1,6 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { BRIDGE, FONT_MONO } from '../lib/config';
 
+const STRATEGY_SESSION_MAP = {
+  SYDNEY: 'Momentum', TOKYO: 'Momentum', LONDON: 'Momentum',
+  PRIME:  'Breakout', NY:    'Mean Revert',
+};
+const deriveStrategyFromSession = (session) => STRATEGY_SESSION_MAP[session] || 'Mean Revert';
+
 // ─── BACKTEST CONSTANTS ───────────────────────────────────────────────────────
 const BACKTEST_SPREAD_COSTS = {
   EUR_USD: 0.0002, GBP_USD: 0.0003, USD_JPY: 0.02,  USD_CAD: 0.0003,
