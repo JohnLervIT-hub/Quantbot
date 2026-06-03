@@ -247,7 +247,7 @@ function getAuthHeaders() {
 async function callClaude(prompt, systemPrompt, maxTokens = 400) {
   const resp = await fetch(`${BRIDGE}/ai`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...getAuthHeaders() },
     body: JSON.stringify({ prompt, systemPrompt, maxTokens }),
   });
   const data = await resp.json();
