@@ -689,6 +689,9 @@ const signalFirstDetected      = new Map(); // instrument → ms timestamp when 
 // ─── DIAGNOSTIC COUNTERS (reset every 24h) ───────────────────────────────────
 let diagCounters = {
   resetAt:             Date.now(),
+  loopRuns:            0,
+  pairsAttempted:      0,
+  noSignal:            0,
   signalCounter:       0,
   gatekeeperPass:      0,
   newsGuardPass:       0,
@@ -3304,6 +3307,7 @@ function serverRunGatekeepers(history, signal, openTrades, _instrument, strategy
 
 async function serverAutoTrade() {
   lastScanAt = Date.now();
+  diagCounters.loopRuns++;
   if (process.env.AUTO_MODE_ENABLED !== 'true') return;
 
   const session = getServerSession();
@@ -3332,7 +3336,7 @@ async function serverAutoTrade() {
 
   // Reset diagnostic counters every 24h
   if (Date.now() - diagCounters.resetAt > 24 * 60 * 60 * 1000) {
-    diagCounters = { resetAt: Date.now(), signalCounter: 0, gatekeeperPass: 0, newsGuardPass: 0, macroPass: 0, reachedConsensus: 0, aplusCount: 0, standardCount: 0, executedCount: 0, blockedScore: 0, blockedNews: 0, blockedMacro: 0, blockedOptions: 0, blockedHistory: 0, blockedConsensus: 0, blockedCooldown: 0, blockedHeat: 0, swingCounter: 0, swingConsensusPass: 0, swingQueued: 0, swingExecutedCount: 0 };
+    diagCounters = { resetAt: Date.now(), loopRuns: 0, pairsAttempted: 0, noSignal: 0, signalCounter: 0, gatekeeperPass: 0, newsGuardPass: 0, macroPass: 0, reachedConsensus: 0, aplusCount: 0, standardCount: 0, executedCount: 0, blockedScore: 0, blockedNews: 0, blockedMacro: 0, blockedOptions: 0, blockedHistory: 0, blockedConsensus: 0, blockedCooldown: 0, blockedHeat: 0, swingCounter: 0, swingConsensusPass: 0, swingQueued: 0, swingExecutedCount: 0 };
   }
 
   if (openTrades.length >= 2) {
@@ -3357,6 +3361,7 @@ async function serverAutoTrade() {
   for (const instr of currentOpenInstruments) serverAutoTradeOpenInstr.add(instr);
 
   for (const instrument of pairs) {
+    diagCounters.pairsAttempted++;
     // Consensus cooldown — 15 minutes between signal attempts per pair
     if (Date.now() - (lastConsensus.get(instrument) || 0) < 15 * 60_000) { diagCounters.blockedCooldown++; continue; }
 
@@ -3449,6 +3454,7 @@ async function serverAutoTrade() {
     if (!signal) {
       signalFirstDetected.delete(instrument); // signal gone — reset age clock
       console.log(`[auto] ${instrument} — no ${strategy} signal`);
+      diagCounters.noSignal++;
       continue;
     }
     diagCounters.signalCounter++;
@@ -4931,6 +4937,12 @@ app.get('/diagnostics', requireAuth, async (_req, res) => {
   const hoursRunning = ((Date.now() - diagCounters.resetAt) / (60 * 60 * 1000)).toFixed(1);
   res.json({
     periodHours: parseFloat(hoursRunning),
+    scanner: {
+      autoModeEnabled: process.env.AUTO_MODE_ENABLED === 'true',
+      lastScanAt:      lastScanAt ? new Date(lastScanAt).toISOString() : null,
+      loopRuns:        diagCounters.loopRuns,
+      session:         getServerSession(),
+    },
     thresholds: {
       standardScore:          65,
       aplusScore:             72,
@@ -4941,6 +4953,8 @@ app.get('/diagnostics', requireAuth, async (_req, res) => {
       signalAgeMinutes:       5,
     },
     m5: {
+      pairsAttempted:    diagCounters.pairsAttempted,
+      noSignal:          diagCounters.noSignal,
       signalsScanned:    diagCounters.signalCounter,
       passedGatekeeper:  diagCounters.gatekeeperPass,
       passedNewsGuard:   diagCounters.newsGuardPass,
