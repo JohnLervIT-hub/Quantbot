@@ -185,7 +185,7 @@ const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY  || process.env.VITE_ANTHROP
 const DEEPSEEK_KEY  = process.env.DEEPSEEK_API_KEY   || process.env.VITE_DEEPSEEK_API_KEY;
 const GEMINI_KEY    = process.env.GEMINI_API_KEY     || process.env.VITE_GEMINI_API_KEY;
 const GLM_API_KEY   = process.env.GLM_API_KEY;
-const QWEN_API_KEY  = process.env.QWEN_API_KEY;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 // Normalise auto-mode so the runtime toggle (which writes AUTO_MODE_ENABLED) always wins
 if (!process.env.AUTO_MODE_ENABLED && process.env.VITE_AUTO_MODE) {
   process.env.AUTO_MODE_ENABLED = process.env.VITE_AUTO_MODE;
@@ -633,7 +633,7 @@ app.get('/health', (_req, res) => {
       george:   Boolean(GLM_API_KEY),
       deepseek: Boolean(DEEPSEEK_KEY),
       gemini:   Boolean(GEMINI_KEY),
-      ray:      Boolean(QWEN_API_KEY),
+      ray:      Boolean(OPENROUTER_API_KEY),
     },
     rayStatus: lastRayStatus,
   });
@@ -1442,17 +1442,22 @@ async function askDeepSeek(prompt, sys) {
   return { name: 'JAMES', ...parseVerdict(text) };
 }
 
-async function askQwen(prompt, sys) {
-  if (!QWEN_API_KEY) throw new Error('Missing QWEN_API_KEY');
-  const r = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
+async function askOpenRouter(prompt, sys) {
+  if (!OPENROUTER_API_KEY) throw new Error('Missing OPENROUTER_API_KEY');
+  const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` },
-    body: JSON.stringify({ model: 'qwen2.5-72b-instruct', messages: [{ role: 'user', content: `${sys ? sys + '\n\n' : ''}${prompt}` }], max_tokens: 500, temperature: 0 }),
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+      'HTTP-Referer': 'https://quantbot-phi.vercel.app',
+      'X-Title': 'Xavier QuantBot',
+    },
+    body: JSON.stringify({ model: 'qwen/qwen-2.5-72b-instruct', messages: [{ role: 'user', content: `${sys ? sys + '\n\n' : ''}${prompt}` }], max_tokens: 500, temperature: 0 }),
   });
   const d = await r.json();
-  if (!r.ok) throw new Error(apiErr(d, `Qwen HTTP ${r.status}`));
+  if (!r.ok) throw new Error(apiErr(d, `OpenRouter HTTP ${r.status}`));
   const text = d.choices?.[0]?.message?.content;
-  if (!text) throw new Error('Qwen empty response');
+  if (!text) throw new Error('OpenRouter empty response');
   console.log('[RAY/QWEN] response received');
   return { name: 'RAY', ...parseVerdict(text) };
 }
@@ -1484,7 +1489,7 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
     askDeepSeek(buildDeepSeekPrompt(params), SYS_DEEP)
       .then(r => { if (r?.verdict) jamesResult = r; })
       .catch(e => console.log('[JAMES] offline —', e.message.slice(0, 80))),
-    askQwen(buildGeminiPrompt(params), SYS_GEM)
+    askOpenRouter(buildGeminiPrompt(params), SYS_GEM)
       .then(r => { if (r?.verdict) rayResult = r; })
       .catch(e => {
         const msg = e.message;
@@ -1869,7 +1874,7 @@ app.post('/swing-consensus', async (req, res) => {
       askClaude(buildClaudeSwingPrompt(p),    SYS_CLAUDE_SWING),
       askGLM(buildGPTSwingPrompt(p),          SYS_GPT_SWING),
       askDeepSeek(buildDeepSeekSwingPrompt(p),SYS_DEEP_SWING),
-      askQwen(buildGeminiSwingPrompt(p),    SYS_GEM_SWING),
+      askOpenRouter(buildGeminiSwingPrompt(p),    SYS_GEM_SWING),
     ]);
     const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
     const models = settled.map((r, i) => {
@@ -4091,7 +4096,7 @@ async function runSwingConsensus(p) {
     askClaude(buildClaudeSwingPrompt(p),     SYS_CLAUDE_SWING),
     askGLM(buildGPTSwingPrompt(p),           SYS_GPT_SWING),
     askDeepSeek(buildDeepSeekSwingPrompt(p), SYS_DEEP_SWING),
-    askQwen(buildGeminiSwingPrompt(p),     SYS_GEM_SWING),
+    askOpenRouter(buildGeminiSwingPrompt(p),     SYS_GEM_SWING),
   ]);
   const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
   const models = settled.map((r, i) => {
@@ -5283,7 +5288,7 @@ app.get('/patterns/test/:instrument', requireAuth, async (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`OANDA bridge live on port ${PORT}`);
-  console.log(`  AI: Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | GLM/George ${GLM_API_KEY ? '✓' : '✗'} | DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | Qwen/Ray ${QWEN_API_KEY ? '✓' : '✗'} | Gemini(news) ${GEMINI_KEY ? '✓' : '✗'}`);
+  console.log(`  AI: Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | GLM/George ${GLM_API_KEY ? '✓' : '✗'} | DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | OpenRouter/Ray ${OPENROUTER_API_KEY ? '✓' : '✗'} | Gemini(news) ${GEMINI_KEY ? '✓' : '✗'}`);
   console.log(`  Auto mode: ${process.env.AUTO_MODE_ENABLED === 'true' ? 'ENABLED ⚡' : 'disabled (set AUTO_MODE_ENABLED=true to activate)'}`);
 
   // ── Environment audit — shows exactly which variables are present ──────────
@@ -5293,7 +5298,7 @@ app.listen(PORT, '0.0.0.0', () => {
     'ANTHROPIC_API_KEY',
     'OPENAI_API_KEY',
     'DEEPSEEK_API_KEY',
-    'GROQ_API_KEY',
+    'OPENROUTER_API_KEY',
     'AUTO_MODE_ENABLED',
     'DISCORD_WEBHOOK_URL',
     'DISCORD_BOT_TOKEN',
@@ -5305,11 +5310,11 @@ app.listen(PORT, '0.0.0.0', () => {
     'VITE_ANTHROPIC_KEY',    // local dev fallback
     'VITE_OPENAI_API_KEY',   // local dev fallback
     'VITE_DEEPSEEK_API_KEY', // local dev fallback
-    'VITE_GROQ_API_KEY',     // local dev fallback
+    'OPENROUTER_API_KEY',    // RAY consensus model via OpenRouter
     'VITE_GEMINI_API_KEY',   // local dev fallback (news commentary)
     'VITE_AUTO_MODE',        // local dev fallback
   ];
-  const SENSITIVE_ENV = new Set(['OANDA_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROQ_API_KEY', 'GEMINI_API_KEY', 'DISCORD_BOT_TOKEN', 'JWT_SECRET', 'DASHBOARD_PASSWORD', 'SUPABASE_ANON_KEY']);
+  const SENSITIVE_ENV = new Set(['OANDA_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'OPENROUTER_API_KEY', 'GEMINI_API_KEY', 'DISCORD_BOT_TOKEN', 'JWT_SECRET', 'DASHBOARD_PASSWORD', 'SUPABASE_ANON_KEY']);
   console.log('── ENV AUDIT ─────────────────────────────');
   REQUIRED_VARS.forEach(v => {
     const val = process.env[v];
