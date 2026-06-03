@@ -1292,6 +1292,8 @@ Key questions:
 
 CONFIRM if structure is valid and R:R >= 1.5 at TP1. REJECT if any condition fails.
 
+Note: A score of 75%+ with EMA alignment and a valid stop loss IS sufficient for Kill Shot entry. Only REJECT if there is a SPECIFIC major risk factor present. Do not reject based on score threshold alone — 75% is the validated minimum.
+
 Respond in this EXACT format:
 VERDICT: CONFIRM or REJECT
 REASON: (one sentence, max 15 words, trader language)`;
