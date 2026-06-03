@@ -3792,6 +3792,7 @@ async function serverAutoTrade() {
     console.log(`[auto] ${instrument} — HIGH_CONVICTION: ${isHighConviction} (score:${signal.score} age:${Math.round(signalAgeMs/60000)}min patternOk:${patternAnalysis?.confirms} optionsOk:${optionsOk} histOk:${(patternInsight?.attempts ?? 0) >= 10}) — need ${requiredVotes}/4`);
 
     diagCounters.reachedConsensus++;
+    console.log('[M5 ROUTING]', instrument, 'score:', signal.score, 'reaching routeToConsensus');
     console.log(`[auto] ${instrument} — calling consensus`);
     let consensus;
     try {
