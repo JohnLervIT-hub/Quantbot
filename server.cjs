@@ -248,11 +248,6 @@ app.get('/trades', requireAuth, async (req, res) => {
   res.json(await r.json());
 });
 
-app.get('/positions', requireAuth, async (req, res) => {
-  const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
-  res.json(await r.json());
-});
-
 app.get('/closed-trades', requireAuth, async (req, res) => {
   const count = Math.min(parseInt(req.query.count) || 50, 500);
   const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades?state=CLOSED&count=${count}`, { headers: H });
@@ -472,10 +467,10 @@ app.post('/close/:tradeId/partial', requireAuth, async (req, res) => {
 });
 
 // Modify stop loss — body: { price: "1.23456" }
-app.patch('/order/:tradeId/sl', async (req, res) => {
+app.patch('/order/:tradeId/sl', requireAuth, async (req, res) => {
   const { tradeId } = req.params;
-  const { price } = req.body;
-  if (!price) return res.status(400).json({ error: 'price required' });
+  const price = parseFloat(req.body.price);
+  if (!price || price <= 0 || price > 100000) return res.status(400).json({ error: 'Invalid price' });
   try {
     const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/orders`, {
       method: 'PUT', headers: H,
@@ -504,6 +499,7 @@ app.get('/candles/weekly', async (req, res) => {
 
 app.get('/candles/:instrument', async (req, res) => {
   const { instrument } = req.params;
+  if (!VALID_INSTRUMENTS.has(instrument)) return res.status(400).json({ error: `Invalid instrument: ${instrument}` });
   const count = Math.min(parseInt(req.query.count) || 60, 500);
   const granularity = req.query.granularity || 'M5';
   try {
@@ -638,8 +634,9 @@ app.get('/health', (_req, res) => {
   });
 });
 
-app.post('/ai', async (req, res) => {
-  const { prompt, systemPrompt, maxTokens } = req.body;
+app.post('/ai', requireAuth, async (req, res) => {
+  const { prompt, systemPrompt } = req.body;
+  const maxTokens = Math.min(parseInt(req.body.maxTokens) || 500, 1000);
   if (!prompt || typeof prompt !== 'string' || !prompt.trim())
     return res.status(400).json({ error: { message: 'Missing required field: prompt' } });
   if (!ANTHROPIC_KEY)
@@ -650,7 +647,7 @@ app.post('/ai', async (req, res) => {
       headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: maxTokens || 400,
+        max_tokens: maxTokens,
         system: systemPrompt || 'You are an expert trading assistant.',
         messages: [{ role: 'user', content: prompt }],
       }),
@@ -917,8 +914,6 @@ const PIP_SIZE = {
   // Default
   default: 0.0001,
 };
-const SERVER_PIP_SIZE = PIP_SIZE; // alias — kept for any remaining references
-
 // Typical spread per instrument — added to 1R so loss on SL hit never exceeds 1R true risk
 const SPREAD_COSTS = {
   EUR_USD: 0.0002, GBP_USD: 0.0003, USD_JPY: 0.02,
@@ -1813,7 +1808,7 @@ app.get('/economic-calendar', async (_req, res) => {
 });
 
 // ─── XAVIER PRINCIPLE WEIGHTS ─────────────────────────────────────────────────
-app.get('/xavier-weights', (_req, res) => res.json(xavierWeights));
+app.get('/xavier-weights', requireAuth, (_req, res) => res.json(xavierWeights));
 app.post('/xavier-weights', requireAuth, (req, res) => {
   const { scoreThreshold, newsWindowMins, capitalPreservation, informationFiltering, patience } = req.body;
   if (typeof scoreThreshold       === 'number') xavierWeights.scoreThreshold       = Math.max(50, Math.min(95, scoreThreshold));
@@ -3149,12 +3144,7 @@ function serverGenerateSignal(history, strategy, instrument) {
   const change = (last - recent[0]) / recent[0];
   let score = 0, direction = null, reason = [];
 
-  if (strategy === 'Trend Follow') {
-    if      (ema9 > ema21 && last > ema9) { score += 40; direction = 'LONG';  reason.push('EMA bullish cross'); }
-    else if (ema9 < ema21 && last < ema9) { score += 40; direction = 'SHORT'; reason.push('EMA bearish cross'); }
-    if      (change >  0.003)             { score += 25; direction = direction || 'LONG';  reason.push('Strong uptrend');   }
-    else if (change < -0.003)             { score += 25; direction = direction || 'SHORT'; reason.push('Strong downtrend'); }
-  } else if (strategy === 'Mean Revert') {
+  if (strategy === 'Mean Revert') {
     const mean     = recent.reduce((a, b) => a + b, 0) / recent.length;
     const dev      = Math.abs(last - mean) / mean;
     const isSilver = instrument.includes('XAG');
@@ -3695,7 +3685,7 @@ async function serverAutoTrade() {
     const bars      = liveHistory.slice(-21);
     const tr        = bars.slice(1).map((v, i) => Math.abs(v - bars[i]));
     const atr       = tr.reduce((a, b) => a + b, 0) / tr.length || 0.00001;
-    const pip       = SERVER_PIP_SIZE[instrument] || 0.0001;
+    const pip       = PIP_SIZE[instrument] || 0.0001;
     const slMult    = ATR_SL_MULTIPLIER[instrument] ?? 1.5;
     const tpMult    = ATR_TP_MULTIPLIER[instrument] ?? 3.0;
 
@@ -3878,7 +3868,7 @@ async function serverAutoTrade() {
           { name: 'Score',      value: `${signal.score}%`,                                    inline: true },
           { name: 'Pattern',    value: patternAnalysis.patterns.join(', '),                   inline: true },
           { name: 'Options',    value: `${optionsData.institutionalBias} (PCR ${optionsData.putCallRatio}) ✅`, inline: true },
-          { name: 'History',    value: `${patternInsight.winRate.toFixed(0)}% win rate (${patternInsight.attempts} trades) ✅`, inline: true },
+          { name: 'History',    value: `${(patternInsight?.winRate ?? 0).toFixed(0)}% win rate (${patternInsight?.attempts ?? 0} trades) ✅`, inline: true },
           { name: 'Signal Age', value: `${Math.round(signalAgeMs / 60000)} minutes ✅`,       inline: true },
           { name: 'Council',    value: '4/4 required',                                        inline: true },
           ...modelLines,
@@ -5046,7 +5036,7 @@ app.get('/run-tests', requireAuth, async (_req, res) => {
   }
 });
 
-app.get('/supabase/status', async (_req, res) => {
+app.get('/supabase/status', requireAuth, async (_req, res) => {
   if (!supabase) return res.json({ connected: false, tables: null });
   try {
     const [t1, t2, t3] = await Promise.all([
