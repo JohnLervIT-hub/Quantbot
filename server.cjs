@@ -1513,6 +1513,76 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
   };
 }
 
+// ─── THREE-LAYER CONSENSUS ROUTER ────────────────────────────────────────────
+// Layer 1 FREE   — score ≥ 85 + pattern confirms + no major event → deterministic
+// Layer 2 $0.00014 — score 65-84 + no major event → JAMES (DeepSeek) only
+// Layer 3 full   — kill shot / major event / no pattern / A+ edge case → all 4 models
+
+function isMajorEvent() {
+  if (economicEvents.length === 0) return false;
+  const now         = Date.now();
+  const twoHoursAgo = now - 2 * 60 * 60 * 1000;
+  return economicEvents.some(e => e.time >= twoHoursAgo && e.time <= now);
+}
+
+async function routeToConsensus(signal, patternAnalysis, instrument, isKillShot, rawParams, { isHighConviction = false } = {}) {
+  const score   = signal.score;
+  const hasMajor = isMajorEvent();
+
+  if (!isKillShot) {
+    // ── Layer 1: deterministic (free) ───────────────────────────────────────
+    if (score >= 85 && patternAnalysis?.confirms === true && (patternAnalysis?.patterns?.length ?? 0) > 0 && !hasMajor) {
+      console.log(`[LAYER 1] ${instrument} score:${score} pattern:${patternAnalysis.patterns[0]} — deterministic execute FREE`);
+      return {
+        votesOk:         true,
+        votes:           { confirm: 1, reject: 0 },
+        models:          [{ name: 'DETERMINISTIC', verdict: 'CONFIRM', reason: `${patternAnalysis.patterns[0]} confirms ${signal.direction}` }],
+        voteLog:         [`[LAYER 1] DETERMINISTIC: ✅ CONFIRM\n"${patternAnalysis.patterns[0]} confirms ${signal.direction}"`],
+        availableModels: 1,
+        requiredVotes:   1,
+        rayAvailable:    false,
+        consensus:       'CONFIRM',
+        executeAllowed:  true,
+        confidence:      '100%',
+        layer:           1,
+        source:          'DETERMINISTIC',
+      };
+    }
+
+    // ── Layer 2: JAMES only ($0.00014) ───────────────────────────────────────
+    if (score >= 65 && score < 85 && !hasMajor) {
+      console.log(`[LAYER 2] ${instrument} score:${score} — JAMES light review ($0.00014)`);
+      try {
+        const james     = await askDeepSeek(buildDeepSeekPrompt(rawParams), SYS_DEEP);
+        const confirmed = james.verdict === 'CONFIRM';
+        console.log(`[LAYER 2] ${instrument} — JAMES: ${james.verdict} "${james.reason}" → ${confirmed ? 'EXECUTE' : 'BLOCK'}`);
+        return {
+          votesOk:         confirmed,
+          votes:           { confirm: confirmed ? 1 : 0, reject: confirmed ? 0 : 1 },
+          models:          [{ name: 'JAMES', verdict: james.verdict, reason: james.reason }],
+          voteLog:         [`JAMES (Quant): ${confirmed ? '✅' : '❌'} ${james.verdict}\n"${james.reason}"`, `\nVerdict: ${confirmed ? '1/1 CONFIRM → EXECUTE' : '0/1 CONFIRM → BLOCKED'} [LIGHT REVIEW]`],
+          availableModels: 1,
+          requiredVotes:   1,
+          rayAvailable:    false,
+          consensus:       confirmed ? 'CONFIRM' : 'REJECT',
+          executeAllowed:  confirmed,
+          confidence:      confirmed ? '100%' : '0%',
+          layer:           2,
+          source:          'LIGHT_REVIEW',
+        };
+      } catch (e) {
+        console.warn(`[LAYER 2] JAMES failed (${e.message}) — escalating to Layer 3`);
+      }
+    }
+  }
+
+  // ── Layer 3: full 4-model council ────────────────────────────────────────
+  const reason = isKillShot ? 'kill shot' : hasMajor ? 'major event' : score >= 85 ? 'no pattern' : 'layer 2 escalation';
+  console.log(`[LAYER 3] ${instrument} score:${score} — full council (${reason})`);
+  const result = await runConsensus(rawParams, { isHighConviction });
+  return { ...result, layer: 3, source: 'FULL_CONSENSUS' };
+}
+
 // ─── NEWS ENDPOINT ───────────────────────────────────────────────────────────
 const NEWS_QUERIES = {
   all:         'forex+stock+market+trading+finance',
@@ -3675,7 +3745,7 @@ async function serverAutoTrade() {
     console.log(`[auto] ${instrument} — calling consensus`);
     let consensus;
     try {
-      consensus = await runConsensus({
+      const consensusParams = {
         instrument, direction: signal.direction, score: signal.score,
         price:          formatPrice(price, instrument),
         change:         signal.priceChange?.toFixed(4) || '0',
@@ -3714,14 +3784,15 @@ async function serverAutoTrade() {
           confirmsTrade:     optionsData.signal === signal.direction,
         } : null,
         patternAnalysis:    patternAnalysis,
-      }, { isHighConviction });
+      };
+      consensus = await routeToConsensus(signal, patternAnalysis, instrument, false, consensusParams, { isHighConviction });
     } catch (e) {
       console.error(`[auto] Consensus error ${instrument}: ${e.message}`);
       continue;
     }
 
     const { votesOk, requiredVotes: effectiveRequired, availableModels } = consensus;
-    console.log(`[auto] ${instrument} — consensus ${consensus.votes.confirm}/${availableModels} — need ${effectiveRequired} — ${votesOk ? 'EXECUTE' : 'BLOCKED'}${isHighConviction ? ' [HIGH CONVICTION]' : ''}${!consensus.rayAvailable ? ' [RAY OFFLINE]' : ''}`);
+    console.log(`[auto] ${instrument} — [LAYER ${consensus.layer}/${consensus.source}] ${consensus.votes.confirm}/${availableModels} — need ${effectiveRequired} — ${votesOk ? 'EXECUTE' : 'BLOCKED'}${isHighConviction ? ' [HIGH CONVICTION]' : ''}${!consensus.rayAvailable ? ' [RAY OFFLINE]' : ''}`);
 
     if (!votesOk) {
       serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Consensus', actual: `${consensus.votes.confirm}/${availableModels}`, threshold: `${effectiveRequired}/${availableModels} required${isHighConviction ? ' (HIGH CONVICTION — A+)' : ''}${!consensus.rayAvailable ? ' (RAY offline)' : ''}` }], models: consensus.models });
@@ -3768,7 +3839,7 @@ async function serverAutoTrade() {
 
     const tradeContext = {
       score:              signal.score,
-      tradeSource:        isHighConviction ? 'A_PLUS' : 'STANDARD',
+      tradeSource:        consensus.source || (isHighConviction ? 'A_PLUS' : 'STANDARD'),
       consensusVotes:     consensus.votes.confirm,
       warrenVerdict:      consensus.models.find(m => m.name === 'WARREN')?.verdict  || null,
       georgeVerdict:      consensus.models.find(m => m.name === 'GEORGE')?.verdict  || null,
@@ -3813,7 +3884,29 @@ async function serverAutoTrade() {
         if (autoTrades.length > 100) autoTrades.pop();
         serverTradeLog.unshift({ id: oandaId, pair: instrument, direction: signal.direction, strategy, session, score: signal.score, entry: parseFloat(fill), sl: parseFloat(formatPrice(sl, instrument)), tp: parseFloat(formatPrice(tp, instrument)), units, type: 'm5', timestamp: Date.now() });
         if (serverTradeLog.length > 500) serverTradeLog.pop();
-        console.log(`[auto] ✓ EXECUTED ${instrument} ${signal.direction} @ ${fill} — ${consensus.votes.confirm}/4 — ${strategy} — ${session} — source:${isHighConviction ? 'A_PLUS' : 'STANDARD'}`);
+        console.log(`[auto] ✓ EXECUTED ${instrument} ${signal.direction} @ ${fill} — ${consensus.votes.confirm}/${availableModels} — ${strategy} — ${session} — source:${consensus.source}`);
+
+        // ── Per-layer Discord notification ───────────────────────────────────
+        if (consensus.layer === 1) {
+          await sendDiscordEmbed({ title: '⚡ LAYER 1 — DETERMINISTIC EXECUTE', color: 0x3fb950,
+            fields: [
+              { name: 'Pair',    value: `${instrument.replace('_', '/')} ${signal.direction}`, inline: true },
+              { name: 'Score',   value: `${signal.score}%`,                                    inline: true },
+              { name: 'Pattern', value: patternAnalysis?.patterns?.[0] || '—',                 inline: true },
+              { name: 'Fill',    value: `@ ${fill}`,                                           inline: true },
+              { name: 'Source',  value: 'DETERMINISTIC (FREE)',                                 inline: true },
+            ], timestamp: new Date().toISOString() });
+        } else if (consensus.layer === 2) {
+          await sendDiscordEmbed({ title: '🔵 LAYER 2 — JAMES LIGHT REVIEW', color: 0x58a6ff,
+            fields: [
+              { name: 'Pair',    value: `${instrument.replace('_', '/')} ${signal.direction}`, inline: true },
+              { name: 'Score',   value: `${signal.score}%`,                                    inline: true },
+              { name: 'JAMES',   value: consensus.models[0]?.verdict || '—',                   inline: true },
+              { name: 'Reason',  value: consensus.models[0]?.reason  || '—',                   inline: false },
+              { name: 'Fill',    value: `@ ${fill}`,                                           inline: true },
+              { name: 'Cost',    value: '$0.00014',                                             inline: true },
+            ], timestamp: new Date().toISOString() });
+        }
       }
     } catch (e) {
       console.error(`[auto] Order error ${instrument}: ${e.message}`);
