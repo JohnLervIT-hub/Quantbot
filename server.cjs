@@ -1505,6 +1505,12 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
     'RAY:',    rayResult    ? 'online' : 'offline',
     '| required:', requiredVotes, 'confirms:', confirms
   );
+  console.log('[COUNCIL DETAIL]', params.instrument,
+    'WARREN:', warrenResult?.verdict, warrenResult?.reason?.slice(0, 80),
+    '| GEORGE:', georgeResult?.verdict, georgeResult?.reason?.slice(0, 80),
+    '| JAMES:', jamesResult?.verdict, jamesResult?.reason?.slice(0, 80),
+    '| RAY:', rayResult?.verdict, rayResult?.reason?.slice(0, 80)
+  );
 
   const voteLog = models.map(m => {
     const role = MODEL_ROLE[m.name] || '?';
