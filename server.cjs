@@ -1471,7 +1471,7 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
     askClaude(buildClaudePrompt(params), SYS_CLAUDE)
       .then(r => { if (r?.verdict) warrenResult = r; })
       .catch(e => console.log('[WARREN] offline —', e.message.slice(0, 80))),
-    askOpenRouter(buildGPTPrompt(params), SYS_GPT, { model: 'qwen/qwen-2.5-72b-instruct:free', name: 'GEORGE' })
+    askOpenRouter(buildGPTPrompt(params), SYS_GPT, { model: 'qwen/qwen-2.5-72b-instruct', name: 'GEORGE' })
       .then(r => { if (r?.verdict) georgeResult = r; })
       .catch(e => console.log('[GEORGE] offline —', e.message.slice(0, 80))),
     askDeepSeek(buildDeepSeekPrompt(params), SYS_DEEP)
@@ -1860,7 +1860,7 @@ app.post('/swing-consensus', async (req, res) => {
     }
     const settled = await Promise.allSettled([
       askClaude(buildClaudeSwingPrompt(p),    SYS_CLAUDE_SWING),
-      askOpenRouter(buildGPTSwingPrompt(p), SYS_GPT_SWING, { model: 'qwen/qwen-2.5-72b-instruct:free', name: 'GEORGE' }),
+      askOpenRouter(buildGPTSwingPrompt(p), SYS_GPT_SWING, { model: 'qwen/qwen-2.5-72b-instruct', name: 'GEORGE' }),
       askDeepSeek(buildDeepSeekSwingPrompt(p),SYS_DEEP_SWING),
       askOpenRouter(buildGeminiSwingPrompt(p),    SYS_GEM_SWING),
     ]);
@@ -4085,7 +4085,7 @@ function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
 async function runSwingConsensus(p) {
   const settled = await Promise.allSettled([
     askClaude(buildClaudeSwingPrompt(p),     SYS_CLAUDE_SWING),
-    askOpenRouter(buildGPTSwingPrompt(p), SYS_GPT_SWING, { model: 'qwen/qwen-2.5-72b-instruct:free', name: 'GEORGE' }),
+    askOpenRouter(buildGPTSwingPrompt(p), SYS_GPT_SWING, { model: 'qwen/qwen-2.5-72b-instruct', name: 'GEORGE' }),
     askDeepSeek(buildDeepSeekSwingPrompt(p), SYS_DEEP_SWING),
     askOpenRouter(buildGeminiSwingPrompt(p),     SYS_GEM_SWING),
   ]);
