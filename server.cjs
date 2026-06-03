@@ -556,7 +556,7 @@ app.get('/backtest/candles', async (req, res) => {
   }
 });
 
-app.get('/test-notify', async (_req, res) => {
+app.get('/test-notify', requireAuth, async (_req, res) => {
   await sendNotification(
     '🎯 QuantBot Pro — Discord Connected! Xavier is live and watching the markets.',
     {
@@ -574,7 +574,7 @@ app.get('/test-notify', async (_req, res) => {
   res.json({ sent: true });
 });
 
-app.get('/discord-debug', async (_req, res) => {
+app.get('/discord-debug', requireAuth, async (_req, res) => {
   const botToken  = process.env.DISCORD_BOT_TOKEN;
   const channelId = process.env.DISCORD_CHANNEL_ID;
   if (!botToken || !channelId) return res.json({ error: 'DISCORD_BOT_TOKEN or DISCORD_CHANNEL_ID missing' });
@@ -799,6 +799,13 @@ const SERVER_PAIRS = new Set([
   'XAG_USD',    // +0.78R ✅
   'NAS100_USD', // +0.47R ✅
   'AU200_AUD',  // validated in LONDON + NY sessions
+]);
+
+// Security allowlist — instruments permitted anywhere in the system (order, test, kill shot)
+// BCO_USD and WTICO_USD intentionally excluded — manual-only, not routable via any automated path
+const APPROVED_PAIRS = new Set([
+  'EUR_USD', 'GBP_USD', 'USD_JPY', 'EUR_GBP', 'AUD_USD', 'USD_CAD', 'NZD_USD',
+  'XAU_USD', 'XAG_USD', 'NAS100_USD', 'JP225_USD', 'AU200_AUD', 'UK100_GBP', 'SPX500_USD',
 ]);
 
 // Index pairs — home session only, 75%+ score required (tighter spreads, higher conviction)
@@ -1848,7 +1855,7 @@ app.post('/consensus', requireAuth, async (req, res) => {
 });
 
 // ─── KILL SHOT SWING CONSENSUS ENDPOINT ─────────────────────────────────────
-app.post('/swing-consensus', async (req, res) => {
+app.post('/swing-consensus', requireAuth, async (req, res) => {
   try {
     const p = { ...req.body };
     // Fetch retail sentiment inline if not provided
@@ -1929,7 +1936,7 @@ app.get('/recovery-status', requireAuth, (_req, res) => {
 });
 
 // ─── RECOVERY MODE TEST TRIGGER ──────────────────────────────────────────────
-app.get('/test-recovery-trigger', async (req, res) => {
+app.get('/test-recovery-trigger', requireAuth, async (req, res) => {
   const realPeak = peakBalance;
   peakBalance = peakBalance * 1.031; // inflate peak so current balance looks 3%+ below
   await monitorDrawdown();
@@ -3367,6 +3374,11 @@ async function serverAutoTrade() {
 
   for (const instrument of pairs) {
     diagCounters.pairsAttempted++;
+    // FIX 5 — Hard block: instrument must be in approved allowlist
+    if (!APPROVED_PAIRS.has(instrument)) {
+      console.log('[PAIR BLOCKED]', instrument, '— not in approved pairs list');
+      continue;
+    }
     // Consensus cooldown — 15 minutes between signal attempts per pair
     if (Date.now() - (lastConsensus.get(instrument) || 0) < 15 * 60_000) { diagCounters.blockedCooldown++; continue; }
 
@@ -4408,7 +4420,34 @@ function verifyDiscordRequest(req) {
 // ─── KILL SHOT EXECUTION (called from approval flow) ─────────────────────────
 async function executeKillShot(pending) {
   const { instrument, direction, units, liveEntry, liveSl, liveTp1, liveTp2, liveTp3, score, reasons, session, confirms, models, voteLog, timestamp: ts } = pending;
+
+  // FIX 3 — Hard block: instrument must be in approved list
+  if (!APPROVED_PAIRS.has(instrument)) {
+    console.log('[KILL SHOT BLOCKED]', instrument, '— not in approved pairs list');
+    await sendDiscordEmbed({
+      title: '🚨 KILL SHOT BLOCKED — Unapproved Instrument',
+      color: 0xf85149,
+      fields: [{ name: 'Instrument', value: instrument, inline: true }, { name: 'Reason', value: 'Not in approved pairs list', inline: true }],
+      timestamp: new Date().toISOString(),
+    });
+    return { ok: false, reason: 'UNAPPROVED_INSTRUMENT' };
+  }
+
   console.log('[ORDER SOURCE] executeKillShot', 'instrument:', instrument, 'direction:', direction, 'confirms:', confirms, 'approved: true');
+
+  // FIX 2 — Build context so placeOrder() writes to Supabase
+  const tradeContext = {
+    score,
+    tradeSource:    'KILL_SHOT',
+    consensusVotes: confirms,
+    warrenVerdict:  models?.find(m => m.name === 'WARREN')?.verdict || null,
+    georgeVerdict:  models?.find(m => m.name === 'GEORGE')?.verdict || null,
+    jamesVerdict:   models?.find(m => m.name === 'JAMES')?.verdict  || null,
+    rayVerdict:     models?.find(m => m.name === 'RAY')?.verdict    || null,
+    regimeAtEntry:  null,
+    heatAtEntry:    null,
+    recoveryMode:   false,
+  };
 
   const result = await placeOrder({
     instrument, direction,
@@ -4416,7 +4455,7 @@ async function executeKillShot(pending) {
     entry: liveEntry, stopLoss: liveSl, takeProfit: liveTp1,
     source: 'Kill-Shot-Auto', score, session, strategy: 'Kill Shot',
     approved: true,
-    consensusConfirms: confirms,
+    context: tradeContext,
   });
 
   if (result.blocked) {
@@ -4808,8 +4847,11 @@ async function pollDiscordCommands() {
 }
 
 // ─── TEST KILL SHOT NOTIFICATION ────────────────────────────────────────────
-app.post('/test-killshot', async (_req, res) => {
+app.post('/test-killshot', requireAuth, async (_req, res) => {
   const fakePair = _req.body?.pair || 'XAU_USD';
+  if (!APPROVED_PAIRS.has(fakePair)) {
+    return res.status(400).json({ error: `${fakePair} not in approved pairs list` });
+  }
   const fakeSignal = {
     instrument: fakePair,
     direction:  'LONG',
