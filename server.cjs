@@ -1568,12 +1568,13 @@ function isMajorEvent() {
 }
 
 async function routeToConsensus(signal, patternAnalysis, instrument, isKillShot, rawParams, { isHighConviction = false } = {}) {
-  const score   = signal.score;
-  const hasMajor = isMajorEvent();
+  const score      = signal.score;
+  const hasMajor   = isMajorEvent();
+  const hasPattern = patternAnalysis?.confirms === true && (patternAnalysis?.patterns?.length ?? 0) > 0;
 
   if (!isKillShot) {
-    // ── Layer 1: deterministic (free) ───────────────────────────────────────
-    if (score >= 85 && patternAnalysis?.confirms === true && (patternAnalysis?.patterns?.length ?? 0) > 0 && !hasMajor) {
+    // ── Layer 1: deterministic (free) — score >= 85, pattern confirmed, no major event
+    if (score >= 85 && hasPattern && !hasMajor) {
       console.log(`[LAYER 1] ${instrument} score:${score} pattern:${patternAnalysis.patterns[0]} — deterministic execute FREE`);
       return {
         votesOk:         true,
@@ -1591,7 +1592,17 @@ async function routeToConsensus(signal, patternAnalysis, instrument, isKillShot,
       };
     }
 
-    // ── Layer 2: JAMES only ($0.00014) ───────────────────────────────────────
+    // ── Layer 3 (A+ path): score >= 72 + pattern confirmed, no major — full council
+    // JAMES alone is insufficient when pattern adds high conviction; needs full 4-model review
+    if (score >= 72 && hasPattern && !hasMajor) {
+      console.log(`[LAYER 3] ${instrument} score:${score} pattern:${patternAnalysis.patterns[0]} — full council (A+ pattern confirmed)`);
+      const result = await runConsensus(rawParams, { isHighConviction });
+      return { ...result, layer: 3, source: 'FULL_CONSENSUS' };
+    }
+
+    // ── Layer 2: JAMES only ($0.00014) — covers all remaining M5 signals, no major event
+    // 65-71% with or without pattern → JAMES
+    // 72-84% without pattern → JAMES
     if (score >= 65 && score < 85 && !hasMajor) {
       console.log(`[LAYER 2] ${instrument} score:${score} — JAMES light review ($0.00014)`);
       try {
@@ -1618,7 +1629,7 @@ async function routeToConsensus(signal, patternAnalysis, instrument, isKillShot,
     }
   }
 
-  // ── Layer 3: full 4-model council ────────────────────────────────────────
+  // ── Layer 3: full 4-model council — kill shot, major event, 85%+ no pattern, Layer 2 escalation
   const reason = isKillShot ? 'kill shot' : hasMajor ? 'major event' : score >= 85 ? 'no pattern' : 'layer 2 escalation';
   console.log(`[LAYER 3] ${instrument} score:${score} — full council (${reason})`);
   const result = await runConsensus(rawParams, { isHighConviction });
@@ -3572,7 +3583,7 @@ async function serverAutoTrade() {
     }
     diagCounters.gatekeeperPass++;
 
-    // Trend confirmation — skipped for A+ signals (score >= 72) OR when pattern confirms direction
+    // Trend confirmation — skipped for A+ (score >= 72), pattern confirms, or Layer 2 routing (JAMES validates)
     // Use stored pattern from first detection so pattern can't disappear between scan cycles
     const storedPattern      = signalFirstDetected.get(instrument)?.pattern ?? patternAnalysis;
     const patternConfirmsTrend = storedPattern?.confirms === true && (storedPattern?.patterns?.length ?? 0) > 0;
@@ -3580,6 +3591,8 @@ async function serverAutoTrade() {
       console.log(`[TREND SKIP] ${instrument} score:${signal.score}% — A+ threshold, pattern+council confirms direction`);
     } else if (patternConfirmsTrend) {
       console.log(`[TREND SKIP] ${instrument} pattern:${storedPattern.patterns[0]} confirms trend — skipping`);
+    } else if (signal.score >= 65 && !isMajorEvent()) {
+      console.log(`[TREND SKIP L2] ${instrument} score:${signal.score}% — Layer 2 JAMES will validate`);
     } else {
       const m5Candles = await getM5Candles(instrument);
       const trendOk   = confirmTrend(
