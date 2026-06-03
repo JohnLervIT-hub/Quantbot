@@ -1456,43 +1456,55 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
     tp:         rawParams.tp         || rawParams.takeProfit,
     rr:         rawParams.rr         || rawParams.riskReward,
   };
-  const settled = await Promise.allSettled([
-    askClaude(buildClaudePrompt(params),    SYS_CLAUDE),
-    askGPT(buildGPTPrompt(params),          SYS_GPT),
-    askDeepSeek(buildDeepSeekPrompt(params),SYS_DEEP),
-    askRay(buildGeminiPrompt(params),    SYS_GEM),
+
+  // Call all 4 models in parallel — each result is null if offline/failed
+  // Explicitly null-track so quota-exceeded models are never counted as available
+  let warrenResult = null, georgeResult = null, jamesResult = null, rayResult = null;
+  await Promise.allSettled([
+    askClaude(buildClaudePrompt(params), SYS_CLAUDE)
+      .then(r => { if (r?.verdict) warrenResult = r; })
+      .catch(e => console.log('[WARREN] offline —', e.message.slice(0, 80))),
+    askGPT(buildGPTPrompt(params), SYS_GPT)
+      .then(r => { if (r?.verdict) georgeResult = r; })
+      .catch(e => console.log('[GEORGE] offline —', e.message.slice(0, 80))),
+    askDeepSeek(buildDeepSeekPrompt(params), SYS_DEEP)
+      .then(r => { if (r?.verdict) jamesResult = r; })
+      .catch(e => console.log('[JAMES] offline —', e.message.slice(0, 80))),
+    askRay(buildGeminiPrompt(params), SYS_GEM)
+      .then(r => { if (r?.verdict) rayResult = r; })
+      .catch(e => {
+        const msg = e.message;
+        lastRayStatus = msg.includes('prepayment') || msg.includes('credits') ? 'offline — credits depleted'
+          : msg.includes('quota') ? 'offline — quota exceeded'
+          : `offline — ${msg.slice(0, 60)}`;
+        console.log('[RAY] offline —', lastRayStatus);
+      }),
   ]);
-  const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
-  const models = settled.map((r, i) => {
-    if (r.status === 'fulfilled') return r.value;
-    const raw = r.reason?.message || 'Model unreachable';
-    const reason = raw.includes('prepayment') || raw.includes('credits') ? 'Credits depleted — check billing'
-      : raw.includes('quota') || raw.includes('Quota') ? 'Quota exceeded — rate limit'
-      : raw.includes('Missing') ? raw
-      : raw.slice(0, 80);
-    return { name: NAMES[i], verdict: 'REJECT', reason, failed: true };
-  });
 
-  // Track RAY status globally for /health endpoint
-  const rayAvailable = settled[3].status === 'fulfilled';
-  if (!rayAvailable) {
-    const rayErr = settled[3].reason?.message || 'unreachable';
-    lastRayStatus = rayErr.includes('prepayment') || rayErr.includes('credits') ? 'offline — credits depleted'
-      : rayErr.includes('quota') ? 'offline — quota exceeded'
-      : `offline — ${rayErr.slice(0, 60)}`;
-    console.log('[RAY] offline —', lastRayStatus);
-  } else {
-    lastRayStatus = 'online';
-  }
+  if (rayResult) lastRayStatus = 'online';
+  const rayAvailable = rayResult !== null;
 
-  // Only count models that actually responded — failed models excluded from denominator
-  const activeModels    = models.filter(m => !m.failed);
-  const availableModels = activeModels.length;
-  const confirms        = activeModels.filter(m => m.verdict === 'CONFIRM').length;
+  // Build display models array — mark offline models with failed flag
+  const NAMES   = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
+  const results = [warrenResult, georgeResult, jamesResult, rayResult];
+  const models  = results.map((r, i) =>
+    r !== null ? r : { name: NAMES[i], verdict: 'REJECT', reason: 'Offline — excluded from count', failed: true }
+  );
+
+  // Only count models that actually responded with a valid verdict
+  const availableModels = results.filter(r => r !== null && r?.verdict !== undefined).length;
+  const confirms        = results.filter(r => r?.verdict === 'CONFIRM').length;
   const requiredVotes   = isHighConviction ? availableModels : Math.ceil(availableModels * 0.75);
   const votesOk         = confirms >= requiredVotes;
 
-  console.log('[COUNCIL]', 'available:', availableModels, 'required:', requiredVotes, 'confirms:', confirms, 'RAY:', rayAvailable ? 'online' : lastRayStatus);
+  console.log('[COUNCIL]',
+    'available:', availableModels,
+    'WARREN:', warrenResult ? 'online' : 'offline',
+    'GEORGE:', georgeResult ? 'online' : 'offline',
+    'JAMES:',  jamesResult  ? 'online' : 'offline',
+    'RAY:',    rayResult    ? 'online' : 'offline',
+    '| required:', requiredVotes, 'confirms:', confirms
+  );
 
   const voteLog = models.map(m => {
     const role = MODEL_ROLE[m.name] || '?';
@@ -1501,10 +1513,11 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
   });
   if (!rayAvailable) voteLog.push(`\n⚠️ RAY offline — running on ${availableModels}/4 models, threshold ${requiredVotes}/${availableModels}`);
   voteLog.push(`\nVerdict: ${confirms}/${availableModels} CONFIRM → ${votesOk ? 'EXECUTE' : 'BLOCKED'}${!rayAvailable ? ' [RAY OFFLINE]' : ''}`);
+
   return {
-    votes: { confirm: confirms, reject: activeModels.length - confirms },
-    consensus: votesOk ? 'CONFIRM' : 'REJECT',
-    confidence: `${Math.round((confirms / Math.max(availableModels, 1)) * 100)}%`,
+    votes:          { confirm: confirms, reject: availableModels - confirms },
+    consensus:      votesOk ? 'CONFIRM' : 'REJECT',
+    confidence:     `${Math.round((confirms / Math.max(availableModels, 1)) * 100)}%`,
     models,
     voteLog,
     executeAllowed: votesOk,
