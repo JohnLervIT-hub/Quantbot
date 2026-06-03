@@ -894,13 +894,23 @@ const INSTRUMENT_HOME_SESSIONS = {
   XAU_USD:    ['LONDON', 'PRIME', 'NY', 'SYDNEY'],
 };
 
-const SERVER_PIP_SIZE = {
-  EUR_USD: 0.0001, GBP_USD: 0.0001, USD_JPY:    0.01,
-  AUD_USD: 0.0001, USD_CAD: 0.0001, NZD_USD:  0.0001,
-  EUR_GBP: 0.0001, XAU_USD: 0.01,   XAG_USD:   0.01,
-  SPX500_USD: 1.0, NAS100_USD: 1.0, JP225_USD:   1.0,
-  UK100_GBP:  1.0, AU200_AUD:  1.0,
+// Authoritative pip/point size per instrument — used everywhere in server
+const PIP_SIZE = {
+  // Forex
+  EUR_USD: 0.0001, GBP_USD: 0.0001, USD_JPY: 0.01,
+  AUD_USD: 0.0001, USD_CAD: 0.0001, NZD_USD: 0.0001,
+  EUR_GBP: 0.0001,
+  // Metals
+  XAU_USD: 0.01,   XAG_USD: 0.001,
+  // Indices — points not pips
+  NAS100_USD: 1.0, JP225_USD: 1.0, SPX500_USD: 1.0,
+  UK100_GBP:  1.0, AU200_AUD: 1.0, US30_USD:   1.0,
+  // Oil
+  BCO_USD: 0.01,   WTICO_USD: 0.01,
+  // Default
+  default: 0.0001,
 };
+const SERVER_PIP_SIZE = PIP_SIZE; // alias — kept for any remaining references
 
 // Typical spread per instrument — added to 1R so loss on SL hit never exceeds 1R true risk
 const SPREAD_COSTS = {
@@ -1307,8 +1317,7 @@ REASON: (one sentence, max 15 words, trader language)`;
 }
 
 function buildDeepSeekSwingPrompt(p) {
-  const SWING_PIP = { EUR_USD: 0.0001, GBP_USD: 0.0001, USD_JPY: 0.01, XAU_USD: 0.1, NAS100_USD: 1.0, BCO_USD: 0.01 };
-  const pip = SWING_PIP[p.instrument] || 0.0001;
+  const pip = PIP_SIZE[p.instrument] || PIP_SIZE.default;
   const entry = parseFloat(p.entry), sl = parseFloat(p.sl);
   const tp1 = parseFloat(p.tp1), tp2 = parseFloat(p.tp2), tp3 = parseFloat(p.tp3);
   const riskDist = Math.abs(entry - sl);
@@ -1807,6 +1816,14 @@ app.post('/consensus', requireAuth, async (req, res) => {
         freshNews: p.freshNews        || null,
         ts:        Date.now(),
       };
+    }
+    // Recompute atrPips using authoritative PIP_SIZE — prevents frontend sending
+    // wrong pip scale (e.g. JP225 ATR 293.75 shown as 293,750 pips to models)
+    if (p.atr && p.instrument) {
+      const pip = PIP_SIZE[p.instrument] || PIP_SIZE.default;
+      p.atrPips    = (parseFloat(p.atr)                    / pip).toFixed(1);
+      p.slDistance = p.sl && p.price ? (Math.abs(parseFloat(p.price) - parseFloat(p.sl)) / pip).toFixed(1) : p.slDistance;
+      p.tpDistance = p.tp && p.price ? (Math.abs(parseFloat(p.tp)    - parseFloat(p.price)) / pip).toFixed(1) : p.tpDistance;
     }
     res.json(await runConsensus(p));
   } catch (e) {
