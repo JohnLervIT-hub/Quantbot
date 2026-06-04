@@ -4587,15 +4587,24 @@ async function serverSwingAutoTrade() {
         console.log('[SWING WEEKLY BLOCK]', instrument, 'weekly trend unknown — candle fetch failed — blocking');
         continue;
       }
-      if (sig.direction === 'SHORT' && swingWeeklyTrend === 'BULLISH') {
-        console.log('[SWING WEEKLY BLOCK]', instrument, 'SHORT blocked — weekly BULLISH');
-        continue;
+
+      const isCounterTrend =
+        (sig.direction === 'SHORT' && swingWeeklyTrend === 'BULLISH') ||
+        (sig.direction === 'LONG'  && swingWeeklyTrend === 'BEARISH');
+
+      if (isCounterTrend) {
+        console.log('[COUNTER-TREND]', instrument, sig.direction, 'vs weekly', swingWeeklyTrend, '— raising threshold to 85%');
+        if (sig.score < 85) {
+          console.log('[COUNTER-TREND BLOCK]', instrument, 'score', sig.score, 'below 85% counter-trend minimum');
+          continue;
+        }
+        sig.counterTrend      = true;
+        sig.unitMultiplier    = 0.5;
+        sig.requireFullConsensus = true;
+        console.log('[COUNTER-TREND ALLOWED]', instrument, 'score', sig.score, '≥ 85% — 50% size, 4/4 council required');
+      } else {
+        console.log('[SWING REGIME]', instrument, 'weekly:', swingWeeklyTrend, 'signal:', sig.direction, '✅ aligned');
       }
-      if (sig.direction === 'LONG' && swingWeeklyTrend === 'BEARISH') {
-        console.log('[SWING WEEKLY BLOCK]', instrument, 'LONG blocked — weekly BEARISH');
-        continue;
-      }
-      console.log('[SWING REGIME]', instrument, 'weekly:', swingWeeklyTrend, 'signal:', sig.direction, '✅ aligned');
 
       // Pattern analysis — fetch last 3 M15 candles and adjust score / block contradictions
       let swingPatternAnalysis = null;
@@ -4732,15 +4741,16 @@ async function serverSwingAutoTrade() {
 
       const consensus = await runSwingConsensus(consensusParams);
 
-      // Hard gate — Discord notification ONLY fires after 3/4 consensus confirmed
-      if (consensus.confirms < 3) {
-        console.log(`[SWING] consensus failed ${consensus.confirms}/4 — not sending Discord notification`);
+      // Hard gate — 3/4 normally; 4/4 required for counter-trend trades
+      const minConfirms = sig.requireFullConsensus ? 4 : 3;
+      if (consensus.confirms < minConfirms) {
+        console.log(`[SWING] consensus failed ${consensus.confirms}/${minConfirms}${sig.counterTrend ? ' (counter-trend — 4/4 required)' : ''} — not sending Discord notification`);
         continue;
       }
       diagCounters.swingConsensusPass++;
 
       // ── SL/TP sanity check before queuing ───────────────────────────────────
-      const swingUnitSize = SWING_UNITS[instrument] ?? 500;
+      const swingUnitSize = Math.floor((SWING_UNITS[instrument] ?? 500) * (sig.unitMultiplier ?? 1));
       const units = sig.direction === 'LONG' ? swingUnitSize : -swingUnitSize;
       const slSane = sig.direction === 'LONG' ? liveSl < liveEntry : liveSl > liveEntry;
       const tpSane = sig.direction === 'LONG' ? liveTp1 > liveEntry : liveTp1 < liveEntry;
@@ -4763,6 +4773,7 @@ async function serverSwingAutoTrade() {
         confirms: consensus.confirms, models: consensus.models,
         voteLog: consensus.voteLog, timestamp: ts,
         weeklyTrend: swingWeeklyTrend,
+        counterTrend: sig.counterTrend ?? false,
         expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
       });
       return; // HARD STOP — no execution without Discord approval
@@ -4923,21 +4934,21 @@ async function requestKillShotApproval(signal) {
     return `${m.name} (${role}): ${icon} ${m.verdict} — "${m.reason}"`;
   }).join('\n');
 
+  const counterTrendWarning = signal.counterTrend
+    ? `\n\n⚠️ **COUNTER-TREND TRADE**\nWeekly: ${signal.weeklyTrend} | Signal: ${signal.direction}\nScore required: 85%+ | Position size: 50%`
+    : '';
+
   await sendDiscordEmbed({
-    color: 0x8B5CF6,
-    title: '⚔️ XAVIER COUNCIL VERDICT — KILL SHOT',
-    description: `**${signal.instrument.replace('_', '/')} ${signal.direction}** — ${signal.session}\n\n${councilLines}\n\n**Verdict: ${signal.confirms}/4 CONFIRM → AWAITING APPROVAL**`,
+    color: signal.counterTrend ? 0xF97316 : 0x8B5CF6,
+    title: signal.counterTrend ? '⚠️ XAVIER COUNCIL — COUNTER-TREND KILL SHOT' : '⚔️ XAVIER COUNCIL VERDICT — KILL SHOT',
+    description: `**${signal.instrument.replace('_', '/')} ${signal.direction}** — ${signal.session}\n\n${councilLines}\n\n**Verdict: ${signal.confirms}/4 CONFIRM → AWAITING APPROVAL**${counterTrendWarning}`,
     fields: [
       { name: 'Score',        value: `${signal.score}%`,                                inline: true },
       { name: 'Entry',        value: formatPrice(signal.liveEntry, signal.instrument),  inline: true },
       { name: 'Stop Loss',    value: formatPrice(signal.liveSl,    signal.instrument),  inline: true },
       { name: 'TP1',          value: formatPrice(signal.liveTp1,   signal.instrument),  inline: true },
       { name: 'Weekly Trend', value: signal.weeklyTrend
-          ? `${signal.weeklyTrend}${
-              (signal.weeklyTrend === 'BULLISH' && signal.direction === 'SHORT') ||
-              (signal.weeklyTrend === 'BEARISH' && signal.direction === 'LONG')
-                ? ' ⚠️ COUNTER-TREND' : ' ✅ WITH TREND'
-            }`
+          ? `${signal.weeklyTrend}${signal.counterTrend ? ' ⚠️ COUNTER-TREND' : ' ✅ WITH TREND'}`
           : '—',                                                                        inline: true },
       { name: '⏰ Expires',   value: `${expiryTime} Calgary`,                          inline: true },
       { name: 'Action',       value: `\`!execute ${signal.instrument}\` or \`!skip ${signal.instrument}\``, inline: false },
