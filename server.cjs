@@ -444,8 +444,64 @@ app.post('/swing/order', requireAuth, validateOrderInput, async (req, res) => {
 });
 
 app.post('/close/:tradeId', requireAuth, async (req, res) => {
-  const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${req.params.tradeId}/close`, { method: 'PUT', headers: H });
-  res.json(await r.json());
+  const { tradeId } = req.params;
+
+  // Fetch trade details BEFORE closing so we have entry, SL, TP, open_time
+  let tradeDetails = null;
+  try {
+    const tr = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}`, { headers: H });
+    const td = await tr.json();
+    tradeDetails = td.trade || null;
+  } catch (e) {
+    console.error('[MANUAL CLOSE] Pre-fetch failed:', e.message);
+  }
+
+  // Close the trade on OANDA
+  const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/close`, { method: 'PUT', headers: H });
+  const data = await r.json();
+  res.json(data);
+
+  // Save to Supabase after responding — isolated so failures never block the UI
+  if (r.ok && tradeDetails && supabase) {
+    try {
+      const fill      = data.orderFillTransaction;
+      const pnl       = parseFloat(fill?.tradesClosed?.[0]?.realizedPL ?? fill?.pl ?? 0);
+      const exitPrice = parseFloat(fill?.price || 0);
+      const instr     = tradeDetails.instrument;
+      const dir       = parseFloat(tradeDetails.initialUnits || 1) >= 0 ? 'LONG' : 'SHORT';
+      const entry     = parseFloat(tradeDetails.price || 0);
+      const sl        = tradeDetails.stopLossOrder?.price  ? parseFloat(tradeDetails.stopLossOrder.price)  : null;
+      const tp        = tradeDetails.takeProfitOrder?.price ? parseFloat(tradeDetails.takeProfitOrder.price) : null;
+      const units     = parseFloat(tradeDetails.initialUnits || 0);
+      const riskPerUnit = sl ? Math.abs(entry - sl) : 0;
+      const isUsdBase   = instr.startsWith('USD_');
+      const pipValue    = isUsdBase && entry > 0 ? 1 / entry : 1;
+      const riskTotal   = riskPerUnit * Math.abs(units) * pipValue;
+      const rMult       = riskTotal > 0 ? parseFloat(Math.max(-5, Math.min(10, pnl / riskTotal)).toFixed(2)) : null;
+      const durMins     = tradeDetails.openTime ? Math.round((Date.now() - new Date(tradeDetails.openTime).getTime()) / 60000) : null;
+      const sess        = getServerSession();
+
+      await saveTradeToSupabase({
+        id:           tradeDetails.id,
+        pair:         instr,
+        direction:    dir,
+        session:      sess,
+        strategy:     (XAVIER_RULES[sess] || {}).strategy || null,
+        entry,
+        exitPrice,
+        stopLoss:     sl,
+        takeProfit:   tp,
+        pnl,
+        rMultiple:    rMult,
+        units,
+        durationMins: durMins,
+        openTime:     tradeDetails.openTime,
+      });
+      console.log('[MANUAL CLOSE] Supabase save ✅', instr, `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+    } catch (saveErr) {
+      console.error('[MANUAL CLOSE] Supabase save failed:', saveErr.message);
+    }
+  }
 });
 
 // Partial close — body: { units: "500" }
