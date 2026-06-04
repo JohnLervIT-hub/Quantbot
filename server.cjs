@@ -2615,6 +2615,9 @@ async function verifySupabaseColumns() {
     'consensus_votes','options_pcr','options_bias','regime_at_entry',
     'ema50_side','heat_at_entry','recovery_mode','atr_at_entry',
     'trade_source','spread_cost',
+    'commentary_warren','commentary_george','commentary_james','commentary_ray',
+    'confidence_warren','confidence_george','confidence_james','confidence_ray',
+    'conviction_divergence',
   ];
   try {
     const { error } = await supabase.from('trades').select(required.join(',')).limit(0);
@@ -2715,6 +2718,15 @@ async function saveTradeToSupabase(trade) {
       atr_at_entry:       ctx.atrAtEntry         ?? null,
       trade_source:       ctx.tradeSource        ?? null,
       spread_cost:        ctx.spreadCost         ?? null,
+      commentary_warren:  ctx.warrenCommentary      ?? null,
+      commentary_george:  ctx.georgeCommentary      ?? null,
+      commentary_james:   ctx.jamesCommentary       ?? null,
+      commentary_ray:     ctx.rayCommentary         ?? null,
+      confidence_warren:  ctx.confidenceWarren      ?? null,
+      confidence_george:  ctx.confidenceGeorge      ?? null,
+      confidence_james:   ctx.confidenceJames       ?? null,
+      confidence_ray:     ctx.confidenceRay         ?? null,
+      conviction_divergence: ctx.convictionDivergence ?? null,
     });
     if (error) {
       console.error('[SUPABASE ERROR]', error.message);
@@ -3454,6 +3466,17 @@ function serverRunGatekeepers(history, signal, openTrades, _instrument, strategy
   return { passed: rejections.length === 0, rejections };
 }
 
+function scoreCommentary(text) {
+  if (!text) return 5;
+  const POSITIVE = ['valid','strong','aligned','confirmed','secured','adequate','logical','meets','clear','bullish','support','intact','opportunity','favorable'];
+  const NEGATIVE = ['risk','concern','caution','uncertain','tension','insufficient','volatile','danger','excessive','unquantified','headwind','threat','bearish','resistance','warning'];
+  const lower = text.toLowerCase();
+  let score = 5;
+  POSITIVE.forEach(w => { if (lower.includes(w)) score += 0.5; });
+  NEGATIVE.forEach(w => { if (lower.includes(w)) score -= 0.5; });
+  return parseFloat(Math.max(0, Math.min(10, score)).toFixed(1));
+}
+
 async function serverAutoTrade() {
   lastScanAt = Date.now();
   diagCounters.loopRuns++;
@@ -4030,8 +4053,31 @@ async function serverAutoTrade() {
       ? (RECOVERY_UNITS[instrument] || RECOVERY_UNITS.default)
       : (NORMAL_UNITS[instrument]   || NORMAL_UNITS.default);
     const phase = PAIR_PHASE[instrument] || 1;
-    const unitSize = phase === 2 ? Math.floor(baseUnitSize * 0.5) : baseUnitSize;
+    let unitSize = phase === 2 ? Math.floor(baseUnitSize * 0.5) : baseUnitSize;
     if (phase === 2) console.log('[PHASE 2]', instrument, '— reduced size 50%, earning validation through trades');
+
+    // Commentary confidence scores + conviction divergence
+    const _wReason = consensus.models.find(m => m.name === 'WARREN')?.reason || null;
+    const _gReason = consensus.models.find(m => m.name === 'GEORGE')?.reason || null;
+    const _jReason = consensus.models.find(m => m.name === 'JAMES')?.reason  || null;
+    const _rReason = consensus.models.find(m => m.name === 'RAY')?.reason    || null;
+    const _wScore  = scoreCommentary(_wReason);
+    const _gScore  = scoreCommentary(_gReason);
+    const _jScore  = scoreCommentary(_jReason);
+    const _rScore  = scoreCommentary(_rReason);
+    const _scores  = [_wScore, _gScore, _jScore, _rScore];
+    const _mean    = _scores.reduce((a, b) => a + b, 0) / _scores.length;
+    const _variance = _scores.reduce((a, b) => a + Math.pow(b - _mean, 2), 0) / _scores.length;
+    const _divergence = parseFloat(Math.sqrt(_variance).toFixed(2));
+    console.log('[CONVICTION]', instrument, 'scores:', _scores, 'mean:', _mean.toFixed(1), 'divergence:', _divergence, _divergence > 2.5 ? '⚠️ HIGH DIVERGENCE' : '✅ ALIGNED');
+    if (_divergence > 4.0) {
+      unitSize = Math.floor(unitSize * 0.5);
+      console.log('[DIVERGENCE REDUCTION]', instrument, '50% size reduction — divergence:', _divergence);
+    } else if (_divergence > 2.5) {
+      unitSize = Math.floor(unitSize * 0.75);
+      console.log('[DIVERGENCE REDUCTION]', instrument, '25% size reduction — divergence:', _divergence);
+    }
+
     const units = signal.direction === 'LONG' ? unitSize : -unitSize;
 
     const tradeContext = {
@@ -4053,6 +4099,15 @@ async function serverAutoTrade() {
       heatAtEntry:        parseFloat(heat)                 ?? null,
       recoveryMode:       recoveryMode                     || false,
       atrAtEntry:         atr                              ?? null,
+      warrenCommentary:   _wReason,
+      georgeCommentary:   _gReason,
+      jamesCommentary:    _jReason,
+      rayCommentary:      _rReason,
+      confidenceWarren:   _wScore,
+      confidenceGeorge:   _gScore,
+      confidenceJames:    _jScore,
+      confidenceRay:      _rScore,
+      convictionDivergence: _divergence,
     };
 
     try {

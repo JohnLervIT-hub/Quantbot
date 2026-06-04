@@ -6586,7 +6586,7 @@ function TradeHistoryTab({ isVisible }) {
           </div>
         ) : paginated.map((t, i) => (
           <div key={t.id || i} onClick={() => setSelectedTrade(selectedTrade?.id === t.id ? null : t)}
-            style={{ display: 'grid', gridTemplateColumns: '88px 54px 52px 74px 74px 52px 66px 62px 52px', gap: '0 6px', padding: '7px 12px', borderBottom: '0.5px solid #0d1117', fontSize: 11, cursor: 'pointer', alignItems: 'center', background: selectedTrade?.id === t.id ? 'rgba(88,166,255,0.06)' : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)' }}>
+            style={{ display: 'grid', gridTemplateColumns: '88px 54px 52px 74px 74px 52px 66px 62px 44px 20px', gap: '0 6px', padding: '7px 12px', borderBottom: '0.5px solid #0d1117', fontSize: 11, cursor: 'pointer', alignItems: 'center', background: selectedTrade?.id === t.id ? 'rgba(88,166,255,0.06)' : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)' }}>
             <div style={{ fontFamily: FONT_MONO, color: '#484f58', fontSize: 9 }}>{fmtTime(t.close_time)}</div>
             <div style={{ fontFamily: FONT_MONO, color: '#e6edf3', fontSize: 10, fontWeight: 600 }}>{(t.pair || '—').replace('_', '/')}</div>
             <div style={{ color: t.direction === 'LONG' ? '#3fb950' : '#f85149', fontSize: 10, fontWeight: 600 }}>{t.direction || '—'}</div>
@@ -6601,6 +6601,12 @@ function TradeHistoryTab({ isVisible }) {
             <div style={{ fontSize: 9, color: '#8b949e' }}>{t.session || '—'}</div>
             <div style={{ fontFamily: FONT_MONO, color: '#484f58', fontSize: 9 }}>
               {t.duration_mins != null ? (t.duration_mins >= 60 ? `${Math.floor(t.duration_mins / 60)}h${t.duration_mins % 60 > 0 ? `${t.duration_mins % 60}m` : ''}` : `${t.duration_mins}m`) : '—'}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              title={t.conviction_divergence != null ? `Council divergence: ${t.conviction_divergence}` : ''}>
+              {t.conviction_divergence != null && (
+                <span style={{ width: 7, height: 7, borderRadius: '50%', display: 'inline-block', background: t.conviction_divergence > 4.0 ? '#f85149' : t.conviction_divergence > 2.5 ? '#d29922' : '#3fb950' }} />
+              )}
             </div>
           </div>
         ))}
@@ -6682,6 +6688,45 @@ function TradeHistoryTab({ isVisible }) {
                     <div style={{ fontSize: 10, fontWeight: 700, color: m.verdict === 'CONFIRM' ? '#3fb950' : m.verdict === 'REJECT' ? '#f85149' : '#484f58' }}>
                       {m.verdict === 'CONFIRM' ? '✓ CONFIRM' : m.verdict === 'REJECT' ? '✕ REJECT' : '—'}
                     </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Conviction divergence + council commentary */}
+          {(selectedTrade.conviction_divergence != null || selectedTrade.commentary_warren || selectedTrade.commentary_george || selectedTrade.commentary_james || selectedTrade.commentary_ray) && (
+            <div style={{ borderTop: '1px solid #21262d', paddingTop: 10, marginBottom: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ ...LBL, marginBottom: 0 }}>Council Conviction</span>
+                {selectedTrade.conviction_divergence != null && (
+                  <span style={{ fontSize: 9, fontFamily: FONT_MONO, padding: '2px 7px', borderRadius: 3, fontWeight: 700,
+                    background: selectedTrade.conviction_divergence > 4.0 ? 'rgba(248,81,73,0.12)' : selectedTrade.conviction_divergence > 2.5 ? 'rgba(210,153,34,0.12)' : 'rgba(63,185,80,0.12)',
+                    color: selectedTrade.conviction_divergence > 4.0 ? '#f85149' : selectedTrade.conviction_divergence > 2.5 ? '#d29922' : '#3fb950',
+                    border: `1px solid ${selectedTrade.conviction_divergence > 4.0 ? 'rgba(248,81,73,0.3)' : selectedTrade.conviction_divergence > 2.5 ? 'rgba(210,153,34,0.3)' : 'rgba(63,185,80,0.3)'}`,
+                  }}>
+                    {selectedTrade.conviction_divergence > 4.0 ? '⚠ HIGH DIV' : selectedTrade.conviction_divergence > 2.5 ? '~ MED DIV' : '✓ ALIGNED'} · σ{selectedTrade.conviction_divergence.toFixed(2)}
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
+                {[
+                  { name: 'WARREN', role: 'Risk',    score: selectedTrade.confidence_warren, text: selectedTrade.commentary_warren },
+                  { name: 'GEORGE', role: 'Pattern', score: selectedTrade.confidence_george, text: selectedTrade.commentary_george },
+                  { name: 'JAMES',  role: 'Quant',   score: selectedTrade.confidence_james,  text: selectedTrade.commentary_james  },
+                  { name: 'RAY',    role: 'Macro',   score: selectedTrade.confidence_ray,    text: selectedTrade.commentary_ray    },
+                ].filter(m => m.score != null || m.text).map(m => (
+                  <div key={m.name} style={{ background: '#0d1117', borderRadius: 5, padding: '7px 9px', border: '1px solid #21262d' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                      <span style={{ fontSize: 9, color: '#484f58' }}>{m.name} · {m.role}</span>
+                      {m.score != null && (
+                        <span style={{ fontSize: 9, fontFamily: FONT_MONO, fontWeight: 700,
+                          color: m.score >= 7 ? '#3fb950' : m.score >= 4 ? '#d29922' : '#f85149' }}>
+                          {m.score.toFixed(1)}/10
+                        </span>
+                      )}
+                    </div>
+                    {m.text && <div style={{ fontSize: 9, color: '#8b949e', lineHeight: 1.4 }}>{m.text}</div>}
                   </div>
                 ))}
               </div>
