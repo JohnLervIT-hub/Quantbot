@@ -624,9 +624,9 @@ app.get('/health', (_req, res) => {
     autoMode: process.env.AUTO_MODE_ENABLED === 'true',
     models: {
       warren: { name: 'Claude Haiku',   provider: 'Anthropic',   status: ANTHROPIC_KEY        ? 'online' : 'offline' },
-      george: { name: 'Qwen 2.5 72B',  provider: 'OpenRouter',  status: OPENROUTER_API_KEY   ? 'online' : 'offline' },
-      james:  { name: 'DeepSeek',       provider: 'DeepSeek',    status: DEEPSEEK_KEY         ? 'online' : 'offline' },
-      ray:    { name: 'Qwen 2.5 72B',  provider: 'OpenRouter',  status: OPENROUTER_API_KEY   ? 'online' : 'offline' },
+      george: { name: 'DeepSeek V4 Flash', provider: 'DeepSeek', status: DEEPSEEK_KEY ? 'online' : 'offline' },
+      james:  { name: 'DeepSeek',          provider: 'DeepSeek', status: DEEPSEEK_KEY ? 'online' : 'offline' },
+      ray:    { name: 'DeepSeek V4 Flash', provider: 'DeepSeek', status: DEEPSEEK_KEY ? 'online' : 'offline' },
     },
     totalModels: 4,
     gemini: 'replaced by OpenRouter ✅',
@@ -1466,18 +1466,28 @@ async function askClaude(prompt, sys) {
 }
 
 
-async function askDeepSeek(prompt, sys) {
+async function callDeepSeek(prompt, model = 'deepseek-chat', role = 'JAMES') {
+  try {
+    const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${DEEPSEEK_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 500, temperature: 0 }),
+    });
+    const data = await res.json();
+    console.log(`[${role}/DS] response received`);
+    return data.choices?.[0]?.message?.content ?? null;
+  } catch (err) {
+    console.log(`[${role}] offline —`, err.message);
+    return null;
+  }
+}
+
+async function askDeepSeek(prompt, sys, model = 'deepseek-chat', role = 'JAMES') {
   if (!DEEPSEEK_KEY) throw new Error('Missing VITE_DEEPSEEK_API_KEY');
-  const r = await fetch('https://api.deepseek.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_KEY}` },
-    body: JSON.stringify({ model: 'deepseek-chat', max_tokens: 120, messages: [{ role: 'system', content: sys || SYS_DEEP }, { role: 'user', content: prompt }] }),
-  });
-  const d = await r.json();
-  if (!r.ok) throw new Error(apiErr(d, `DeepSeek HTTP ${r.status}`));
-  const text = d.choices?.[0]?.message?.content;
-  if (!text) throw new Error('DeepSeek empty response');
-  return { name: 'JAMES', ...parseVerdict(text) };
+  const fullPrompt = sys ? sys + '\n\n' + prompt : prompt;
+  const text = await callDeepSeek(fullPrompt, model, role);
+  if (!text) throw new Error(`DeepSeek ${role} empty response`);
+  return { name: role, ...parseVerdict(text) };
 }
 
 async function askOpenRouter(prompt, sys, { model = 'qwen/qwen-2.5-72b-instruct', name = 'RAY' } = {}) {
@@ -1524,19 +1534,16 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
     askClaude(buildClaudePrompt(params), SYS_CLAUDE)
       .then(r => { if (r?.verdict) warrenResult = r; })
       .catch(e => console.log('[WARREN] offline —', e.message.slice(0, 80))),
-    askOpenRouter(buildGPTPrompt(params), SYS_GPT, { model: 'qwen/qwen-2.5-72b-instruct', name: 'GEORGE' })
+    askDeepSeek(buildGPTPrompt(params), SYS_GPT, 'deepseek-v4-flash', 'GEORGE')
       .then(r => { if (r?.verdict) georgeResult = r; })
       .catch(e => console.log('[GEORGE] offline —', e.message.slice(0, 80))),
     askDeepSeek(buildDeepSeekPrompt(params), SYS_DEEP)
       .then(r => { if (r?.verdict) jamesResult = r; })
       .catch(e => console.log('[JAMES] offline —', e.message.slice(0, 80))),
-    askOpenRouter(buildRayPrompt(params), SYS_GEM)
+    askDeepSeek(buildRayPrompt(params), SYS_GEM, 'deepseek-v4-flash', 'RAY')
       .then(r => { if (r?.verdict) rayResult = r; })
       .catch(e => {
-        const msg = e.message;
-        lastRayStatus = msg.includes('prepayment') || msg.includes('credits') ? 'offline — credits depleted'
-          : msg.includes('quota') ? 'offline — quota exceeded'
-          : `offline — ${msg.slice(0, 60)}`;
+        lastRayStatus = `offline — ${e.message.slice(0, 60)}`;
         console.log('[RAY] offline —', lastRayStatus);
       }),
   ]);
@@ -1934,9 +1941,9 @@ app.post('/swing-consensus', requireAuth, async (req, res) => {
     }
     const settled = await Promise.allSettled([
       askClaude(buildClaudeSwingPrompt(p),    SYS_CLAUDE_SWING),
-      askOpenRouter(buildGPTSwingPrompt(p), SYS_GPT_SWING, { model: 'qwen/qwen-2.5-72b-instruct', name: 'GEORGE' }),
-      askDeepSeek(buildDeepSeekSwingPrompt(p),SYS_DEEP_SWING),
-      askOpenRouter(buildRaySwingPrompt(p),    SYS_GEM_SWING),
+      askDeepSeek(buildGPTSwingPrompt(p), SYS_GPT_SWING, 'deepseek-v4-flash', 'GEORGE'),
+      askDeepSeek(buildDeepSeekSwingPrompt(p), SYS_DEEP_SWING),
+      askDeepSeek(buildRaySwingPrompt(p), SYS_GEM_SWING, 'deepseek-v4-flash', 'RAY'),
     ]);
     const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
     const models = settled.map((r, i) => {
@@ -4207,9 +4214,9 @@ async function runSwingConsensus(p) {
   }
   const settled = await Promise.allSettled([
     askClaude(buildClaudeSwingPrompt(p),     SYS_CLAUDE_SWING),
-    askOpenRouter(buildGPTSwingPrompt(p), SYS_GPT_SWING, { model: 'qwen/qwen-2.5-72b-instruct', name: 'GEORGE' }),
+    askDeepSeek(buildGPTSwingPrompt(p), SYS_GPT_SWING, 'deepseek-v4-flash', 'GEORGE'),
     askDeepSeek(buildDeepSeekSwingPrompt(p), SYS_DEEP_SWING),
-    askOpenRouter(buildRaySwingPrompt(p),     SYS_GEM_SWING),
+    askDeepSeek(buildRaySwingPrompt(p), SYS_GEM_SWING, 'deepseek-v4-flash', 'RAY'),
   ]);
   const NAMES = ['WARREN', 'GEORGE', 'JAMES', 'RAY'];
   const models = settled.map((r, i) => {
@@ -5444,7 +5451,7 @@ app.get('/patterns/test/:instrument', requireAuth, async (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`OANDA bridge live on port ${PORT}`);
-  console.log(`  AI: Warren/Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | George/Qwen ${OPENROUTER_API_KEY ? '✓' : '✗'} | James/DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | Ray/Qwen ${OPENROUTER_API_KEY ? '✓' : '✗'}`);
+  console.log(`  AI: Warren/Claude ${ANTHROPIC_KEY ? '✓' : '✗'} | George/DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | James/DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'} | Ray/DeepSeek ${DEEPSEEK_KEY ? '✓' : '✗'}`);
   console.log(`  Auto mode: ${process.env.AUTO_MODE_ENABLED === 'true' ? 'ENABLED ⚡' : 'disabled (set AUTO_MODE_ENABLED=true to activate)'}`);
 
   // ── Environment audit — shows exactly which variables are present ──────────
@@ -5453,7 +5460,6 @@ app.listen(PORT, '0.0.0.0', () => {
     'OANDA_ACCOUNT_ID',
     'ANTHROPIC_API_KEY',
     'DEEPSEEK_API_KEY',
-    'OPENROUTER_API_KEY',
     'AUTO_MODE_ENABLED',
     'DISCORD_WEBHOOK_URL',
     'DISCORD_BOT_TOKEN',
