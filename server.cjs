@@ -2796,33 +2796,41 @@ async function manageOpenTrades() {
   for (const id of lastKnownTradeIds) {
     if (!currentIds.has(id)) {
       // Always fetch the closed trade to get instrument — handles manual closes too
+      let _closedTrade = null;
       try {
         const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${id}`, { headers: H });
         const data = await r.json();
-        const trade = data.trade;
-        if (trade) {
-          const pnl   = parseFloat(trade.realizedPL || 0);
-          const instr = trade.instrument;
-          const dir   = parseFloat(trade.initialUnits || 1) >= 0 ? 'LONG' : 'SHORT';
-          const won   = pnl > 0;
+        _closedTrade = data.trade || null;
+      } catch (e) {
+        console.error('[mgmt] Closed trade fetch failed:', e.message);
+      }
+      if (_closedTrade) {
+        const trade = _closedTrade;
+        const pnl   = parseFloat(trade.realizedPL || 0);
+        const instr = trade.instrument;
+        const dir   = parseFloat(trade.initialUnits || 1) >= 0 ? 'LONG' : 'SHORT';
+        const won   = pnl > 0;
 
-          // Post-close cooldown — always set on any close, including manual
-          postCloseCooldown.set(instr, Date.now());
-          saveCooldown(instr, Date.now());
-          console.log(`[COOLDOWN] ${instr} — locked 15 min after close (PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)})`);
+        console.log('[TRADE CLOSE DETECTED]', instr, id, 'realizedPL:', pnl, 'context exists:', !!openTradeContexts.get(id.toString()));
 
-          // Consecutive loss circuit breaker — 3 losses → 4-hour block
-          if (won) {
+        // Post-close cooldown — always set on any close, including manual
+        postCloseCooldown.set(instr, Date.now());
+        saveCooldown(instr, Date.now());
+        console.log(`[COOLDOWN] ${instr} — locked 15 min after close (PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)})`);
+
+        // Consecutive loss circuit breaker — 3 losses → 4-hour block
+        if (won) {
+          consecutiveLosses.set(instr, 0);
+        } else {
+          const losses = (consecutiveLosses.get(instr) || 0) + 1;
+          consecutiveLosses.set(instr, losses);
+          console.log(`[LOSS CIRCUIT] ${instr} — ${losses} consecutive loss${losses > 1 ? 'es' : ''}`);
+          if (losses >= 3) {
+            postCloseCooldown.set(instr, Date.now() + (4 * 60 * 60 * 1000));
+            saveCooldown(instr, Date.now() + (4 * 60 * 60 * 1000));
             consecutiveLosses.set(instr, 0);
-          } else {
-            const losses = (consecutiveLosses.get(instr) || 0) + 1;
-            consecutiveLosses.set(instr, losses);
-            console.log(`[LOSS CIRCUIT] ${instr} — ${losses} consecutive loss${losses > 1 ? 'es' : ''}`);
-            if (losses >= 3) {
-              postCloseCooldown.set(instr, Date.now() + (4 * 60 * 60 * 1000));
-              saveCooldown(instr, Date.now() + (4 * 60 * 60 * 1000));
-              consecutiveLosses.set(instr, 0);
-              console.log(`[LOSS CIRCUIT] ${instr} — 3 consecutive losses — blocking for 4 hours`);
+            console.log(`[LOSS CIRCUIT] ${instr} — 3 consecutive losses — blocking for 4 hours`);
+            try {
               await sendDiscordEmbed({
                 title: '⚠️ LOSS CIRCUIT BREAKER',
                 color: 0xff4444,
@@ -2834,31 +2842,37 @@ async function manageOpenTrades() {
                 ],
                 timestamp: new Date().toISOString(),
               });
+            } catch (discordErr) {
+              console.error('[mgmt] Loss circuit Discord failed:', discordErr.message);
             }
           }
+        }
 
-          // Update daily stats (only for Xavier-managed closes)
-          if (tradeManagementState.has(id)) {
-            const today = new Date().toISOString().slice(0, 10);
-            if (dailyStats.date !== today) {
-              dailyStats = { date: today, trades: 0, winners: 0, losers: 0, totalPnl: 0, bestTrade: '', _bestPnl: -Infinity };
-            }
-            dailyStats.trades++;
-            if (won) dailyStats.winners++; else dailyStats.losers++;
-            dailyStats.totalPnl += pnl;
-            if (pnl > dailyStats._bestPnl) {
-              dailyStats._bestPnl   = pnl;
-              dailyStats.bestTrade  = `${instr.replace('_', '/')} ${dir} +$${pnl.toFixed(2)}`;
-            }
+        // Update daily stats (only for Xavier-managed closes)
+        if (tradeManagementState.has(id)) {
+          const today = new Date().toISOString().slice(0, 10);
+          if (dailyStats.date !== today) {
+            dailyStats = { date: today, trades: 0, winners: 0, losers: 0, totalPnl: 0, bestTrade: '', _bestPnl: -Infinity };
           }
+          dailyStats.trades++;
+          if (won) dailyStats.winners++; else dailyStats.losers++;
+          dailyStats.totalPnl += pnl;
+          if (pnl > dailyStats._bestPnl) {
+            dailyStats._bestPnl   = pnl;
+            dailyStats.bestTrade  = `${instr.replace('_', '/')} ${dir} +$${pnl.toFixed(2)}`;
+          }
+        }
 
-          const isManual = !tradeManagementState.has(id);
-          const emoji = won ? '✅' : '❌';
-          const closeMsg =
-            `${emoji} <b>TRADE CLOSED${isManual ? ' (manual)' : ''}</b>\n` +
-            `Pair: ${instr.replace('_', '/')} ${dir}\n` +
-            `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n` +
-            (isManual ? `⚠️ Manual close — cooldown set` : `Today: ${dailyStats.winners}W/${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`);
+        const isManual = !tradeManagementState.has(id);
+        const emoji = won ? '✅' : '❌';
+        const closeMsg =
+          `${emoji} <b>TRADE CLOSED${isManual ? ' (manual)' : ''}</b>\n` +
+          `Pair: ${instr.replace('_', '/')} ${dir}\n` +
+          `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n` +
+          (isManual ? `⚠️ Manual close — cooldown set` : `Today: ${dailyStats.winners}W/${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`);
+
+        // Discord notification — isolated so failures never block Supabase save
+        try {
           await sendNotification(closeMsg, {
             color: won ? 0x3fb950 : 0xf85149,
             title: `${emoji} Trade Closed${isManual ? ' (Manual)' : ''}`,
@@ -2873,20 +2887,24 @@ async function manageOpenTrades() {
             ],
             timestamp: new Date().toISOString(),
           });
+        } catch (discordErr) {
+          console.error('[mgmt] Close notification Discord failed:', discordErr.message);
+        }
 
-          // Persist closed trade to Supabase for Xavier's memory
-          const _entry      = parseFloat(trade.price || 0);
-          const _sl         = trade.stopLossOrder?.price ? parseFloat(trade.stopLossOrder.price) : null;
-          const _tp         = trade.takeProfitOrder?.price ? parseFloat(trade.takeProfitOrder.price) : null;
-          const _exitPrice  = parseFloat(trade.averageClosePrice || 0);
-          const _units      = parseFloat(trade.initialUnits || 0);
-          const _riskPerUnit = _sl ? Math.abs(_entry - _sl) : 0;
-          const _isUsdBase   = instr.startsWith('USD_');
-          const _pipValue    = _isUsdBase && _entry > 0 ? 1 / _entry : 1;
-          const _riskTotal   = _riskPerUnit * Math.abs(_units) * _pipValue;
-          const _rMult       = _riskTotal > 0 ? parseFloat(Math.max(-5, Math.min(10, pnl / _riskTotal)).toFixed(2)) : null;
-          const _durMins     = trade.openTime ? Math.round((Date.now() - new Date(trade.openTime).getTime()) / 60000) : null;
-          const _closeSess   = getServerSession();
+        // Supabase save — always runs, independent of Discord
+        const _entry      = parseFloat(trade.price || 0);
+        const _sl         = trade.stopLossOrder?.price ? parseFloat(trade.stopLossOrder.price) : null;
+        const _tp         = trade.takeProfitOrder?.price ? parseFloat(trade.takeProfitOrder.price) : null;
+        const _exitPrice  = parseFloat(trade.averageClosePrice || 0);
+        const _units      = parseFloat(trade.initialUnits || 0);
+        const _riskPerUnit = _sl ? Math.abs(_entry - _sl) : 0;
+        const _isUsdBase   = instr.startsWith('USD_');
+        const _pipValue    = _isUsdBase && _entry > 0 ? 1 / _entry : 1;
+        const _riskTotal   = _riskPerUnit * Math.abs(_units) * _pipValue;
+        const _rMult       = _riskTotal > 0 ? parseFloat(Math.max(-5, Math.min(10, pnl / _riskTotal)).toFixed(2)) : null;
+        const _durMins     = trade.openTime ? Math.round((Date.now() - new Date(trade.openTime).getTime()) / 60000) : null;
+        const _closeSess   = getServerSession();
+        try {
           await saveTradeToSupabase({
             id:           trade.id,
             pair:         instr,
@@ -2903,10 +2921,11 @@ async function manageOpenTrades() {
             durationMins: _durMins,
             openTime:     trade.openTime,
           });
-          openTradeContexts.delete(id.toString());
+          console.log('[SUPABASE SAVE]', instr, 'SUCCESS ✅');
+        } catch (saveErr) {
+          console.error('[SUPABASE SAVE]', instr, 'FAILED ❌', saveErr.message);
         }
-      } catch (e) {
-        console.error('[mgmt] Closed trade fetch failed:', e.message);
+        openTradeContexts.delete(id.toString());
       }
       tradeManagementState.delete(id);
       lastKnownTradeIds.delete(id);
