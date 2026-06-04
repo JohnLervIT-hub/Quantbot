@@ -799,8 +799,16 @@ const SERVER_PAIRS = new Set([
 ]);
 
 // Phase tracking — Phase 2 pairs trade at 50% size until promoted via real performance
-// Mutable: auto-promotes to phase 1 after 10 trades with avgR > 0.3 in last 30 days
-const PAIR_PHASE = { NAS100_USD: 2 };
+// Mutable: loaded from Supabase on startup, persisted after every promotion/demotion
+// Phase 1 = proven edge (full size) | Phase 2 = earning validation (50% size)
+const PAIR_PHASE = {
+  // Phase 1 — 180d backtest validated
+  EUR_USD: 1, GBP_USD: 1, USD_JPY: 1, EUR_GBP: 1,
+  XAU_USD: 1, XAG_USD: 1, USD_CAD: 1,
+  // Phase 2 — marginal or unvalidated edge, earning promotion through live results
+  NAS100_USD: 2, JP225_USD: 2, AU200_AUD: 2,
+  UK100_GBP: 2, SPX500_USD: 2, NZD_USD: 2, AUD_USD: 2,
+};
 
 // Security allowlist — instruments permitted anywhere in the system (order, test, kill shot)
 // BCO_USD and WTICO_USD intentionally excluded — manual-only, not routable via any automated path
@@ -2563,6 +2571,36 @@ async function loadCooldowns() {
   }
 }
 
+async function loadPairPhases() {
+  if (!supabase) return;
+  try {
+    const { data } = await supabase.from('system_state').select('value').eq('key', 'pair_phases').single();
+    if (data?.value) {
+      const saved = JSON.parse(data.value);
+      Object.assign(PAIR_PHASE, saved);
+      console.log('[PHASES LOADED]', JSON.stringify(PAIR_PHASE));
+    } else {
+      console.log('[PHASES] no saved state — using defaults');
+    }
+  } catch (err) {
+    console.log('[PHASES] using defaults —', err.message);
+  }
+}
+
+async function savePairPhases() {
+  if (!supabase) return;
+  try {
+    await supabase.from('system_state').upsert({
+      key: 'pair_phases',
+      value: JSON.stringify(PAIR_PHASE),
+      updated_at: new Date().toISOString(),
+    });
+    console.log('[PHASES SAVED]', JSON.stringify(PAIR_PHASE));
+  } catch (err) {
+    console.error('[PHASES SAVE ERROR]', err.message);
+  }
+}
+
 async function verifySupabaseColumns() {
   if (!supabase) return;
   const required = [
@@ -2681,35 +2719,49 @@ async function saveTradeToSupabase(trade) {
       console.log('[SUPABASE] trade saved:', trade.pair, trade.pnl);
     }
 
-    // Phase promotion — check NAS100_USD after every closed trade
-    if (!error && trade.pair === 'NAS100_USD' && PAIR_PHASE['NAS100_USD'] === 2) {
+    // Phase promotion/demotion — runs for any pair tracked in PAIR_PHASE
+    if (!error && supabase && PAIR_PHASE[trade.pair] !== undefined) {
       try {
+        const instrument = trade.pair;
+        const currentPhase = PAIR_PHASE[instrument];
         const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-        const { data: nas100Trades } = await supabase
+        const { data: pairTrades } = await supabase
           .from('trades')
           .select('r_multiple')
-          .eq('pair', 'NAS100_USD')
+          .eq('pair', instrument)
           .gte('created_at', thirtyDaysAgo)
           .not('r_multiple', 'is', null);
-        if (nas100Trades && nas100Trades.length >= 10) {
-          const avgR = nas100Trades.reduce((s, t) => s + (t.r_multiple || 0), 0) / nas100Trades.length;
-          if (avgR > 0.3) {
-            PAIR_PHASE['NAS100_USD'] = 1;
-            console.log('[PROMOTED] NAS100_USD → Phase 1 avgR:', avgR.toFixed(2));
+        const tradeCount = pairTrades?.length ?? 0;
+        if (tradeCount >= 10) {
+          const avgR = pairTrades.reduce((s, t) => s + (t.r_multiple || 0), 0) / tradeCount;
+          if (currentPhase === 2 && avgR > 0.3) {
+            PAIR_PHASE[instrument] = 1;
+            await savePairPhases();
+            console.log('[PROMOTED]', instrument, '→ Phase 1 avgR:', avgR.toFixed(2));
             await sendDiscordEmbed({
-              title: '🏆 NAS100 PROMOTED TO PHASE 1',
-              description: `NAS100_USD promoted to Phase 1\nAverage R: ${avgR.toFixed(2)}R over ${nas100Trades.length} trades\nFull position size now active`,
+              title: `🏆 ${instrument} PROMOTED TO PHASE 1`,
+              description: `${instrument} promoted to Phase 1\nAverage R: ${avgR.toFixed(2)}R over ${tradeCount} trades\nFull position size now active`,
               color: 0x3fb950,
               timestamp: new Date().toISOString(),
             });
+          } else if (currentPhase === 1 && avgR < -0.1) {
+            PAIR_PHASE[instrument] = 2;
+            await savePairPhases();
+            console.log('[DEMOTED]', instrument, '→ Phase 2 avgR:', avgR.toFixed(2));
+            await sendDiscordEmbed({
+              title: `⚠️ ${instrument} DEMOTED TO PHASE 2`,
+              description: `${instrument} demoted to Phase 2\nAverage R: ${avgR.toFixed(2)}R over ${tradeCount} trades\nReduced position size until edge recovers`,
+              color: 0xd29922,
+              timestamp: new Date().toISOString(),
+            });
           } else {
-            console.log('[PHASE 2] NAS100_USD still earning — avgR:', avgR.toFixed(2), `(${nas100Trades.length} trades, need >0.3R)`);
+            console.log(`[PHASE ${currentPhase}]`, instrument, 'avgR:', avgR.toFixed(2), `(${tradeCount} trades)`);
           }
         } else {
-          console.log('[PHASE 2] NAS100_USD earning validation —', nas100Trades?.length ?? 0, 'trades in 30d (need 10)');
+          console.log(`[PHASE ${currentPhase}]`, instrument, 'earning validation —', tradeCount, 'trades in 30d (need 10)');
         }
       } catch (promoteErr) {
-        console.error('[PHASE PROMOTE ERROR]', promoteErr.message);
+        console.error('[PHASE CHECK ERROR]', promoteErr.message);
       }
     }
 
@@ -5462,6 +5514,7 @@ setInterval(() => maybeSendDailySummary().catch(e => console.error('[mgmt] Summa
 
 // Upgrade 2 — Economic calendar refresh every hour
 loadCooldowns().catch(e => console.error('[state] loadCooldowns startup:', e.message));
+loadPairPhases().catch(e => console.error('[state] loadPairPhases startup:', e.message));
 verifySupabaseColumns().catch(e => console.error('[supabase] Column check startup:', e.message));
 refreshEconomicCalendar().catch(e => console.error('[calendar] Startup:', e.message));
 setInterval(() => refreshEconomicCalendar().catch(e => console.error('[calendar] Refresh:', e.message)), 60 * 60_000);
