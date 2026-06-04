@@ -2789,6 +2789,9 @@ async function saveTradeToSupabase(trade) {
   }
 }
 
+const MAX_SWING_HOLD_DAYS = 5;
+const MAX_SWING_HOLD_MS   = MAX_SWING_HOLD_DAYS * 24 * 60 * 60 * 1000;
+
 // ─── OPEN TRADE MANAGER (runs every 10s) ─────────────────────────────────────
 async function manageOpenTrades() {
   if (process.env.AUTO_MODE_ENABLED !== 'true') return;
@@ -2954,6 +2957,36 @@ async function manageOpenTrades() {
     const dir        = units > 0 ? 'LONG' : 'SHORT';
     const entry      = parseFloat(trade.price);
     const sl         = trade.stopLossOrder?.price ? parseFloat(trade.stopLossOrder.price) : null;
+
+    // ── 5-day swing hold limit ───────────────────────────────────────────────
+    const isSwingTrade = swingAutoTrades.some(s => String(s.oandaTradeId) === String(tradeId));
+    if (isSwingTrade && trade.openTime) {
+      const holdMs = Date.now() - new Date(trade.openTime).getTime();
+      if (holdMs > MAX_SWING_HOLD_MS) {
+        const holdDays = (holdMs / (24 * 60 * 60 * 1000)).toFixed(1);
+        console.log(`[SWING EXPIRED] ${instrument} held ${holdDays}d — force closing`);
+        try {
+          await sendDiscordEmbed({
+            title: '⏰ Swing Trade Expired — Max Hold Reached',
+            color: 0xf85149,
+            fields: [
+              { name: 'Pair',     value: instrument.replace('_', '/'),              inline: true },
+              { name: 'Held',     value: `${holdDays} days (max ${MAX_SWING_HOLD_DAYS})`, inline: true },
+              { name: 'P&L',      value: `${parseFloat(trade.unrealizedPL || 0) >= 0 ? '+' : ''}$${parseFloat(trade.unrealizedPL || 0).toFixed(2)}`, inline: true },
+              { name: 'Action',   value: 'Force closing position',                  inline: false },
+            ],
+            timestamp: new Date().toISOString(),
+          });
+        } catch (e) { console.error('[SWING EXPIRED] Discord failed:', e.message); }
+        try {
+          await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/close`, { method: 'PUT', headers: H });
+          const swingRecord = swingAutoTrades.find(s => String(s.oandaTradeId) === String(tradeId));
+          if (swingRecord) swingRecord.closed = true;
+          console.log(`[SWING EXPIRED] ${instrument} — close order sent`);
+        } catch (e) { console.error('[SWING EXPIRED] Close failed:', e.message); }
+        continue;
+      }
+    }
 
     if (!sl) continue;
     const spread = SPREAD_COSTS[instrument] ?? 0.0003;
@@ -4701,10 +4734,22 @@ async function requestKillShotApproval(signal) {
   const expiryMs = isOvernightHour ? 4 * 60 * 60 * 1000 : 2 * 60 * 60 * 1000;
 
   // Auto-expire
-  setTimeout(() => {
+  setTimeout(async () => {
     if (pendingKillShots.get(instrument) === signal) {
       pendingKillShots.delete(instrument);
       console.log(`[KILL SHOT EXPIRED] ${instrument} — approval timeout`);
+      try {
+        await sendDiscordEmbed({
+          title: '⏰ Kill Shot Expired',
+          color: 0xffaa00,
+          fields: [{
+            name: 'Signal Expired',
+            value: `${instrument.replace('_', '/')} Kill Shot window closed\nSignal no longer valid\nNext scan in 4 hours`,
+            inline: false,
+          }],
+          timestamp: new Date().toISOString(),
+        });
+      } catch (e) { console.error('[KILL SHOT EXPIRED] Discord failed:', e.message); }
     }
   }, expiryMs);
 
@@ -5602,3 +5647,97 @@ registerDiscordCommands().catch(e => console.error('[discord] Command registrati
 // Drawdown recovery monitor — every 5 minutes + startup
 monitorDrawdown().catch(e => console.error('[drawdown] Startup:', e.message));
 setInterval(() => monitorDrawdown().catch(e => console.error('[drawdown] Loop:', e.message)), 5 * 60 * 1000);
+
+// ─── WEEKEND SWING CLOSE — Friday 23:00 UTC (5pm Calgary MDT) ─────────────────
+const _weekendCloseState = { warningFired: false, closeFired: false };
+async function weekendCloseCheck() {
+  const now    = new Date();
+  const dayUTC = now.getUTCDay();   // 5 = Friday
+  const hourUTC = now.getUTCHours();
+  const minUTC  = now.getUTCMinutes();
+
+  // Reset flags at start of any non-Friday day
+  if (dayUTC !== 5) {
+    _weekendCloseState.warningFired = false;
+    _weekendCloseState.closeFired   = false;
+    return;
+  }
+
+  // Friday 22:45 UTC — 15-minute warning
+  if (hourUTC === 22 && minUTC >= 45 && !_weekendCloseState.warningFired) {
+    _weekendCloseState.warningFired = true;
+    const openSwings = swingAutoTrades.filter(t => !t.closed);
+    if (openSwings.length > 0) {
+      const pairList = openSwings.map(t => t.instrument.replace('_', '/')).join(', ');
+      console.log('[WEEKEND CLOSE] 15-min warning — open swings:', pairList);
+      try {
+        await sendDiscordEmbed({
+          title: '⚠️ Weekend Close Warning — 15 Minutes',
+          color: 0xd29922,
+          fields: [
+            { name: 'Closing In',  value: '15 minutes (23:00 UTC / 5:00pm Calgary)', inline: false },
+            { name: 'Pairs',       value: pairList,                                   inline: false },
+            { name: 'Reason',      value: 'Weekend gap protection — all swing positions will be force closed', inline: false },
+          ],
+          timestamp: new Date().toISOString(),
+        });
+      } catch (e) { console.error('[WEEKEND CLOSE] Warning Discord failed:', e.message); }
+    }
+  }
+
+  // Friday 23:00 UTC — force close all open swing positions
+  if (hourUTC === 23 && !_weekendCloseState.closeFired) {
+    _weekendCloseState.closeFired = true;
+    console.log('[WEEKEND CLOSE] Friday 23:00 UTC — closing all open swing trades');
+
+    let openTrades = [];
+    try {
+      const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
+      const data = await r.json();
+      openTrades = data.trades || [];
+    } catch (e) {
+      console.error('[WEEKEND CLOSE] Fetch open trades failed:', e.message);
+      return;
+    }
+
+    const openSwingIds = new Set(swingAutoTrades.filter(t => !t.closed).map(t => String(t.oandaTradeId)));
+    const toClose = openTrades.filter(t => openSwingIds.has(String(t.id)));
+
+    if (toClose.length === 0) {
+      console.log('[WEEKEND CLOSE] No open swing positions to close');
+      return;
+    }
+
+    let closedCount = 0;
+    const results = [];
+    for (const t of toClose) {
+      try {
+        const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${t.id}/close`, { method: 'PUT', headers: H });
+        const data = await r.json();
+        const pnl  = parseFloat(data.orderFillTransaction?.pl || 0);
+        closedCount++;
+        results.push(`${t.instrument.replace('_', '/')} ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+        const swingRecord = swingAutoTrades.find(s => String(s.oandaTradeId) === String(t.id));
+        if (swingRecord) swingRecord.closed = true;
+        console.log(`[WEEKEND CLOSE] ${t.instrument} closed — P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+      } catch (e) {
+        console.error('[WEEKEND CLOSE]', t.instrument, 'close failed:', e.message);
+        results.push(`${t.instrument.replace('_', '/')} ❌ close failed`);
+      }
+    }
+
+    try {
+      await sendDiscordEmbed({
+        title: '🔒 Weekend Close Complete',
+        color: closedCount > 0 ? 0x3fb950 : 0xf85149,
+        fields: [
+          { name: 'Closed',  value: `${closedCount} of ${toClose.length} position(s)`, inline: true },
+          { name: 'Reason',  value: 'Weekend gap protection',                           inline: true },
+          { name: 'Results', value: results.join('\n') || '—',                          inline: false },
+        ],
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e) { console.error('[WEEKEND CLOSE] Result Discord failed:', e.message); }
+  }
+}
+setInterval(() => weekendCloseCheck().catch(e => console.error('[weekend-close] Loop:', e.message)), 60_000);
