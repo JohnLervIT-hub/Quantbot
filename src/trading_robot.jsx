@@ -2348,11 +2348,17 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
     const sigColor = signal?.direction === "LONG" ? "#238636" : "#c0392b";
     return (
       <>
-        <div style={{ margin: "6px 12px", borderRadius: 12, background: "#161b22", border: "1px solid #21262d", overflow: "hidden" }}>
-          {/* Row 1: pair + regime + price */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "12px 14px 4px" }}>
+        <div style={{ margin: "6px 12px", borderRadius: chartExpanded ? "12px 12px 0 0" : 12, background: "#161b22", border: "1px solid #21262d", borderBottom: chartExpanded ? "none" : "1px solid #21262d" }}>
+          {/* Row 1: pair + regime + price — tap to expand chart */}
+          <div
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "12px 14px 4px", cursor: "pointer", userSelect: "none" }}
+            onClick={() => setChartExpanded(v => !v)}
+          >
             <div style={{ display: "flex", flexDirection: "column" }}>
-              <span style={{ fontWeight: 700, color: "#e6edf3", fontSize: 16 }}>{pair}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <span style={{ fontWeight: 700, color: "#e6edf3", fontSize: 16 }}>{pair}</span>
+                <span style={{ fontSize: 9, color: chartExpanded ? "#58a6ff" : "#484f58", display: "inline-block", transform: chartExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s, color 0.15s" }}>▼</span>
+              </div>
               <RegimeBadge regime={regimeData.regime} />
             </div>
             <AnimatedNumber value={price} decimals={decimals} style={{ ...priceStyle, fontSize: 18, fontFamily: FONT_MONO }} />
@@ -2384,6 +2390,81 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
             </div>
           )}
         </div>
+
+        {/* Expandable candlestick panel — mobile */}
+        <AnimatePresence>
+          {chartExpanded && (
+            <motion.div
+              key="mob-candle-panel"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+              style={{ overflow: "hidden", margin: "0 12px 6px", borderRadius: "0 0 12px 12px", border: "1px solid #21262d", borderTop: "none" }}
+            >
+              {/* Chart header */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px 6px", background: "#0d1117", borderBottom: "1px solid #21262d" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontWeight: 700, color: "#e6edf3", fontSize: 13, fontFamily: FONT_MONO }}>{pair}</span>
+                  <AnimatedNumber value={price} decimals={decimals} style={{ ...priceStyle, fontSize: 13 }} />
+                  <span style={{ fontSize: 10, color: changeColor, fontFamily: FONT_MONO }}>{changeDisplay}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <RegimeBadge regime={regimeData.regime} />
+                  <ChartClock />
+                  <button
+                    onClick={() => setChartExpanded(false)}
+                    style={{ marginLeft: 4, width: 22, height: 22, borderRadius: 4, border: "1px solid #30363d", background: "none", color: "#484f58", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}
+                  >×</button>
+                </div>
+              </div>
+
+              {/* CandleChart */}
+              <CandleChart pair={pair} history={history} signal={signal} />
+
+              {/* Chart footer */}
+              <div style={{ display: "flex", gap: 1, background: "#21262d" }}>
+                {[
+                  { label: "SPREAD",  value: `${chartSpreadPips.toFixed(1)}p`,                         color: chartSpreadOk ? "#3fb950" : "#f85149" },
+                  { label: "SESSION", value: chartSession,                                               color: chartSessionOk ? "#3fb950" : "#d29922" },
+                  { label: "NEXT",    value: `${nextSession.name} ${nextSession.countdown}`,            color: nextSession.color },
+                ].map(({ label, value, color }) => (
+                  <div key={label} style={{ flex: 1, padding: "5px 6px", background: "#0d1117", textAlign: "center" }}>
+                    <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 2 }}>{label}</div>
+                    <div style={{ fontSize: 10, fontWeight: 600, color, fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Signal intel — stacked for mobile */}
+              {signal && (
+                <div style={{ padding: "12px 14px", background: "#0d1117", borderTop: "1px solid #21262d" }}>
+                  <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Signal Intel</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: signal.direction === "LONG" ? "#3fb950" : "#f85149" }}>{signal.direction}</span>
+                    <span style={{ fontSize: 10, color: "#8b949e" }}>{signal.score}% confidence</span>
+                  </div>
+                  <div style={{ height: 3, background: "#21262d", borderRadius: 2, overflow: "hidden", marginBottom: 8 }}>
+                    <div style={{ height: "100%", width: `${signal.score}%`, background: signal.score >= 75 ? "#3fb950" : signal.score >= 65 ? "#d29922" : "#f85149", borderRadius: 2 }} />
+                  </div>
+                  {[
+                    { label: "Entry", value: price.toFixed(decimals),        color: "#58a6ff" },
+                    { label: "SL",    value: chartSLVal?.toFixed(decimals),  color: "#f85149" },
+                    { label: "TP",    value: chartTPVal?.toFixed(decimals),  color: "#3fb950" },
+                    { label: "R:R",   value: "1:2.0",                        color: "#3fb950" },
+                    { label: "Risk",  value: `$${chartRiskAmt} (1.5%)`,     color: "#8b949e" },
+                  ].map(({ label, value, color }) => (
+                    <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                      <span style={{ fontSize: 10, color: "#484f58" }}>{label}</span>
+                      <span style={{ fontSize: 10, fontWeight: 600, color, fontFamily: FONT_MONO }}>{value}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {rejectPanel}
         {aiPanel}
       </>
