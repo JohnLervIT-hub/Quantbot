@@ -3610,6 +3610,41 @@ async function serverAutoTrade() {
     // Track signal age — start clock on first qualifying signal appearance
     if (!signalFirstDetected.has(instrument)) signalFirstDetected.set(instrument, { ts: Date.now(), pattern: null });
 
+    // ── Weekly trend alignment filter ────────────────────────────────────────
+    // Block signals that trade against the weekly candle direction.
+    // Prevents shorting in RISK-ON (bullish weekly) regimes and vice versa.
+    let weeklyTrend = 'UNKNOWN';
+    try {
+      const weeklyCandles = await getCandles(instrument, 'W', 3);
+      if (weeklyCandles.length >= 3) {
+        weeklyTrend = weeklyCandles[2].close > weeklyCandles[0].close ? 'BULLISH' : 'BEARISH';
+      }
+    } catch (wErr) {
+      console.error('[WEEKLY CANDLES ERROR]', instrument, wErr.message);
+    }
+
+    const weeklyAllowed =
+      (signal.direction === 'LONG'  && weeklyTrend === 'BULLISH') ||
+      (signal.direction === 'SHORT' && weeklyTrend === 'BEARISH') ||
+      weeklyTrend === 'UNKNOWN';
+
+    console.log('[REGIME]', instrument,
+      'weekly:', weeklyTrend,
+      'signal:', signal.direction,
+      'allowed:', weeklyAllowed ? '✅' : '❌ BLOCKED');
+
+    if (!weeklyAllowed) {
+      console.log('[WEEKLY BLOCK]', instrument, signal.direction, 'blocked — weekly trend', weeklyTrend);
+      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy,
+        rejections: [{ condition: 'Weekly Trend Alignment', actual: `${signal.direction} vs ${weeklyTrend} weekly`, threshold: 'Signal must align with weekly candle direction' }] });
+      if (serverRejections.length > 50) serverRejections.pop();
+      diagCounters.blockedMacro++;
+      continue;
+    }
+
+    signal.weeklyTrend = weeklyTrend;
+    signal.regime      = weeklyTrend === 'BULLISH' ? 'RISK_ON' : weeklyTrend === 'BEARISH' ? 'RISK_OFF' : 'UNKNOWN';
+
     // Step 1 — fetch candles and analyze patterns
     let patternAnalysis = null;
     const recentCandles = await getCandles(instrument, 'M5', 3);
