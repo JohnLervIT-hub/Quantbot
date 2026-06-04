@@ -2447,6 +2447,7 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
         direction,
         entry:              parseFloat(fill),
         open_time:          ctxToStore.openTime,
+        created_at:         ctxToStore.openTime,
         session:            ctxToStore.session,
         strategy:           ctxToStore.strategy,
         score:              ctxToStore.score              ?? null,
@@ -2737,19 +2738,10 @@ async function saveTradeToSupabase(trade) {
     const outcome = trade.pnl > 0 ? 'WIN' : trade.pnl < 0 ? 'LOSS' : 'BREAKEVEN';
     const nowIso  = new Date().toISOString();
 
-    // Look for an existing null-close_time record for this pair — fill it in on close
-    const { data: existing } = await supabase
-      .from('trades')
-      .select('id')
-      .eq('pair', instrument)
-      .is('close_time', null)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
-
+    // Path 1: Direct ID update — idempotent guard prevents double-write on duplicate close calls
     let error;
-    if (existing) {
-      ({ error } = await supabase
+    if (trade.id) {
+      const { data: directHit, error: directErr } = await supabase
         .from('trades')
         .update({
           outcome,
@@ -2760,15 +2752,42 @@ async function saveTradeToSupabase(trade) {
           duration_mins: trade.durationMins,
           stop_loss:     trade.stopLoss,
           take_profit:   trade.takeProfit,
+          created_at:    nowIso,
         })
-        .eq('id', existing.id));
-      if (error) {
-        console.error('[SUPABASE UPDATE ERROR]', error.message);
-      } else {
-        console.log('[SUPABASE UPDATE]', instrument, 'filled null fields ✅');
-      }
-    } else {
-      ({ error } = await supabase.from('trades').upsert({
+        .eq('id', trade.id)
+        .is('close_time', null)
+        .select('id');
+      error = directErr;
+
+      if (directHit?.length > 0) {
+        console.log('[SUPABASE UPDATE] direct ID ✅', instrument);
+      } else if (!directErr) {
+        // No open record found for this ID — check if already closed (duplicate call)
+        const { data: check } = await supabase.from('trades').select('close_time').eq('id', trade.id).maybeSingle();
+        if (check?.close_time) {
+          console.log('[SUPABASE] duplicate close detected, skipping', instrument);
+          return;
+        }
+        // Record doesn't exist at all (Railway restart with no open-context save) — fall through to pair search
+        const { data: nullRecord } = await supabase
+          .from('trades').select('id')
+          .eq('pair', instrument)
+          .is('close_time', null)
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (nullRecord) {
+          ({ error } = await supabase.from('trades').update({
+            outcome, pnl: trade.pnl, close_time: nowIso,
+            r_multiple: trade.rMultiple, exit_price: trade.exitPrice,
+            duration_mins: trade.durationMins, stop_loss: trade.stopLoss,
+            take_profit: trade.takeProfit, created_at: nowIso,
+          }).eq('id', nullRecord.id));
+          if (error) console.error('[SUPABASE UPDATE ERROR]', error.message);
+          else console.log('[SUPABASE UPDATE] pair-fallback ✅', instrument);
+        } else {
+          // No null record either — full upsert
+          ({ error } = await supabase.from('trades').upsert({
         id:                 trade.id,
         pair:               trade.pair,
         direction:          trade.direction,
@@ -2818,13 +2837,12 @@ async function saveTradeToSupabase(trade) {
         confidence_james:   ctx.confidenceJames       ?? null,
         confidence_ray:     ctx.confidenceRay         ?? null,
         conviction_divergence: ctx.convictionDivergence ?? null,
-      }));
-      if (error) {
-        console.error('[SUPABASE ERROR]', error.message);
-      } else {
-        console.log('[SUPABASE] trade saved:', trade.pair, trade.pnl);
-      }
-    }
+          }));
+          if (error) console.error('[SUPABASE ERROR]', error.message);
+          else console.log('[SUPABASE] trade saved:', trade.pair, trade.pnl);
+        }  // end else (no null record — full upsert)
+      }  // end else if (!directErr)
+    }  // end if (trade.id)
 
     // Phase promotion/demotion — runs for any pair tracked in PAIR_PHASE
     if (!error && supabase && PAIR_PHASE[trade.pair] !== undefined) {
