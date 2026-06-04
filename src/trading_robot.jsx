@@ -7982,7 +7982,9 @@ export default function TradingRobot() {
     return () => clearInterval(id);
   }, []);
 
-  // Auto-execution interval — syncs server state AND triggers execution on qualifying signals
+  // Display-only sync — polls Railway server for auto-trade log every 30s.
+  // Consensus + execution is handled exclusively by Railway's serverAutoTrade().
+  // Frontend consensus calls removed to eliminate duplicate token spend.
   useEffect(() => {
     if (!autoMode) {
       if (window._autoInterval) {
@@ -7991,93 +7993,13 @@ export default function TradingRobot() {
       }
       return;
     }
-    const autoExecTimestamps = [];
 
     const poll = async () => {
-      // Read ref immediately at top — before any awaits — to capture true current state
-      const refSnapshot = signalDataRef.current;
-      // 1. Sync server display state
       try {
         const r = await fetch(`${BRIDGE}/auto-trades`);
         const data = await r.json();
         if (Array.isArray(data.trades)) setAutoTradeLog(data.trades);
       } catch {}
-
-      // 2. Execute qualifying signals
-      const settings = autoSettingsRef.current;
-      const now = Date.now();
-      if (autoExecTimestamps.filter(t => now - t < 3_600_000).length >= settings.maxTradesPerHour) return;
-
-      for (const [pair, data] of Object.entries(refSnapshot)) {
-        if (!data) continue;
-        const { signal, price, history } = data;
-        if ((signal.score ?? 0) < settings.minConfidence) continue;
-        if (autoExecTimestamps.filter(t => Date.now() - t < 3_600_000).length >= settings.maxTradesPerHour) break;
-
-        // Gatekeepers
-        const gk = runGatekeepers(history, signal, openTradesRef.current, pair, strategyRef.current);
-        if (!gk.passed) {
-          onRejectionRef.current?.({
-            pair, direction: signal.direction, score: signal.score,
-            ...gk.rejections[0],
-            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-          });
-          continue;
-        }
-
-        // AI consensus
-        try {
-          const change = history.length > 1
-            ? ((history[history.length - 1] - history[0]) / history[0] * 100).toFixed(3)
-            : "0.000";
-          // Compute context the prompt builders need — missing fields cause models to REJECT
-          const sess = getCurrentSession();
-          const ctxBars = history.slice(-21);
-          const ctxTr = ctxBars.slice(1).map((v, i) => Math.abs(v - ctxBars[i]));
-          const atr = ctxTr.length ? ctxTr.reduce((a, b) => a + b, 0) / ctxTr.length : 0;
-          const pip = getPipSize(pair);
-          const atrPips = atr / pip;
-          const sl = signal.direction === "LONG" ? price - atr * 1.5 : price + atr * 1.5;
-          const tp = signal.direction === "LONG" ? price + atr * 3.0 : price - atr * 3.0;
-          const ema9 = history.slice(-9).reduce((a, b) => a + b, 0) / 9;
-          const ema21v = history.slice(-21).reduce((a, b) => a + b, 0) / 21;
-          const ema50v = history.length >= 50 ? history.slice(-50).reduce((a, b) => a + b, 0) / 50 : ema21v;
-          const heat = (openTradesRef.current.length * 1.5).toFixed(1);
-          const cr = await fetch(`${BRIDGE}/consensus`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              instrument: pair.replace("/", "_"),
-              direction: signal.direction,
-              score: signal.score,
-              price,
-              change,
-              rsi: signal.rsi,
-              reason: signal.reason?.join(", ") ?? "",
-              headline: "",
-              session: sess,
-              sessionQuality: (sess === "PRIME" || sess === "LONDON") ? "PRIME" : "GOOD",
-              strategy: strategyRef.current,
-              atr: atr.toFixed(5),
-              atrPips: atrPips.toFixed(1),
-              sl: sl.toFixed(5),
-              tp: tp.toFixed(5),
-              rr: "2.0",
-              ema9: ema9.toFixed(5),
-              ema21: ema21v.toFixed(5),
-              ema50side: price > ema50v ? "above" : "below",
-              regime: atrPips > 5 ? "VOLATILE" : atr > ema21v * 0.001 ? "TRENDING" : "RANGING",
-              heat,
-            }),
-          });
-          const verdict = await cr.json();
-          if (!verdict.executeAllowed || (verdict.votes?.confirm ?? 0) < settings.consensusRequired) continue;
-
-          autoExecTimestamps.push(Date.now());
-          const topReason = verdict.models?.find(m => m.verdict === "CONFIRM")?.reason ?? "Auto consensus";
-          onTradeRef.current?.(pair, signal, price, { REASON: topReason, atr });
-        } catch {}
-      }
     };
 
     poll();
