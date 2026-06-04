@@ -963,7 +963,7 @@ const INSTRUMENT_HOME_SESSIONS = {
   XAG_USD:    ['LONDON', 'PRIME', 'NY'],
   BCO_USD:    ['LONDON', 'PRIME', 'NY'],
   WTICO_USD:  ['NY', 'PRIME'],
-  XAU_USD:    ['LONDON', 'PRIME', 'NY', 'SYDNEY'],
+  XAU_USD:    ['LONDON', 'PRIME', 'SYDNEY'],
 };
 
 // Authoritative pip/point size per instrument — used everywhere in server
@@ -3789,10 +3789,19 @@ async function serverAutoTrade() {
       console.error('[WEEKLY CANDLES ERROR]', instrument, wErr.message);
     }
 
+    // UNKNOWN = candle fetch failed — block, never pass through
+    if (weeklyTrend === 'UNKNOWN') {
+      console.log('[WEEKLY BLOCK]', instrument, 'weekly trend unknown — candle fetch failed — blocking');
+      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy,
+        rejections: [{ condition: 'Weekly Trend Alignment', actual: 'UNKNOWN weekly — candle fetch failed', threshold: 'Signal must align with weekly candle direction' }] });
+      if (serverRejections.length > 50) serverRejections.pop();
+      diagCounters.blockedMacro++;
+      continue;
+    }
+
     const weeklyAllowed =
       (signal.direction === 'LONG'  && weeklyTrend === 'BULLISH') ||
-      (signal.direction === 'SHORT' && weeklyTrend === 'BEARISH') ||
-      weeklyTrend === 'UNKNOWN';
+      (signal.direction === 'SHORT' && weeklyTrend === 'BEARISH');
 
     console.log('[REGIME]', instrument,
       'weekly:', weeklyTrend,
@@ -4566,6 +4575,28 @@ async function serverSwingAutoTrade() {
       if (!sig) continue;
       diagCounters.swingCounter++;
 
+      // Weekly trend alignment block — prevents counter-trend swing trades
+      const swingWeeklyCandles = await getCandles(instrument, 'W', 3);
+      const weeklyClose0 = swingWeeklyCandles?.[0]?.close;
+      const weeklyClose2 = swingWeeklyCandles?.[2]?.close;
+      const swingWeeklyTrend = (weeklyClose2 && weeklyClose0)
+        ? (weeklyClose2 > weeklyClose0 ? 'BULLISH' : 'BEARISH')
+        : 'UNKNOWN';
+
+      if (swingWeeklyTrend === 'UNKNOWN') {
+        console.log('[SWING WEEKLY BLOCK]', instrument, 'weekly trend unknown — candle fetch failed — blocking');
+        continue;
+      }
+      if (sig.direction === 'SHORT' && swingWeeklyTrend === 'BULLISH') {
+        console.log('[SWING WEEKLY BLOCK]', instrument, 'SHORT blocked — weekly BULLISH');
+        continue;
+      }
+      if (sig.direction === 'LONG' && swingWeeklyTrend === 'BEARISH') {
+        console.log('[SWING WEEKLY BLOCK]', instrument, 'LONG blocked — weekly BEARISH');
+        continue;
+      }
+      console.log('[SWING REGIME]', instrument, 'weekly:', swingWeeklyTrend, 'signal:', sig.direction, '✅ aligned');
+
       // Pattern analysis — fetch last 3 M15 candles and adjust score / block contradictions
       let swingPatternAnalysis = null;
       const swingRecentCandles = await getCandles(instrument, 'M15', 3);
@@ -4731,6 +4762,7 @@ async function serverSwingAutoTrade() {
         score: sig.score, reasons: sig.reasons, session,
         confirms: consensus.confirms, models: consensus.models,
         voteLog: consensus.voteLog, timestamp: ts,
+        weeklyTrend: swingWeeklyTrend,
         expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
       });
       return; // HARD STOP — no execution without Discord approval
@@ -4896,12 +4928,19 @@ async function requestKillShotApproval(signal) {
     title: '⚔️ XAVIER COUNCIL VERDICT — KILL SHOT',
     description: `**${signal.instrument.replace('_', '/')} ${signal.direction}** — ${signal.session}\n\n${councilLines}\n\n**Verdict: ${signal.confirms}/4 CONFIRM → AWAITING APPROVAL**`,
     fields: [
-      { name: 'Score',     value: `${signal.score}%`,                                inline: true },
-      { name: 'Entry',     value: formatPrice(signal.liveEntry, signal.instrument),  inline: true },
-      { name: 'Stop Loss', value: formatPrice(signal.liveSl,    signal.instrument),  inline: true },
-      { name: 'TP1',       value: formatPrice(signal.liveTp1,   signal.instrument),  inline: true },
-      { name: '⏰ Expires', value: `${expiryTime} Calgary`,                          inline: true },
-      { name: 'Action',    value: `\`!execute ${signal.instrument}\` or \`!skip ${signal.instrument}\``, inline: false },
+      { name: 'Score',        value: `${signal.score}%`,                                inline: true },
+      { name: 'Entry',        value: formatPrice(signal.liveEntry, signal.instrument),  inline: true },
+      { name: 'Stop Loss',    value: formatPrice(signal.liveSl,    signal.instrument),  inline: true },
+      { name: 'TP1',          value: formatPrice(signal.liveTp1,   signal.instrument),  inline: true },
+      { name: 'Weekly Trend', value: signal.weeklyTrend
+          ? `${signal.weeklyTrend}${
+              (signal.weeklyTrend === 'BULLISH' && signal.direction === 'SHORT') ||
+              (signal.weeklyTrend === 'BEARISH' && signal.direction === 'LONG')
+                ? ' ⚠️ COUNTER-TREND' : ' ✅ WITH TREND'
+            }`
+          : '—',                                                                        inline: true },
+      { name: '⏰ Expires',   value: `${expiryTime} Calgary`,                          inline: true },
+      { name: 'Action',       value: `\`!execute ${signal.instrument}\` or \`!skip ${signal.instrument}\``, inline: false },
     ],
     timestamp: new Date().toISOString(),
   });
