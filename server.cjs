@@ -5661,6 +5661,19 @@ async function backfillNullTrades() {
         const rMult       = riskTotal > 0 ? parseFloat(Math.max(-5, Math.min(10, realizedPL / riskTotal)).toFixed(2)) : null;
         const durMins     = match.openTime ? Math.round((new Date(closeTs).getTime() - new Date(match.openTime).getTime()) / 60000) : null;
 
+        // Guard: skip if a record with this pair + close_time already exists (prevents duplicates)
+        const { data: existing } = await supabase
+          .from('trades')
+          .select('id')
+          .eq('pair', nullTrade.pair)
+          .eq('close_time', closeTs)
+          .limit(1);
+
+        if (existing?.length > 0) {
+          console.log('[BACKFILL SKIP]', nullTrade.pair, 'already exists ✅');
+          continue;
+        }
+
         const { error: updateErr } = await supabase
           .from('trades')
           .update({
