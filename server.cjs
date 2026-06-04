@@ -1738,35 +1738,12 @@ const CAT_NAMES = {
 };
 
 async function getNewsCommentary(category, headlines) {
-  if (!OPENROUTER_API_KEY) return null;
+  if (!DEEPSEEK_KEY) return null;
   const list = headlines.slice(0, 10).map(h => `- ${h.title}`).join('\n');
   const catName = CAT_NAMES[category] || category;
-  const prompt = `You are a concise forex market analyst. Based on these recent ${catName} headlines, write exactly 2 sentences: (1) the dominant market theme right now, (2) the key directional bias traders should watch. Max 50 words total. Be specific — name pairs, assets, or data.\n\nHeadlines:\n${list}`;
-  try {
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-        'HTTP-Referer': 'https://quantbot-phi.vercel.app',
-        'X-Title': 'Xavier QuantBot',
-      },
-      body: JSON.stringify({
-        model: 'qwen/qwen-2.5-72b-instruct',
-        messages: [
-          { role: 'system', content: 'You are a decisive, concise forex market analyst.' },
-          { role: 'user',   content: prompt },
-        ],
-        max_tokens: 120,
-        temperature: 0.3,
-      }),
-    });
-    const d = await r.json();
-    if (!r.ok) return null;
-    return d.choices?.[0]?.message?.content?.trim() || null;
-  } catch {
-    return null;
-  }
+  const prompt = `You are a decisive, concise forex market analyst.\n\nBased on these recent ${catName} headlines, write exactly 2 sentences: (1) the dominant market theme right now, (2) the key directional bias traders should watch. Max 50 words total. Be specific — name pairs, assets, or data.\n\nHeadlines:\n${list}`;
+  const text = await callDeepSeek(prompt, 'deepseek-chat', 'NEWS');
+  return text?.trim() || null;
 }
 
 app.get('/news', async (req, res) => {
