@@ -2351,7 +2351,7 @@ function PairRow({ pair, basePrice, strategy, onTrade, currentHeadline, onSignal
         <div style={{ margin: "6px 12px", borderRadius: chartExpanded ? "12px 12px 0 0" : 12, background: "#161b22", border: "1px solid #21262d", borderBottom: chartExpanded ? "none" : "1px solid #21262d" }}>
           {/* Row 1: pair + regime + price — tap to expand chart */}
           <div
-            style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "12px 14px 4px", cursor: "pointer", userSelect: "none" }}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "12px 14px 4px", cursor: "pointer", userSelect: "none", touchAction: "manipulation" }}
             onClick={() => setChartExpanded(v => !v)}
           >
             <div style={{ display: "flex", flexDirection: "column" }}>
