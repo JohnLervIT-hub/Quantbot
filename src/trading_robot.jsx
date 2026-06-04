@@ -7719,7 +7719,7 @@ export default function TradingRobot() {
   useEffect(() => {
     const syncPositions = async () => {
       try {
-        const r = await fetch(`${BRIDGE}/positions`);
+        const r = await fetch(`${BRIDGE}/trades`);
         const data = await r.json();
         if (Array.isArray(data.trades)) {
           setOpenTrades(prev =>
