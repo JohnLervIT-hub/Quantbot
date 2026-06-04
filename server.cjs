@@ -2677,61 +2677,97 @@ async function saveTradeToSupabase(trade) {
            || await getContextFromSupabase(trade.id)
            || {};
     console.log('[JOURNAL DEBUG]', 'trade.id:', trade.id, 'map keys:', Array.from(openTradeContexts.keys()), 'map found:', openTradeContexts.has(trade.id?.toString()), 'ctx found:', Object.keys(ctx).length > 0, 'session:', ctx.session, 'source:', ctx.tradeSource);
-    const { error } = await supabase.from('trades').upsert({
-      id:                 trade.id,
-      pair:               trade.pair,
-      direction:          trade.direction,
-      session:            ctx.session    || trade.session || null,
-      strategy:           ctx.strategy   || trade.strategy || null,
-      entry:              trade.entry,
-      exit_price:         trade.exitPrice,
-      stop_loss:          trade.stopLoss,
-      take_profit:        trade.takeProfit,
-      pnl:                trade.pnl,
-      r_multiple:         trade.rMultiple,
-      score:              ctx.score              ?? null,
-      consensus:          ctx.consensusVotes     ?? null,
-      units:              trade.units,
-      duration_mins:      trade.durationMins,
-      outcome:            trade.pnl > 0 ? 'WIN' : trade.pnl < 0 ? 'LOSS' : 'BREAKEVEN',
-      market_regime:      ctx.regimeAtEntry      ?? null,
-      ema50_above:        null,
-      rsi_at_entry:       null,
-      open_time:          ctx.openTime || trade.openTime,
-      close_time:         new Date().toISOString(),
-      created_at:         new Date().toISOString(),
-      candle_patterns:    ctx.candlePatterns     ?? null,
-      pattern_adjustment: ctx.patternAdjustment  ?? null,
-      pattern_bias:       ctx.patternBias        ?? null,
-      candle_confirms:    ctx.candleConfirms     ?? null,
-      warren_verdict:     ctx.warrenVerdict      ?? null,
-      george_verdict:     ctx.georgeVerdict      ?? null,
-      james_verdict:      ctx.jamesVerdict       ?? null,
-      ray_verdict:        ctx.rayVerdict         ?? null,
-      consensus_votes:    ctx.consensusVotes     ?? null,
-      options_pcr:        ctx.optionsPcr         ?? null,
-      options_bias:       ctx.optionsBias        ?? null,
-      regime_at_entry:    ctx.regimeAtEntry      ?? null,
-      ema50_side:         ctx.ema50Side          ?? null,
-      heat_at_entry:      ctx.heatAtEntry        ?? null,
-      recovery_mode:      ctx.recoveryMode       ?? null,
-      atr_at_entry:       ctx.atrAtEntry         ?? null,
-      trade_source:       ctx.tradeSource        ?? null,
-      spread_cost:        ctx.spreadCost         ?? null,
-      commentary_warren:  ctx.warrenCommentary      ?? null,
-      commentary_george:  ctx.georgeCommentary      ?? null,
-      commentary_james:   ctx.jamesCommentary       ?? null,
-      commentary_ray:     ctx.rayCommentary         ?? null,
-      confidence_warren:  ctx.confidenceWarren      ?? null,
-      confidence_george:  ctx.confidenceGeorge      ?? null,
-      confidence_james:   ctx.confidenceJames       ?? null,
-      confidence_ray:     ctx.confidenceRay         ?? null,
-      conviction_divergence: ctx.convictionDivergence ?? null,
-    });
-    if (error) {
-      console.error('[SUPABASE ERROR]', error.message);
+    const instrument = trade.pair;
+    const outcome = trade.pnl > 0 ? 'WIN' : trade.pnl < 0 ? 'LOSS' : 'BREAKEVEN';
+    const nowIso  = new Date().toISOString();
+
+    // Look for an existing null-close_time record for this pair — fill it in on close
+    const { data: existing } = await supabase
+      .from('trades')
+      .select('id')
+      .eq('pair', instrument)
+      .is('close_time', null)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    let error;
+    if (existing) {
+      ({ error } = await supabase
+        .from('trades')
+        .update({
+          outcome,
+          pnl:           trade.pnl,
+          close_time:    nowIso,
+          r_multiple:    trade.rMultiple,
+          exit_price:    trade.exitPrice,
+          duration_mins: trade.durationMins,
+          stop_loss:     trade.stopLoss,
+          take_profit:   trade.takeProfit,
+        })
+        .eq('id', existing.id));
+      if (error) {
+        console.error('[SUPABASE UPDATE ERROR]', error.message);
+      } else {
+        console.log('[SUPABASE UPDATE]', instrument, 'filled null fields ✅');
+      }
     } else {
-      console.log('[SUPABASE] trade saved:', trade.pair, trade.pnl);
+      ({ error } = await supabase.from('trades').upsert({
+        id:                 trade.id,
+        pair:               trade.pair,
+        direction:          trade.direction,
+        session:            ctx.session    || trade.session || null,
+        strategy:           ctx.strategy   || trade.strategy || null,
+        entry:              trade.entry,
+        exit_price:         trade.exitPrice,
+        stop_loss:          trade.stopLoss,
+        take_profit:        trade.takeProfit,
+        pnl:                trade.pnl,
+        r_multiple:         trade.rMultiple,
+        score:              ctx.score              ?? null,
+        consensus:          ctx.consensusVotes     ?? null,
+        units:              trade.units,
+        duration_mins:      trade.durationMins,
+        outcome,
+        market_regime:      ctx.regimeAtEntry      ?? null,
+        ema50_above:        null,
+        rsi_at_entry:       null,
+        open_time:          ctx.openTime || trade.openTime,
+        close_time:         nowIso,
+        created_at:         nowIso,
+        candle_patterns:    ctx.candlePatterns     ?? null,
+        pattern_adjustment: ctx.patternAdjustment  ?? null,
+        pattern_bias:       ctx.patternBias        ?? null,
+        candle_confirms:    ctx.candleConfirms     ?? null,
+        warren_verdict:     ctx.warrenVerdict      ?? null,
+        george_verdict:     ctx.georgeVerdict      ?? null,
+        james_verdict:      ctx.jamesVerdict       ?? null,
+        ray_verdict:        ctx.rayVerdict         ?? null,
+        consensus_votes:    ctx.consensusVotes     ?? null,
+        options_pcr:        ctx.optionsPcr         ?? null,
+        options_bias:       ctx.optionsBias        ?? null,
+        regime_at_entry:    ctx.regimeAtEntry      ?? null,
+        ema50_side:         ctx.ema50Side          ?? null,
+        heat_at_entry:      ctx.heatAtEntry        ?? null,
+        recovery_mode:      ctx.recoveryMode       ?? null,
+        atr_at_entry:       ctx.atrAtEntry         ?? null,
+        trade_source:       ctx.tradeSource        ?? null,
+        spread_cost:        ctx.spreadCost         ?? null,
+        commentary_warren:  ctx.warrenCommentary      ?? null,
+        commentary_george:  ctx.georgeCommentary      ?? null,
+        commentary_james:   ctx.jamesCommentary       ?? null,
+        commentary_ray:     ctx.rayCommentary         ?? null,
+        confidence_warren:  ctx.confidenceWarren      ?? null,
+        confidence_george:  ctx.confidenceGeorge      ?? null,
+        confidence_james:   ctx.confidenceJames       ?? null,
+        confidence_ray:     ctx.confidenceRay         ?? null,
+        conviction_divergence: ctx.convictionDivergence ?? null,
+      }));
+      if (error) {
+        console.error('[SUPABASE ERROR]', error.message);
+      } else {
+        console.log('[SUPABASE] trade saved:', trade.pair, trade.pnl);
+      }
     }
 
     // Phase promotion/demotion — runs for any pair tracked in PAIR_PHASE
@@ -5578,6 +5614,73 @@ app.get('/patterns/test/:instrument', requireAuth, async (req, res) => {
   });
 });
 
+// ─── BACKFILL NULL TRADES ─────────────────────────────────────────────────────
+async function backfillNullTrades() {
+  if (!supabase || !ACCOUNT || !TOKEN) return;
+  try {
+    const { data: nullTrades, error: fetchErr } = await supabase
+      .from('trades')
+      .select('*')
+      .is('close_time', null);
+
+    if (fetchErr) { console.error('[BACKFILL] Supabase fetch error:', fetchErr.message); return; }
+    if (!nullTrades?.length) { console.log('[BACKFILL] No null trades to fix'); return; }
+
+    console.log('[BACKFILL]', nullTrades.length, 'trades with null fields — fetching OANDA closed trades');
+
+    const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades?state=CLOSED&count=100`, { headers: H });
+    const data = await r.json();
+    const closedOanda = data.trades || [];
+
+    for (const trade of nullTrades) {
+      const match = closedOanda.find(o => {
+        if (o.instrument !== trade.pair) return false;
+        if (!trade.entry) return false;
+        // Relative price tolerance (1%) handles JPY/index spreads
+        const relDiff = Math.abs(parseFloat(o.price || 0) - parseFloat(trade.entry)) / parseFloat(trade.entry);
+        return relDiff < 0.01;
+      });
+
+      if (match) {
+        const pnl       = parseFloat(match.realizedPL || 0);
+        const exitPrice = parseFloat(match.averageClosePrice || 0);
+        const entry     = parseFloat(match.price || 0);
+        const units     = Math.abs(parseFloat(match.initialUnits || 0));
+        const sl        = match.stopLossOrder?.price ? parseFloat(match.stopLossOrder.price) : null;
+        const riskPerUnit = sl ? Math.abs(entry - sl) : 0;
+        const isUsdBase   = (trade.pair || '').startsWith('USD_');
+        const pipValue    = isUsdBase && entry > 0 ? 1 / entry : 1;
+        const riskTotal   = riskPerUnit * units * pipValue;
+        const rMult       = riskTotal > 0 ? parseFloat(Math.max(-5, Math.min(10, pnl / riskTotal)).toFixed(2)) : null;
+        const closeTs     = match.closeTime || new Date().toISOString();
+        const durMins     = match.openTime ? Math.round((new Date(closeTs).getTime() - new Date(match.openTime).getTime()) / 60000) : null;
+
+        const { error: updateErr } = await supabase
+          .from('trades')
+          .update({
+            outcome:       pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'BREAKEVEN',
+            pnl,
+            close_time:    closeTs,
+            r_multiple:    rMult,
+            exit_price:    exitPrice,
+            duration_mins: durMins,
+          })
+          .eq('id', trade.id);
+
+        if (updateErr) {
+          console.error('[BACKFILL UPDATE ERROR]', trade.pair, updateErr.message);
+        } else {
+          console.log('[BACKFILL UPDATE]', trade.pair, `pnl=${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} ✅`);
+        }
+      } else {
+        console.log('[BACKFILL] No OANDA match for', trade.pair, 'entry:', trade.entry, '— will retry next boot');
+      }
+    }
+  } catch (err) {
+    console.error('[BACKFILL ERROR]', err.message);
+  }
+}
+
 // ─── START ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
@@ -5615,6 +5718,9 @@ app.listen(PORT, '0.0.0.0', () => {
   OPTIONAL_VARS.forEach(v => { if (process.env[v]) console.log(`  [ENV] ${v}: ${SENSITIVE_ENV.has(v) ? maskKey(process.env[v]) : '✅ SET'}`); });
   console.log('──────────────────────────────────────────');
 });
+
+// Backfill any Supabase records with null close fields — runs once 35s after boot
+setTimeout(() => backfillNullTrades().catch(e => console.error('[backfill] Startup:', e.message)), 35_000);
 
 setTimeout(() => serverAutoTrade().catch(e => console.error('[auto] Startup:', e.message)), 10_000);
 setInterval(() => serverAutoTrade().catch(e => console.error('[auto] Loop:', e.message)), 60_000);

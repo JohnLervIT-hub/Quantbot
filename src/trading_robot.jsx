@@ -6482,6 +6482,7 @@ function TradeHistoryTab({ isVisible }) {
 
   // Pure Supabase data — no OANDA merge
   const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
+  const incompleteTrades = supabaseTrades.filter(t => t.close_time === null);
   const cleanMerged = supabaseTrades.filter(t => {
     const closeTime = t.close_time;
     return closeTime && new Date(closeTime) >= CLEAN_CUTOFF;
@@ -6621,6 +6622,21 @@ function TradeHistoryTab({ isVisible }) {
                 <span style={{ width: 7, height: 7, borderRadius: '50%', display: 'inline-block', background: t.conviction_divergence > 4.0 ? '#f85149' : t.conviction_divergence > 2.5 ? '#d29922' : '#3fb950' }} />
               )}
             </div>
+          </div>
+        ))}
+        {incompleteTrades.map((t, i) => (
+          <div key={`incomplete-${t.id || i}`}
+            style={{ display: 'grid', gridTemplateColumns: '88px 54px 52px 74px 74px 52px 66px 62px 44px 20px', gap: '0 6px', padding: '7px 12px', borderBottom: '0.5px solid #0d1117', fontSize: 11, alignItems: 'center', background: 'rgba(255,255,255,0.01)', opacity: 0.7 }}>
+            <div style={{ fontFamily: FONT_MONO, color: '#d29922', fontSize: 9 }}>⚠️ pending</div>
+            <div style={{ fontFamily: FONT_MONO, color: '#8b949e', fontSize: 10, fontWeight: 600 }}>{(t.pair || '—').replace('_', '/')}</div>
+            <div style={{ color: '#484f58', fontSize: 10, fontWeight: 600 }}>{t.direction || '—'}</div>
+            <div style={{ fontFamily: FONT_MONO, color: '#484f58', fontSize: 10 }}>{t.entry != null ? parseFloat(t.entry).toFixed(4) : '—'}</div>
+            <div style={{ fontFamily: FONT_MONO, color: '#484f58', fontSize: 10 }}>—</div>
+            <div style={{ fontFamily: FONT_MONO, color: '#484f58' }}>—</div>
+            <div style={{ fontSize: 9, color: '#484f58', fontFamily: FONT_MONO }}>⚠️ Incomplete — context missing</div>
+            <div style={{ fontSize: 9, color: '#484f58' }}>{t.session || '—'}</div>
+            <div style={{ fontSize: 9, color: '#484f58' }}>—</div>
+            <div />
           </div>
         ))}
       </div>
