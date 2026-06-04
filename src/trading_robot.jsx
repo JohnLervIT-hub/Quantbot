@@ -5098,7 +5098,16 @@ function updateXavierMemory(closedTrade) {
 }
 
 // ─── CLOSED TRADES PANEL ─────────────────────────────────────────────────────
-function ClosedTradesPanel({ trades, isMobile }) {
+function ClosedTradesPanel({ trades, isMobile, loading = false, lastUpdated = null }) {
+  const [secAgo, setSecAgo] = useState(0);
+  useEffect(() => {
+    if (!lastUpdated) return;
+    const tick = () => setSecAgo(Math.floor((Date.now() - lastUpdated.getTime()) / 1000));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [lastUpdated]);
+
   if (trades.length === 0) return null;
   const CLEAN_CUTOFF = new Date('2026-06-01T00:00:00Z');
   const marketClosedTrades = trades.filter(t => {
@@ -5124,6 +5133,10 @@ function ClosedTradesPanel({ trades, isMobile }) {
           <span style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO }}>
             {marketClosedTrades.length} since June 1 · {winRate}% WR
           </span>
+          {loading
+            ? <span style={{ fontSize: 10, color: "#58a6ff", fontFamily: FONT_MONO }}>Refreshing...</span>
+            : lastUpdated && <span style={{ fontSize: 10, color: "#484f58", fontFamily: FONT_MONO }}>Updated {secAgo}s ago</span>
+          }
         </div>
         <span style={{ fontSize: 11, fontWeight: 600, fontFamily: FONT_MONO, color: totalPL >= 0 ? "#3fb950" : "#f85149" }}>
           {totalPL >= 0 ? "+" : ""}${totalPL.toFixed(2)}
@@ -7472,61 +7485,62 @@ const useSupabaseData = () => {
     winRate: 0, avgR: 0, totalPnl: 0,
     loading: true, lastUpdated: null,
   });
+  const isMountedRef = useRef(true);
 
-  useEffect(() => {
-    let isMounted = true;
+  const fetchSupa = useCallback(async () => {
+    if (isMountedRef.current) setSupaData(prev => ({ ...prev, loading: true }));
+    try {
+      const token = localStorage.getItem('auth_token');
+      const res = await window.fetch(`${BRIDGE}/supabase/history?limit=500`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      });
+      const data = await res.json();
+      const raw = data.trades || [];
 
-    const fetchSupa = async () => {
-      try {
-        const token = localStorage.getItem('auth_token');
-        const res = await window.fetch(`${BRIDGE}/supabase/history?limit=500`, {
-          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
-        });
-        const data = await res.json();
-        const raw = data.trades || [];
+      // Normalise Supabase snake_case → camelCase aliases for component compatibility
+      const trades = raw.map(t => ({
+        ...t,
+        closeTime:  t.close_time  || t.closeTime,
+        openTime:   t.open_time   || t.openTime,
+        realizedPL: t.pnl         ?? t.realizedPL,
+        rMultiple:  t.r_multiple  ?? t.rMultiple,
+        session:    t.session_name || t.session,
+        dir:        t.direction    || t.dir,
+      }));
 
-        // Normalise Supabase snake_case → camelCase aliases for component compatibility
-        const trades = raw.map(t => ({
-          ...t,
-          closeTime:  t.close_time  || t.closeTime,
-          openTime:   t.open_time   || t.openTime,
-          realizedPL: t.pnl         ?? t.realizedPL,
-          rMultiple:  t.r_multiple  ?? t.rMultiple,
-          session:    t.session_name || t.session,
-          dir:        t.direction    || t.dir,
-        }));
+      const wins    = trades.filter(t => t.outcome === 'WIN');
+      const losses  = trades.filter(t => t.outcome === 'LOSS');
+      const rTrades = trades.filter(t => t.r_multiple != null);
+      const avgR    = rTrades.length > 0
+        ? rTrades.reduce((s, t) => s + t.r_multiple, 0) / rTrades.length
+        : 0;
+      const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
 
-        const wins    = trades.filter(t => t.outcome === 'WIN');
-        const losses  = trades.filter(t => t.outcome === 'LOSS');
-        const rTrades = trades.filter(t => t.r_multiple != null);
-        const avgR    = rTrades.length > 0
-          ? rTrades.reduce((s, t) => s + t.r_multiple, 0) / rTrades.length
-          : 0;
-        const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
-
-        if (isMounted) setSupaData({
-          trades,
-          total:      trades.length,
-          wins:       wins.length,
-          losses:     losses.length,
-          winRate:    trades.length > 0 ? (wins.length / trades.length * 100).toFixed(1) : 0,
-          avgR:       avgR.toFixed(3),
-          totalPnl:   totalPnl.toFixed(2),
-          loading:    false,
-          lastUpdated: new Date(),
-        });
-      } catch (err) {
-        console.error('[SUPA]', err.message);
-        if (isMounted) setSupaData(prev => ({ ...prev, loading: false }));
-      }
-    };
-
-    fetchSupa();
-    const interval = setInterval(fetchSupa, 30000);
-    return () => { isMounted = false; clearInterval(interval); };
+      if (isMountedRef.current) setSupaData({
+        trades,
+        total:      trades.length,
+        wins:       wins.length,
+        losses:     losses.length,
+        winRate:    trades.length > 0 ? (wins.length / trades.length * 100).toFixed(1) : 0,
+        avgR:       avgR.toFixed(3),
+        totalPnl:   totalPnl.toFixed(2),
+        loading:    false,
+        lastUpdated: new Date(),
+      });
+    } catch (err) {
+      console.error('[SUPA]', err.message);
+      if (isMountedRef.current) setSupaData(prev => ({ ...prev, loading: false }));
+    }
   }, []);
 
-  return supaData;
+  useEffect(() => {
+    isMountedRef.current = true;
+    fetchSupa();
+    const interval = setInterval(fetchSupa, 10000);
+    return () => { isMountedRef.current = false; clearInterval(interval); };
+  }, [fetchSupa]);
+
+  return { ...supaData, refresh: fetchSupa };
 };
 
 export default function TradingRobot() {
@@ -7574,6 +7588,16 @@ export default function TradingRobot() {
   const [closedTrades, setClosedTrades] = useState([]);
   const supabaseData = useSupabaseData();
   const seenClosedIdsRef = useRef(new Set());
+
+  // FIX 2: Force Supabase refresh when a trade closes
+  const prevTradeCountRef = useRef(openTrades.length);
+  useEffect(() => {
+    if (openTrades.length < prevTradeCountRef.current) {
+      console.log('[TRADE CLOSED] forcing Supabase refresh');
+      supabaseData.refresh();
+    }
+    prevTradeCountRef.current = openTrades.length;
+  }, [openTrades.length]);
 
 
   // One-time seed: XAG/USD LONDON loss (2026-05-27) — occurred before xavier_memory existed
@@ -8816,7 +8840,7 @@ export default function TradingRobot() {
           )}
           <div>
             <OpenPositionsPanel openTrades={openTrades} livePrices={livePrices} onClose={closeTrade} isMobile={isMobile} mgmtRef={tradeMgmtRef} nav={displayNav} />
-            <ClosedTradesPanel trades={supabaseData.trades} isMobile={isMobile} />
+            <ClosedTradesPanel trades={supabaseData.trades} isMobile={isMobile} loading={supabaseData.loading} lastUpdated={supabaseData.lastUpdated} />
             <PaperTradesPanel trades={paperTrades} isMobile={isMobile} />
             <TradeLog trades={trades} isMobile={isMobile} />
             <RejectionLogPanel log={rejectionLog} isMobile={isMobile} />
