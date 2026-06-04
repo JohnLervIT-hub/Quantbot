@@ -5621,59 +5621,65 @@ async function backfillNullTrades() {
     const { data: nullTrades, error: fetchErr } = await supabase
       .from('trades')
       .select('*')
-      .is('close_time', null);
+      .is('close_time', null)
+      .limit(20);
 
     if (fetchErr) { console.error('[BACKFILL] Supabase fetch error:', fetchErr.message); return; }
-    if (!nullTrades?.length) { console.log('[BACKFILL] No null trades to fix'); return; }
+    if (!nullTrades?.length) { console.log('[BACKFILL] no null trades found ✅'); return; }
 
-    console.log('[BACKFILL]', nullTrades.length, 'trades with null fields — fetching OANDA closed trades');
+    console.log('[BACKFILL]', nullTrades.length, 'null trades found — fetching OANDA data');
 
-    const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades?state=CLOSED&count=100`, { headers: H });
-    const data = await r.json();
-    const closedOanda = data.trades || [];
+    const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades?state=CLOSED&count=50`, { headers: H });
+    const oandaData = await r.json();
+    const oandaTrades = oandaData.trades || [];
 
-    for (const trade of nullTrades) {
-      const match = closedOanda.find(o => {
-        if (o.instrument !== trade.pair) return false;
-        if (!trade.entry) return false;
-        // Relative price tolerance (1%) handles JPY/index spreads
-        const relDiff = Math.abs(parseFloat(o.price || 0) - parseFloat(trade.entry)) / parseFloat(trade.entry);
+    for (const nullTrade of nullTrades) {
+      // Primary match: same pair + open_time within 5-minute window
+      // Fallback: same pair + entry price within 1% (handles records with no open_time)
+      const match = oandaTrades.find(t => {
+        if (t.instrument !== nullTrade.pair) return false;
+        if (nullTrade.open_time && t.openTime) {
+          return Math.abs(new Date(t.openTime) - new Date(nullTrade.open_time)) < 5 * 60 * 1000;
+        }
+        if (!nullTrade.entry) return false;
+        const relDiff = Math.abs(parseFloat(t.price || 0) - parseFloat(nullTrade.entry)) / parseFloat(nullTrade.entry);
         return relDiff < 0.01;
       });
 
       if (match) {
-        const pnl       = parseFloat(match.realizedPL || 0);
-        const exitPrice = parseFloat(match.averageClosePrice || 0);
-        const entry     = parseFloat(match.price || 0);
-        const units     = Math.abs(parseFloat(match.initialUnits || 0));
-        const sl        = match.stopLossOrder?.price ? parseFloat(match.stopLossOrder.price) : null;
+        const realizedPL = parseFloat(match.realizedPL || 0);
+        const outcome    = realizedPL > 0 ? 'WIN' : realizedPL < 0 ? 'LOSS' : 'BREAKEVEN';
+        const exitPrice  = parseFloat(match.averageClosePrice || 0);
+        const closeTs    = match.closeTime || new Date().toISOString();
+        const entry      = parseFloat(match.price || 0);
+        const units      = Math.abs(parseFloat(match.initialUnits || 0));
+        const sl         = match.stopLossOrder?.price ? parseFloat(match.stopLossOrder.price) : null;
         const riskPerUnit = sl ? Math.abs(entry - sl) : 0;
-        const isUsdBase   = (trade.pair || '').startsWith('USD_');
+        const isUsdBase   = (nullTrade.pair || '').startsWith('USD_');
         const pipValue    = isUsdBase && entry > 0 ? 1 / entry : 1;
         const riskTotal   = riskPerUnit * units * pipValue;
-        const rMult       = riskTotal > 0 ? parseFloat(Math.max(-5, Math.min(10, pnl / riskTotal)).toFixed(2)) : null;
-        const closeTs     = match.closeTime || new Date().toISOString();
+        const rMult       = riskTotal > 0 ? parseFloat(Math.max(-5, Math.min(10, realizedPL / riskTotal)).toFixed(2)) : null;
         const durMins     = match.openTime ? Math.round((new Date(closeTs).getTime() - new Date(match.openTime).getTime()) / 60000) : null;
 
         const { error: updateErr } = await supabase
           .from('trades')
           .update({
-            outcome:       pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'BREAKEVEN',
-            pnl,
+            outcome,
+            pnl:           realizedPL,
             close_time:    closeTs,
-            r_multiple:    rMult,
             exit_price:    exitPrice,
+            r_multiple:    rMult,
             duration_mins: durMins,
           })
-          .eq('id', trade.id);
+          .eq('id', nullTrade.id);
 
         if (updateErr) {
-          console.error('[BACKFILL UPDATE ERROR]', trade.pair, updateErr.message);
+          console.error('[BACKFILL UPDATE ERROR]', nullTrade.pair, updateErr.message);
         } else {
-          console.log('[BACKFILL UPDATE]', trade.pair, `pnl=${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} ✅`);
+          console.log('[BACKFILL]', nullTrade.pair, 'updated from OANDA ✅', 'outcome:', outcome, 'pnl:', realizedPL);
         }
       } else {
-        console.log('[BACKFILL] No OANDA match for', trade.pair, 'entry:', trade.entry, '— will retry next boot');
+        console.log('[BACKFILL] no OANDA match for', nullTrade.pair, '— will retry next boot');
       }
     }
   } catch (err) {
@@ -5719,8 +5725,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('──────────────────────────────────────────');
 });
 
-// Backfill any Supabase records with null close fields — runs once 35s after boot
-setTimeout(() => backfillNullTrades().catch(e => console.error('[backfill] Startup:', e.message)), 35_000);
+// Backfill any Supabase records with null close fields — runs once 5s after boot
+setTimeout(() => backfillNullTrades().catch(e => console.error('[backfill] Startup:', e.message)), 5_000);
 
 setTimeout(() => serverAutoTrade().catch(e => console.error('[auto] Startup:', e.message)), 10_000);
 setInterval(() => serverAutoTrade().catch(e => console.error('[auto] Loop:', e.message)), 60_000);
