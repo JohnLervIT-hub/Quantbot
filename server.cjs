@@ -1482,6 +1482,8 @@ async function askDeepSeek(prompt, sys) {
 
 async function askOpenRouter(prompt, sys, { model = 'qwen/qwen-2.5-72b-instruct', name = 'RAY' } = {}) {
   if (!OPENROUTER_API_KEY) throw new Error('Missing OPENROUTER_API_KEY');
+  const fullPrompt = `${sys ? sys + '\n\n' : ''}${prompt}`;
+  console.log(`[TOKEN COUNT] ${name} prompt:${fullPrompt.length} chars (~${Math.round(fullPrompt.length / 4)} tokens)`);
   const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -1490,12 +1492,13 @@ async function askOpenRouter(prompt, sys, { model = 'qwen/qwen-2.5-72b-instruct'
       'HTTP-Referer': 'https://quantbot-phi.vercel.app',
       'X-Title': 'Xavier QuantBot',
     },
-    body: JSON.stringify({ model, messages: [{ role: 'user', content: `${sys ? sys + '\n\n' : ''}${prompt}` }], max_tokens: 500, temperature: 0 }),
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: fullPrompt }], max_tokens: 500, temperature: 0 }),
   });
   const d = await r.json();
   if (!r.ok) throw new Error(apiErr(d, `OpenRouter HTTP ${r.status}`));
   const text = d.choices?.[0]?.message?.content;
   if (!text) throw new Error('OpenRouter empty response');
+  if (d.usage?.total_tokens) console.log(`[OPENROUTER USAGE] ${name} tokens:${d.usage.total_tokens} cost:$${(d.usage.total_tokens * 0.0000008).toFixed(6)}`);
   console.log(`[${name}/QWEN] response received`);
   return { name, ...parseVerdict(text) };
 }
@@ -1710,6 +1713,7 @@ function parseRSS(xml) {
 }
 
 const newsCache = new Map(); // category → { items, commentary, fetchedAt }
+const swingConsensusCache = new Map(); // instrument_direction → { result, ts }
 
 const CAT_NAMES = {
   forex: 'Forex / Currency Markets',
@@ -1755,7 +1759,7 @@ app.get('/news', async (req, res) => {
   const category = (req.query.category || 'forex').toLowerCase();
   const query = NEWS_QUERIES[category] || NEWS_QUERIES.forex;
   const cached = newsCache.get(category);
-  if (cached && Date.now() - cached.fetchedAt < 5 * 60_000) {
+  if (cached && Date.now() - cached.fetchedAt < 30 * 60_000) {
     return res.json({ category, items: cached.items, commentary: cached.commentary, fetchedAt: new Date(cached.fetchedAt).toISOString(), cached: true });
   }
   try {
@@ -1901,6 +1905,12 @@ app.post('/consensus', requireAuth, async (req, res) => {
 app.post('/swing-consensus', requireAuth, async (req, res) => {
   try {
     const p = { ...req.body };
+    const swingCacheKey = `${p.instrument}_${p.direction}`;
+    const swingCached = swingConsensusCache.get(swingCacheKey);
+    if (swingCached && Date.now() - swingCached.ts < 2 * 60 * 60 * 1000) {
+      console.log('[SWING CACHE] hit', p.instrument, p.direction, '— returning cached verdict');
+      return res.json(swingCached.result);
+    }
     // Fetch retail sentiment inline if not provided
     if (!p.retailSentiment && p.instrument) {
       try {
@@ -1943,14 +1953,16 @@ app.post('/swing-consensus', requireAuth, async (req, res) => {
     voteLog.push(executeAllowed
       ? `\nVerdict: ${confirms}/${available} CONFIRM → KILL SHOT EXECUTE`
       : `\nVerdict: BLOCKED — ${confirms}/${available} CONFIRM, need ${required}/${available}`);
-    res.json({
+    const swingResult = {
       votes: { confirm: confirms, reject: available - confirms },
       consensus: executeAllowed ? 'CONFIRM' : 'REJECT',
       confidence: `${Math.round((confirms / available) * 100)}%`,
       models, voteLog,
       executeAllowed,
       claudeConfirmed,
-    });
+    };
+    swingConsensusCache.set(swingCacheKey, { result: swingResult, ts: Date.now() });
+    res.json(swingResult);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -4226,6 +4238,12 @@ function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
 
 // ─── SERVER-SIDE SWING CONSENSUS (3/4 majority — no model has veto power) ────
 async function runSwingConsensus(p) {
+  const swingCacheKey = `${p.instrument}_${p.direction}`;
+  const swingCached = swingConsensusCache.get(swingCacheKey);
+  if (swingCached && Date.now() - swingCached.ts < 2 * 60 * 60 * 1000) {
+    console.log('[SWING CACHE]', p.instrument, p.direction, '— using cached verdict');
+    return swingCached.result;
+  }
   const settled = await Promise.allSettled([
     askClaude(buildClaudeSwingPrompt(p),     SYS_CLAUDE_SWING),
     askOpenRouter(buildGPTSwingPrompt(p), SYS_GPT_SWING, { model: 'qwen/qwen-2.5-72b-instruct', name: 'GEORGE' }),
@@ -4251,7 +4269,9 @@ async function runSwingConsensus(p) {
   voteLog.push(passes
     ? `\nVerdict: ${confirms}/${available} CONFIRM → KILL SHOT EXECUTE`
     : `\nVerdict: BLOCKED — ${confirms}/${available} CONFIRM, need ${required}/${available}`);
-  return { passes, confirms, claudeConfirmed, models, voteLog };
+  const swingResult = { passes, confirms, claudeConfirmed, models, voteLog };
+  swingConsensusCache.set(swingCacheKey, { result: swingResult, ts: Date.now() });
+  return swingResult;
 }
 
 async function checkOandaHealth() {
