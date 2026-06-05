@@ -6474,7 +6474,7 @@ function TradeHistoryTab({ isVisible }) {
   const fetchHistory = async () => {
     setLoading(true);
     try {
-      const res  = await fetch(`${BRIDGE}/supabase/history?limit=1000`);
+      const res  = await fetch(`${BRIDGE}/supabase/history?limit=1000&_t=${Date.now()}`);
       if (res.ok) { const data = await res.json(); setSupabaseTrades(data.trades || []); }
     } catch (err) { console.error('[History] fetch error:', err); }
     setLoading(false);
@@ -7507,7 +7507,7 @@ const useSupabaseData = () => {
     if (isMountedRef.current) setSupaData(prev => ({ ...prev, loading: true }));
     try {
       const token = localStorage.getItem('auth_token');
-      const res = await window.fetch(`${BRIDGE}/supabase/history?limit=500`, {
+      const res = await window.fetch(`${BRIDGE}/supabase/history?limit=500&_t=${Date.now()}`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {},
       });
       const data = await res.json();
@@ -7811,7 +7811,7 @@ export default function TradingRobot() {
   useEffect(() => {
     const fetchClosed = async () => {
       try {
-        const r = await fetch(`${BRIDGE}/supabase/history?limit=500`);
+        const r = await fetch(`${BRIDGE}/supabase/history?limit=500&_t=${Date.now()}`);
         const data = await r.json();
         const allTrades = data.trades || [];
 
