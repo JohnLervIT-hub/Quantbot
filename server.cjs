@@ -2431,6 +2431,8 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
       session:    session    || null,
       strategy:   strategy   || null,
       spreadCost: SPREAD_COSTS[instrument] ?? null,
+      stopLoss:   stopLoss   ? parseFloat(stopLoss)   : null,
+      takeProfit: takeProfit ? parseFloat(takeProfit) : null,
     };
     // Store under both possible keys to handle any OANDA ID variance
     openTradeContexts.set(contextKey.toString(), ctxToStore);
@@ -3018,7 +3020,10 @@ async function manageOpenTrades() {
 
         // Supabase save — always runs, independent of Discord
         const _entry      = parseFloat(trade.price || 0);
-        const _sl         = trade.stopLossOrder?.price ? parseFloat(trade.stopLossOrder.price) : null;
+        const _ctx        = openTradeContexts.get(id.toString());
+        const _sl         = trade.stopLossOrder?.price
+          ? parseFloat(trade.stopLossOrder.price)
+          : (_ctx?.stopLoss ?? null);
         const _tp         = trade.takeProfitOrder?.price ? parseFloat(trade.takeProfitOrder.price) : null;
         const _exitPrice  = parseFloat(trade.averageClosePrice || 0);
         const _units      = parseFloat(trade.initialUnits || 0);
@@ -4433,7 +4438,24 @@ function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
   if (score < 75) return null;
 
   // ── SL / TP levels (2 ATR risk, 1.5R / 2.5R / 4R targets) ───────────────
-  const riskDist = atr * 2.0;
+  const MIN_RISK_DIST = {
+    XAU_USD:    25,     // min $25   — Gold consolidation can compress ATR to $3
+    XAG_USD:    0.50,   // min $0.50 — Silver
+    NAS100_USD: 50,     // min 50pts — NAS100
+    JP225_USD:  100,    // min 100pts — JP225
+    AU200_AUD:  20,     // min 20pts  — AU200
+    EUR_USD:    0.0030, // min 30 pips
+    GBP_USD:    0.0035, // min 35 pips
+    EUR_GBP:    0.0025, // min 25 pips
+  };
+  const minRisk  = MIN_RISK_DIST[_instrument] ?? atr * 1.5;
+  const riskDist = Math.max(atr * 2.0, minRisk);
+  console.log('[SL FLOOR]', _instrument,
+    'ATR:', atr.toFixed(2),
+    'raw:', (atr * 2).toFixed(2),
+    'floor:', minRisk,
+    'final:', riskDist.toFixed(2),
+    riskDist > atr * 2 ? '<- floor applied' : '<- ATR sufficient');
   const sl  = direction === 'LONG' ? last - riskDist : last + riskDist;
   const tp1 = direction === 'LONG' ? last + riskDist * 1.5 : last - riskDist * 1.5;
   const tp2 = direction === 'LONG' ? last + riskDist * 2.5 : last - riskDist * 2.5;
