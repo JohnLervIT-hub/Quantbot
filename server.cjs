@@ -4438,24 +4438,31 @@ function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
   if (score < 75) return null;
 
   // ── SL / TP levels (2 ATR risk, 1.5R / 2.5R / 4R targets) ───────────────
-  const MIN_RISK_DIST = {
-    XAU_USD:    25,     // min $25   — Gold consolidation can compress ATR to $3
-    XAG_USD:    0.50,   // min $0.50 — Silver
-    NAS100_USD: 50,     // min 50pts — NAS100
-    JP225_USD:  100,    // min 100pts — JP225
-    AU200_AUD:  20,     // min 20pts  — AU200
-    EUR_USD:    0.0030, // min 30 pips
-    GBP_USD:    0.0035, // min 35 pips
-    EUR_GBP:    0.0025, // min 25 pips
+  const MIN_SL_FLOOR = {
+    XAU_USD:    25,      // min $25   — Gold ATR compresses to $3 in consolidation
+    XAG_USD:    0.50,    // min $0.50 — Silver
+    NAS100_USD: 50,      // min 50pts — NAS100
+    JP225_USD:  100,     // min 100pts — JP225
+    AU200_AUD:  20,      // min 20pts  — AU200
+    UK100_GBP:  30,      // min 30pts  — UK100
+    SPX500_USD: 15,      // min 15pts  — SPX500
+    EUR_USD:    0.0030,  // min 30 pips
+    GBP_USD:    0.0035,  // min 35 pips
+    EUR_GBP:    0.0025,  // min 25 pips
+    USD_JPY:    0.30,    // min 30 pips
+    USD_CAD:    0.0030,  // min 30 pips
+    AUD_USD:    0.0030,  // min 30 pips
+    NZD_USD:    0.0025,  // min 25 pips
   };
-  const minRisk  = MIN_RISK_DIST[_instrument] ?? atr * 1.5;
-  const riskDist = Math.max(atr * 2.0, minRisk);
+  const minFloor = MIN_SL_FLOOR[_instrument] ?? atr * 1.5;
+  const rawRisk  = atr * 2.0;
+  const riskDist = Math.max(rawRisk, minFloor);
   console.log('[SL FLOOR]', _instrument,
-    'ATR:', atr.toFixed(2),
-    'raw:', (atr * 2).toFixed(2),
-    'floor:', minRisk,
-    'final:', riskDist.toFixed(2),
-    riskDist > atr * 2 ? '<- floor applied' : '<- ATR sufficient');
+    'ATR:', atr.toFixed(4),
+    'raw SL:', rawRisk.toFixed(4),
+    'floor:', minFloor,
+    'final:', riskDist.toFixed(4),
+    riskDist > rawRisk ? '<- FLOOR APPLIED ⚠️' : '<- ATR sufficient ✅');
   const sl  = direction === 'LONG' ? last - riskDist : last + riskDist;
   const tp1 = direction === 'LONG' ? last + riskDist * 1.5 : last - riskDist * 1.5;
   const tp2 = direction === 'LONG' ? last + riskDist * 2.5 : last - riskDist * 2.5;
