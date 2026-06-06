@@ -2904,6 +2904,60 @@ async function saveTradeToSupabase(trade) {
 const MAX_SWING_HOLD_DAYS = 5;
 const MAX_SWING_HOLD_MS   = MAX_SWING_HOLD_DAYS * 24 * 60 * 60 * 1000;
 
+// ─── THREE-PHASE SWING TRAIL (BREAKEVEN → BAR_TO_BAR → EMA8 → EMA21) ─────────
+async function manageSwingTrailStop(tradeId, instrument, dir, entry, sl, currentR, unrealizedPnl) {
+  const state = tradeManagementState.get(tradeId);
+  if (!state) return;
+  const now = Date.now();
+  if (now - (state.lastSwingTrailCheck || 0) < 5 * 60 * 1000) return; // throttle: 5 min
+  state.lastSwingTrailCheck = now;
+
+  const h4Candles = await getCandles(instrument, 'H4', 30);
+  if (!h4Candles?.length || h4Candles.length < 2) return;
+
+  const closes     = h4Candles.map(c => c.close);
+  const ema8       = calcEMAFromArr(closes, 8);
+  const ema21      = calcEMAFromArr(closes, 21);
+  const prevCandle = h4Candles[h4Candles.length - 2];
+  const prevHigh   = prevCandle?.high ?? 0;
+  const prevLow    = prevCandle?.low  ?? 0;
+
+  let newSL       = sl;
+  let trailMethod = '';
+
+  if (dir === 'SHORT') {
+    if (currentR >= 1.0 && sl > entry)       { newSL = Math.min(newSL, entry);            trailMethod = 'BREAKEVEN';  }
+    if (currentR >= 1.0 && currentR < 2.0)   { newSL = Math.min(newSL, prevHigh * 1.001); trailMethod = 'BAR_TO_BAR'; }
+    if (currentR >= 2.0 && currentR < 3.0)   { newSL = Math.min(newSL, ema8  * 1.001);    trailMethod = 'EMA8';       }
+    if (currentR >= 3.0)                      { newSL = Math.min(newSL, ema21 * 1.001);    trailMethod = 'EMA21';      }
+  } else {
+    if (currentR >= 1.0 && sl < entry)        { newSL = Math.max(newSL, entry);            trailMethod = 'BREAKEVEN';  }
+    if (currentR >= 1.0 && currentR < 2.0)    { newSL = Math.max(newSL, prevLow * 0.999);  trailMethod = 'BAR_TO_BAR'; }
+    if (currentR >= 2.0 && currentR < 3.0)    { newSL = Math.max(newSL, ema8  * 0.999);    trailMethod = 'EMA8';       }
+    if (currentR >= 3.0)                       { newSL = Math.max(newSL, ema21 * 0.999);    trailMethod = 'EMA21';      }
+  }
+
+  const slImproved = dir === 'SHORT' ? newSL < sl : newSL > sl;
+  if (!slImproved) return;
+
+  await updateTradeSL(tradeId, newSL, instrument);
+  console.log('[SWING TRAIL]', instrument, 'method:', trailMethod,
+    'R:', currentR.toFixed(2), 'SL:', sl.toFixed(4), '→', newSL.toFixed(4));
+
+  try {
+    await sendDiscordEmbed({
+      title: '📈 Swing SL Trailed',
+      color: 0x3fb950,
+      fields: [{
+        name:   `${instrument.replace('_', '/')} ${dir}`,
+        value:  `Method: ${trailMethod}\nR achieved: ${currentR.toFixed(2)}R\nSL: ${sl.toFixed(4)} → ${newSL.toFixed(4)}\nProfit locked: $${unrealizedPnl.toFixed(2)}`,
+        inline: false,
+      }],
+      timestamp: new Date().toISOString(),
+    });
+  } catch (e) { console.error('[SWING TRAIL] Discord failed:', e.message); }
+}
+
 // ─── OPEN TRADE MANAGER (runs every 10s) ─────────────────────────────────────
 async function manageOpenTrades() {
   if (process.env.AUTO_MODE_ENABLED !== 'true') return;
@@ -3220,49 +3274,10 @@ async function manageOpenTrades() {
       }
     }
 
-    // ── MA trail: swing trades only — trail SL to H4 EMA21 when 1.5R+ in profit ──
-    if (isSwingTrade && currentR >= 1.5 && unrealizedPnl > 0) {
-      const now          = Date.now();
-      const lastMACheck  = state.lastMATrailCheck || 0;
-      if (now - lastMACheck > 5 * 60 * 1000) { // throttle: fetch H4 at most every 5 min
-        state.lastMATrailCheck = now;
-        try {
-          const h4Candles = await fetchOandaCandles(instrument, 'H4', 30);
-          if (h4Candles.length >= 21) {
-            const ema21     = calcEMAFromArr(h4Candles.map(c => c.c), 21);
-            const currentSL = parseFloat(trade.stopLossOrder?.price || sl);
-            let   newSL     = null;
-
-            if (dir === 'LONG') {
-              const candidate = ema21 * 0.999; // just below EMA21
-              if (candidate > currentSL) newSL = candidate;
-            } else {
-              const candidate = ema21 * 1.001; // just above EMA21
-              if (candidate < currentSL) newSL = candidate;
-            }
-
-            if (newSL !== null) {
-              await updateTradeSL(tradeId, newSL, instrument);
-              console.log('[MA TRAIL]', instrument, `${dir} SL moved to EMA21: ${newSL.toFixed(4)} (+${currentR.toFixed(2)}R)`);
-              try {
-                await sendDiscordEmbed({
-                  title: '📈 SL Trailed to EMA21',
-                  color: 0x3fb950,
-                  fields: [
-                    { name: 'Pair',          value: instrument.replace('_', '/'),   inline: true },
-                    { name: 'Direction',     value: dir,                             inline: true },
-                    { name: 'Current R',     value: `+${currentR.toFixed(2)}R`,     inline: true },
-                    { name: 'SL moved to',   value: formatPrice(newSL, instrument), inline: true },
-                    { name: 'EMA21',         value: ema21.toFixed(4),               inline: true },
-                    { name: 'Profit locked', value: `$${unrealizedPnl.toFixed(2)}`, inline: true },
-                  ],
-                  timestamp: new Date().toISOString(),
-                });
-              } catch (discordErr) { console.error('[MA TRAIL] Discord failed:', discordErr.message); }
-            }
-          }
-        } catch (e) { console.error('[MA TRAIL]', instrument, 'error:', e.message); }
-      }
+    // ── Three-phase swing trail (BREAKEVEN → BAR_TO_BAR → EMA8 → EMA21) ─────
+    if (isSwingTrade && currentR >= 1.0) {
+      try { await manageSwingTrailStop(tradeId, instrument, dir, entry, sl, currentR, unrealizedPnl); }
+      catch (e) { console.error('[SWING TRAIL]', instrument, 'error:', e.message); }
     }
   }
 }
