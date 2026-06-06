@@ -3219,6 +3219,51 @@ async function manageOpenTrades() {
         console.log(`[TRAIL] ${instrument} ${dir} — SL → ${formatPrice(trailPrice, instrument)} (+${currentR.toFixed(2)}R, dist=${trail.trailR}R)`);
       }
     }
+
+    // ── MA trail: swing trades only — trail SL to H4 EMA21 when 1.5R+ in profit ──
+    if (isSwingTrade && currentR >= 1.5 && unrealizedPnl > 0) {
+      const now          = Date.now();
+      const lastMACheck  = state.lastMATrailCheck || 0;
+      if (now - lastMACheck > 5 * 60 * 1000) { // throttle: fetch H4 at most every 5 min
+        state.lastMATrailCheck = now;
+        try {
+          const h4Candles = await fetchOandaCandles(instrument, 'H4', 30);
+          if (h4Candles.length >= 21) {
+            const ema21     = calcEMAFromArr(h4Candles.map(c => c.c), 21);
+            const currentSL = parseFloat(trade.stopLossOrder?.price || sl);
+            let   newSL     = null;
+
+            if (dir === 'LONG') {
+              const candidate = ema21 * 0.999; // just below EMA21
+              if (candidate > currentSL) newSL = candidate;
+            } else {
+              const candidate = ema21 * 1.001; // just above EMA21
+              if (candidate < currentSL) newSL = candidate;
+            }
+
+            if (newSL !== null) {
+              await updateTradeSL(tradeId, newSL, instrument);
+              console.log('[MA TRAIL]', instrument, `${dir} SL moved to EMA21: ${newSL.toFixed(4)} (+${currentR.toFixed(2)}R)`);
+              try {
+                await sendDiscordEmbed({
+                  title: '📈 SL Trailed to EMA21',
+                  color: 0x3fb950,
+                  fields: [
+                    { name: 'Pair',          value: instrument.replace('_', '/'),   inline: true },
+                    { name: 'Direction',     value: dir,                             inline: true },
+                    { name: 'Current R',     value: `+${currentR.toFixed(2)}R`,     inline: true },
+                    { name: 'SL moved to',   value: formatPrice(newSL, instrument), inline: true },
+                    { name: 'EMA21',         value: ema21.toFixed(4),               inline: true },
+                    { name: 'Profit locked', value: `$${unrealizedPnl.toFixed(2)}`, inline: true },
+                  ],
+                  timestamp: new Date().toISOString(),
+                });
+              } catch (discordErr) { console.error('[MA TRAIL] Discord failed:', discordErr.message); }
+            }
+          }
+        } catch (e) { console.error('[MA TRAIL]', instrument, 'error:', e.message); }
+      }
+    }
   }
 }
 
