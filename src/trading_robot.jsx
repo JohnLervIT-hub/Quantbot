@@ -6763,11 +6763,14 @@ function TradeHistoryTab({ isVisible }) {
           )}
 
           {/* Candle patterns */}
-          {selectedTrade.candle_patterns?.length > 0 && (
+          {(() => {
+            const raw = selectedTrade.candle_patterns;
+            const patterns = Array.isArray(raw) ? raw : (raw ? String(raw).split(',').filter(Boolean) : []);
+            return patterns.length > 0 && (
             <div style={{ borderTop: '1px solid #21262d', paddingTop: 10, marginBottom: 10 }}>
               <div style={{ ...LBL, marginBottom: 6 }}>Candle Patterns · {selectedTrade.pattern_bias && `Bias: ${selectedTrade.pattern_bias}`}</div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {selectedTrade.candle_patterns.map(p => (
+                {patterns.map(p => (
                   <span key={p} style={{ fontSize: 9, padding: '2px 7px', borderRadius: 3, background: 'rgba(88,166,255,0.1)', color: '#58a6ff', fontFamily: FONT_MONO }}>{p}</span>
                 ))}
                 {selectedTrade.pattern_adjustment != null && (
@@ -6777,7 +6780,7 @@ function TradeHistoryTab({ isVisible }) {
                 )}
               </div>
             </div>
-          )}
+          ); })()}
 
           {/* Options data */}
           {selectedTrade.options_pcr != null && (
