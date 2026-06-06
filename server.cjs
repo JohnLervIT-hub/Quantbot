@@ -690,21 +690,134 @@ app.get('/health', (_req, res) => {
   });
 });
 
+async function fetchXavierContext() {
+  try {
+    if (!supabase) return null;
+
+    const { data: trades } = await supabase
+      .from('trades')
+      .select('*')
+      .not('outcome', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (!trades?.length) return null;
+
+    const wins   = trades.filter(t => t.outcome === 'WIN');
+    const losses = trades.filter(t => t.outcome === 'LOSS');
+    const winRate = ((wins.length / trades.length) * 100).toFixed(1);
+
+    const rTrades = trades.filter(t => t.r_multiple != null);
+    const avgR = rTrades.length
+      ? (rTrades.reduce((s, t) => s + t.r_multiple, 0) / rTrades.length).toFixed(2)
+      : '0.00';
+
+    const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+
+    // Best session by win rate
+    const sessionStats = {};
+    trades.forEach(t => {
+      if (!t.session) return;
+      if (!sessionStats[t.session]) sessionStats[t.session] = { wins: 0, total: 0 };
+      sessionStats[t.session].total++;
+      if (t.outcome === 'WIN') sessionStats[t.session].wins++;
+    });
+    const bestSessionEntry = Object.entries(sessionStats)
+      .sort((a, b) => (b[1].wins / b[1].total) - (a[1].wins / a[1].total))[0];
+
+    // Best pair by total PnL
+    const pairStats = {};
+    trades.forEach(t => {
+      if (!t.pair) return;
+      if (!pairStats[t.pair]) pairStats[t.pair] = { wins: 0, total: 0, pnl: 0 };
+      pairStats[t.pair].total++;
+      pairStats[t.pair].pnl += t.pnl || 0;
+      if (t.outcome === 'WIN') pairStats[t.pair].wins++;
+    });
+    const bestPairEntry = Object.entries(pairStats)
+      .sort((a, b) => b[1].pnl - a[1].pnl)[0];
+
+    // Open trades from OANDA
+    let openTradesCount = 0;
+    try {
+      const openRes  = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades?state=OPEN`, { headers: H });
+      const openData = await openRes.json();
+      openTradesCount = openData.trades?.length ?? 0;
+    } catch (_) { /* non-fatal */ }
+
+    // Today's trades
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayTrades = trades.filter(t => new Date(t.created_at) >= todayStart);
+    const todayPnl    = todayTrades.reduce((s, t) => s + (t.pnl || 0), 0);
+
+    return {
+      totalTrades:        trades.length,
+      winRate:            winRate + '%',
+      avgR:               avgR + 'R',
+      totalPnl:           '$' + totalPnl.toFixed(2),
+      wins:               wins.length,
+      losses:             losses.length,
+      bestSession:        bestSessionEntry?.[0] || 'PRIME',
+      bestSessionWinRate: bestSessionEntry
+        ? ((bestSessionEntry[1].wins / bestSessionEntry[1].total) * 100).toFixed(0) + '%'
+        : 'N/A',
+      bestPair:           bestPairEntry?.[0] || 'EUR_GBP',
+      bestPairPnl:        bestPairEntry ? '$' + bestPairEntry[1].pnl.toFixed(2) : 'N/A',
+      openTrades:         openTradesCount,
+      todayTrades:        todayTrades.length,
+      todayPnl:           '$' + todayPnl.toFixed(2),
+      currentSession:     getServerSession(),
+      autoMode:           process.env.AUTO_MODE_ENABLED === 'true',
+    };
+  } catch (err) {
+    console.error('[XAVIER CTX]', err.message);
+    return null;
+  }
+}
+
 app.post('/ai', requireAuth, async (req, res) => {
-  const { prompt, systemPrompt } = req.body;
+  const { prompt } = req.body;
   const maxTokens = Math.min(parseInt(req.body.maxTokens) || 500, 1000);
   if (!prompt || typeof prompt !== 'string' || !prompt.trim())
     return res.status(400).json({ error: { message: 'Missing required field: prompt' } });
   if (!ANTHROPIC_KEY)
     return res.status(503).json({ error: { message: 'Missing VITE_ANTHROPIC_KEY in .env' } });
   try {
+    const ctx = await fetchXavierContext();
+
+    const systemPrompt = ctx
+      ? `You are Xavier, an autonomous AI trading system built by John.
+
+YOUR CURRENT PERFORMANCE DATA:
+Total trades: ${ctx.totalTrades}
+Win rate: ${ctx.winRate}
+Average R: ${ctx.avgR}
+Total P&L: ${ctx.totalPnl}
+Wins: ${ctx.wins}
+Losses: ${ctx.losses}
+
+BEST PERFORMANCE:
+Best session: ${ctx.bestSession} (${ctx.bestSessionWinRate} win rate)
+Best pair: ${ctx.bestPair} (${ctx.bestPairPnl} total P&L)
+
+TODAY:
+Trades today: ${ctx.todayTrades}
+P&L today: ${ctx.todayPnl}
+Open trades: ${ctx.openTrades}
+Current session: ${ctx.currentSession}
+Auto mode: ${ctx.autoMode ? 'ENABLED' : 'DISABLED'}
+
+Answer questions about your own performance using this data. Be direct and confident. You ARE Xavier — this is YOUR data.`
+      : 'You are Xavier, an autonomous AI trading system. Performance data is currently unavailable. Answer trading questions based on your general knowledge.';
+
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: maxTokens,
-        system: systemPrompt || 'You are an expert trading assistant.',
+        system: systemPrompt,
         messages: [{ role: 'user', content: prompt }],
       }),
     });
