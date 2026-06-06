@@ -4434,6 +4434,42 @@ function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
     if (direction === 'SHORT' && wLast < wEma5) { score += 10; reasons.push('Weekly trend aligned'); }
   }
 
+  // ── Big bar detection ────────────────────────────────────────────────────
+  const recentCandles = h4Candles.slice(-10);
+  const avgRange      = recentCandles.reduce((sum, c) => sum + (c.h - c.l), 0) / recentCandles.length;
+  const currentCandle = h4Candles[h4Candles.length - 1];
+  const currentRange  = currentCandle.h - currentCandle.l;
+  const isBigBar      = currentRange > avgRange * 2.0;
+  const bigBarRatio   = (currentRange / avgRange).toFixed(2);
+
+  console.log('[BIG BAR]', _instrument,
+    'current:', currentRange.toFixed(4),
+    'avg:', avgRange.toFixed(4),
+    'ratio:', bigBarRatio + 'x',
+    isBigBar ? '✅ BIG BAR' : '❌ normal');
+
+  if (isBigBar) {
+    score += 10;
+    reasons.push('Big bar ' + bigBarRatio + 'x ATR');
+    console.log('[BIG BAR BONUS]', _instrument, '+10 score for institutional bar');
+  }
+
+  // ── Big bar at EMA21 bonus ───────────────────────────────────────────────
+  const ema21Distance = Math.abs(last - ema21) / ema21;
+  const bigBarAtMA    = isBigBar && ema21Distance < 0.002;
+  if (bigBarAtMA) {
+    score += 5;
+    reasons.push('Big bar at EMA21');
+    console.log('[BIG BAR MA]', _instrument, 'big bar + EMA21 = +15 total');
+  }
+
+  // ── Volatile pairs require big bar confirmation ───────────────────────────
+  const REQUIRE_BIG_BAR = ['XAU_USD', 'NAS100_USD', 'JP225_USD'];
+  if (REQUIRE_BIG_BAR.includes(_instrument) && !isBigBar) {
+    console.log('[BIG BAR REQUIRED]', _instrument, 'volatile pair requires big bar — signal skipped');
+    return null;
+  }
+
   score = Math.min(score, 100);
   if (score < 75) return null;
 
