@@ -694,10 +694,12 @@ async function fetchXavierContext() {
   try {
     if (!supabase) return null;
 
+    const CLEAN_CUTOFF = '2026-06-01T00:00:00Z';
     const { data: trades } = await supabase
       .from('trades')
       .select('*')
       .not('outcome', 'is', null)
+      .gte('close_time', CLEAN_CUTOFF)
       .order('created_at', { ascending: false })
       .limit(100);
 
@@ -808,7 +810,9 @@ Open trades: ${ctx.openTrades}
 Current session: ${ctx.currentSession}
 Auto mode: ${ctx.autoMode ? 'ENABLED' : 'DISABLED'}
 
-Answer questions about your own performance using this data. Be direct and confident. You ARE Xavier — this is YOUR data.`
+Answer questions about your own performance using this data. Be direct and confident. You ARE Xavier — this is YOUR data.
+
+Note: Performance data shows only clean trades from June 1, 2026 onwards. Pre-launch calibration trades are excluded.`
       : 'You are Xavier, an autonomous AI trading system. Performance data is currently unavailable. Answer trading questions based on your general knowledge.';
 
     const r = await fetch('https://api.anthropic.com/v1/messages', {
