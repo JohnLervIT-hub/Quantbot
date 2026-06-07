@@ -4620,7 +4620,8 @@ function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
   }
 
   // ── Big bar detection ────────────────────────────────────────────────────
-  const recentCandles = h4Candles.slice(-10);
+  // Bug 1 fix: use slice(-11,-1) so current candle is excluded from avgRange
+  const recentCandles = h4Candles.slice(-11, -1);
   const avgRange      = recentCandles.reduce((sum, c) => sum + (c.h - c.l), 0) / recentCandles.length;
   const currentCandle = h4Candles[h4Candles.length - 1];
   const currentRange  = currentCandle.h - currentCandle.l;
@@ -4629,27 +4630,34 @@ function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
 
   console.log('[BIG BAR]', _instrument,
     'current:', currentRange.toFixed(4),
-    'avg:', avgRange.toFixed(4),
+    'avg (prior 10):', avgRange.toFixed(4),
     'ratio:', bigBarRatio + 'x',
     isBigBar ? '✅ BIG BAR' : '❌ normal');
 
   if (isBigBar) {
     score += 10;
-    reasons.push('Big bar ' + bigBarRatio + 'x ATR');
+    reasons.push('Big bar ' + bigBarRatio + 'x avg range'); // Bug 4 fix: was 'x ATR'
     console.log('[BIG BAR BONUS]', _instrument, '+10 score for institutional bar');
   }
 
   // ── Big bar at EMA21 bonus ───────────────────────────────────────────────
-  const ema21Distance = Math.abs(last - ema21) / ema21;
-  const bigBarAtMA    = isBigBar && ema21Distance < 0.002;
+  // Bug 3 fix: ATR-relative threshold instead of fixed 0.2% — scales correctly for gold/metals
+  const ema21Distance        = Math.abs(last - ema21) / ema21;
+  const atrRelativeThreshold = atr > 0 ? atr / last : 0.002;
+  const bigBarAtMA           = isBigBar && ema21Distance < atrRelativeThreshold;
+  console.log('[BIG BAR MA]', _instrument,
+    'ema21Distance:', ema21Distance.toFixed(4),
+    'threshold:', atrRelativeThreshold.toFixed(4),
+    bigBarAtMA ? '✅ AT MA' : '❌ not at MA');
   if (bigBarAtMA) {
     score += 5;
     reasons.push('Big bar at EMA21');
-    console.log('[BIG BAR MA]', _instrument, 'big bar + EMA21 = +15 total');
+    console.log('[BIG BAR MA BONUS]', _instrument, 'big bar + EMA21 = +15 total');
   }
 
   // ── Volatile pairs require big bar confirmation ───────────────────────────
-  const REQUIRE_BIG_BAR = ['XAU_USD', 'NAS100_USD', 'JP225_USD'];
+  // Bug 2 fix: NAS100/JP225 removed — not in KILL_SHOT_PAIRS, block was dead code
+  const REQUIRE_BIG_BAR = ['XAU_USD'];
   if (REQUIRE_BIG_BAR.includes(_instrument) && !isBigBar) {
     console.log('[BIG BAR REQUIRED]', _instrument, 'volatile pair requires big bar — signal skipped');
     return null;
