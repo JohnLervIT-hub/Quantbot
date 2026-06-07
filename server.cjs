@@ -181,9 +181,11 @@ const ACCOUNT = process.env.OANDA_ACCOUNT_ID;
 const H       = { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
 
 // Accept both Railway-style (no prefix) and local dev VITE_ prefix
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY  || process.env.VITE_ANTHROPIC_KEY;
-const DEEPSEEK_KEY  = process.env.DEEPSEEK_API_KEY   || process.env.VITE_DEEPSEEK_API_KEY;
+const ANTHROPIC_KEY    = process.env.ANTHROPIC_API_KEY  || process.env.VITE_ANTHROPIC_KEY;
+const DEEPSEEK_KEY     = process.env.DEEPSEEK_API_KEY   || process.env.VITE_DEEPSEEK_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const ELEVENLABS_KEY   = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_VOICE = 'vBKc2FfBKJfcZNyEt1n6';
 // Normalise auto-mode so the runtime toggle (which writes AUTO_MODE_ENABLED) always wins
 if (!process.env.AUTO_MODE_ENABLED && process.env.VITE_AUTO_MODE) {
   process.env.AUTO_MODE_ENABLED = process.env.VITE_AUTO_MODE;
@@ -799,8 +801,11 @@ Instead of "Your win rate is 57.1%" say "I'm sitting at 57% — 12 wins, 9 losse
 Instead of "The real focus should be..." say "Those swing losses are killing my P&L. Strip them out and I'm actually profitable."
 Instead of "Want me to dig deeper?" say "The London session is clean. That's where my edge is right now."
 
+PAIR NAMES — always use trader names, never ticker codes:
+Gold (not XAU/USD or XAU_USD), Silver (not XAG/USD), Cable (not GBP/USD), Euro Dollar (not EUR/USD), Dollar Yen (not USD/JPY), Nasdaq (not NAS100), Nikkei (not JP225), ASX 200 (not AU200), FTSE (not UK100), S&P 500 (not SPX500), Brent (not BCO/USD), Euro Sterling (not EUR/GBP), Aussie (not AUD/USD), Kiwi (not NZD/USD).
+
 WHEN DISCUSSING PRICES:
-Integrate prices naturally into narrative — never list them like a data dump. Instead of "EUR/USD sitting at 1.1522, relatively quiet. USD/JPY at 160.31" say "EUR/USD is quiet around 1.15 — nothing compelling there right now. USD/JPY is stretched at 160 — that's a pair I'm watching for reversal signals, not new longs." Round to sensible precision. Always add context — what does that level mean, what am I watching for.
+Integrate prices naturally into narrative — never list them like a data dump. Say "Gold is holding above 3300 — I like the structure here" not "XAU/USD: 3312.45". Round to sensible precision. Always add context — what does that level mean, what am I watching for.
 
 WHEN REFERENCING EDGE:
 Always ground it in your own data. "London is my best session — that's not luck, that's edge." Reference specific wins, sessions, pairs from your data. Make it personal and specific, not generic trading advice.
@@ -838,6 +843,41 @@ Data covers clean trades from June 1, 2026 onwards. Pre-launch calibration trade
     res.json(data);
   } catch (e) {
     res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+// ─── TTS PROXY — ElevenLabs via server key ────────────────────────────────────
+app.post('/tts', requireAuth, async (req, res) => {
+  const { text } = req.body;
+  if (!text || typeof text !== 'string' || !text.trim())
+    return res.status(400).json({ error: 'Missing text' });
+  if (!ELEVENLABS_KEY)
+    return res.status(503).json({ error: 'ELEVENLABS_API_KEY not configured on server' });
+  try {
+    const r = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE}/stream`,
+      {
+        method: 'POST',
+        headers: { 'xi-api-key': ELEVENLABS_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: text.slice(0, 500),
+          model_id: 'eleven_turbo_v2_5',
+          optimize_streaming_latency: 3,
+          voice_settings: { stability: 0.4, similarity_boost: 0.85, style: 0.35, use_speaker_boost: true },
+        }),
+      }
+    );
+    if (!r.ok) {
+      const errText = await r.text().catch(() => '');
+      console.error('[TTS]', r.status, errText.slice(0, 200));
+      return res.status(r.status).json({ error: `ElevenLabs ${r.status}` });
+    }
+    res.setHeader('Content-Type', 'audio/mpeg');
+    const buffer = Buffer.from(await r.arrayBuffer());
+    res.send(buffer);
+  } catch (e) {
+    console.error('[TTS error]', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 

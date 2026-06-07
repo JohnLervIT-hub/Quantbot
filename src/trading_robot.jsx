@@ -1656,7 +1656,6 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
   const transcriptRef = useRef('');
   const voiceModeRef  = useRef(false);
   const voiceEngineRef = useRef('elevenlabs');
-  const ELEVENLABS_VOICE_ID = 'vBKc2FfBKJfcZNyEt1n6'; // Xavier voice
 
   // Keep refs in sync so async callbacks always see current values
   useEffect(() => { voiceModeRef.current  = voiceMode;  }, [voiceMode]);
@@ -1857,7 +1856,7 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
     const synth = window.speechSynthesis;
     if (!synth) return;
     synth.cancel();
-    const clean = text.replace(/[#*`_~]/g, '').replace(/\n/g, ' ');
+    const clean = formatForSpeech(text);
     const utterance = new SpeechSynthesisUtterance(clean);
     utterance.rate = 0.95;
     utterance.pitch = 0.9;
@@ -1879,23 +1878,13 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
   const xavierSpeakElevenLabs = async (text) => {
     try {
       const spokenText = formatForSpeech(text).slice(0, 500);
-      const apiKey = import.meta.env.VITE_ELEVENLABS_API_KEY;
-      if (!apiKey) { console.warn('[ELEVENLABS] no API key — falling back'); xavierSpeak(text); return; }
-      const response = await fetch(
-        `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`,
-        {
-          method: 'POST',
-          headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: spokenText,
-            model_id: 'eleven_turbo_v2_5',
-            optimize_streaming_latency: 3,
-            voice_settings: { stability: 0.4, similarity_boost: 0.85, style: 0.35, use_speaker_boost: true },
-          }),
-        }
-      );
+      const response = await fetch(`${BRIDGE}/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ text: spokenText }),
+      });
       if (!response.ok) {
-        console.warn('[ELEVENLABS]', response.status, '— falling back to browser voice');
+        console.warn('[TTS]', response.status, '— falling back to browser voice');
         xavierSpeak(text);
         return;
       }
@@ -1904,13 +1893,13 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
       const audio = new Audio(url);
       audio.onended = () => URL.revokeObjectURL(url);
       await audio.play().catch(err => {
-        console.warn('[ELEVENLABS] autoplay blocked:', err.message, '— using browser TTS');
+        console.warn('[TTS] autoplay blocked:', err.message, '— using browser TTS');
         URL.revokeObjectURL(url);
         xavierSpeak(text);
       });
-      console.log('[ELEVENLABS] speaking ✅');
+      console.log('[TTS] ElevenLabs speaking ✅');
     } catch (err) {
-      console.warn('[ELEVENLABS] failed:', err.message, '— falling back to browser voice');
+      console.warn('[TTS] failed:', err.message, '— falling back to browser voice');
       xavierSpeak(text);
     }
   };
