@@ -1591,6 +1591,10 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
   const briefLoadingRef = useRef(false);
   const [lastRefreshMs, setLastRefreshMs] = useState(null);
   const [refreshLabel, setRefreshLabel] = useState(null);
+  const [listening, setListening] = useState(false);
+  const [transcript, setTranscript] = useState('');
+  const [voiceMode, setVoiceMode] = useState(false);
+  const transcriptRef = useRef('');
 
   const heat = (openTrades.length * 1.5).toFixed(1);
   const openCount = openTrades.length;
@@ -1783,6 +1787,56 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
     }
   };
 
+  const xavierSpeak = (text) => {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    synth.cancel();
+    const clean = text.replace(/[#*`_~]/g, '').replace(/\n/g, ' ');
+    const utterance = new SpeechSynthesisUtterance(clean);
+    utterance.rate = 0.95;
+    utterance.pitch = 0.9;
+    utterance.volume = 1.0;
+    const setVoice = () => {
+      const voices = synth.getVoices();
+      const preferred = voices.find(v =>
+        v.name.includes('Daniel') ||
+        v.name.includes('Alex') ||
+        v.name.includes('Google UK English')
+      ) || voices.find(v => v.lang === 'en-GB') || voices.find(v => v.lang.startsWith('en')) || voices[0];
+      if (preferred) utterance.voice = preferred;
+      synth.speak(utterance);
+    };
+    if (synth.getVoices().length > 0) setVoice();
+    else { synth.onvoiceschanged = setVoice; }
+  };
+
+  const startListening = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert('Voice input not supported in this browser. Use Chrome or Edge.');
+      return;
+    }
+    transcriptRef.current = '';
+    setTranscript('');
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recognition.onstart = () => { setListening(true); };
+    recognition.onresult = (event) => {
+      const text = Array.from(event.results).map(r => r[0].transcript).join('');
+      setTranscript(text);
+      transcriptRef.current = text;
+    };
+    recognition.onend = () => {
+      setListening(false);
+      const final = transcriptRef.current.trim();
+      if (final) { askQuestion(final); setTranscript(''); transcriptRef.current = ''; }
+    };
+    recognition.onerror = (e) => { setListening(false); console.warn('[VOICE] error:', e.error); };
+    recognition.start();
+  };
+
   const askQuestion = async (override) => {
     const text = (override ?? question).trim();
     if (!text || chatLoading) return;
@@ -1816,6 +1870,7 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
         400
       );
       setChatHistory(h => [...h, { role: "ai", text: result, ts: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
+      if (voiceMode) xavierSpeak(result);
       setQueryCount(c => c + 1);
     } catch {
       setChatHistory(h => [...h, { role: "ai", text: "Can't reach the models right now. Check your API key and make sure the bridge is running.", ts: "" }]);
@@ -2083,11 +2138,19 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
             </div>
           )}
 
+          {/* Live transcript */}
+          {listening && (
+            <div style={{ padding: "5px 16px", fontSize: 11, color: "#8b949e", fontStyle: "italic", display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ color: "#f85149", fontSize: 10 }}>●</span>
+              {transcript || 'Listening…'}
+            </div>
+          )}
+
           {/* Input row */}
           <div style={{ padding: "10px 16px 12px", borderTop: "1px solid #21262d", display: "flex", gap: 7, alignItems: "center" }}>
-            <button title="Voice input (coming soon)" disabled
-              style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid #21262d", background: "transparent", color: "#30363d", cursor: "not-allowed", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}
-            >🎤</button>
+            <button onClick={startListening} title={listening ? "Listening…" : "Voice input"} disabled={listening || chatLoading}
+              style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${listening ? "rgba(248,81,73,0.4)" : "#21262d"}`, background: listening ? "rgba(248,81,73,0.1)" : "transparent", color: listening ? "#f85149" : "#8b949e", cursor: listening || chatLoading ? "default" : "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, transition: "all 0.15s" }}
+            >{listening ? "⏹" : "🎤"}</button>
             <input
               value={question}
               onChange={e => setQuestion(e.target.value)}
@@ -2095,6 +2158,9 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
               placeholder="Ask Xavier — pairs, setups, risk, anything…"
               style={{ flex: 1, fontSize: 11, padding: "8px 12px", borderRadius: 8, border: "1px solid #21262d", background: "#161b22", color: "#e6edf3", outline: "none", fontFamily: "inherit" }}
             />
+            <button onClick={() => setVoiceMode(v => !v)} title={voiceMode ? "Voice responses ON — click to mute" : "Voice responses OFF — click to enable"}
+              style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${voiceMode ? "rgba(88,166,255,0.35)" : "#21262d"}`, background: voiceMode ? "rgba(88,166,255,0.08)" : "transparent", color: voiceMode ? "#58a6ff" : "#484f58", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, transition: "all 0.15s" }}
+            >{voiceMode ? "🔊" : "🔇"}</button>
             <button onClick={getRiskAdvice} disabled={riskLoading}
               style={{ padding: "8px 10px", borderRadius: 8, fontSize: 10, cursor: riskLoading ? "default" : "pointer", background: "rgba(248,81,73,0.08)", color: riskLoading ? "#484f58" : "#f85149", border: "1px solid rgba(248,81,73,0.25)", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0, fontWeight: 600 }}
             >{riskLoading ? "…" : "Risk Read"}</button>
