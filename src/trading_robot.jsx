@@ -1596,7 +1596,13 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
   const [voiceMode, setVoiceMode] = useState(false);
   const [voiceEngine, setVoiceEngine] = useState('elevenlabs');
   const transcriptRef = useRef('');
+  const voiceModeRef  = useRef(false);
+  const voiceEngineRef = useRef('elevenlabs');
   const ELEVENLABS_VOICE_ID = 'pNInz6obpgDQGcFmaJgB'; // Adam
+
+  // Keep refs in sync so async callbacks always see current values
+  useEffect(() => { voiceModeRef.current  = voiceMode;  }, [voiceMode]);
+  useEffect(() => { voiceEngineRef.current = voiceEngine; }, [voiceEngine]);
 
   const heat = (openTrades.length * 1.5).toFixed(1);
   const openCount = openTrades.length;
@@ -1838,7 +1844,11 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audio.onended = () => URL.revokeObjectURL(url);
-      audio.play();
+      await audio.play().catch(err => {
+        console.warn('[ELEVENLABS] autoplay blocked:', err.message, '— using browser TTS');
+        URL.revokeObjectURL(url);
+        xavierSpeak(text);
+      });
       console.log('[ELEVENLABS] speaking ✅');
     } catch (err) {
       console.warn('[ELEVENLABS] failed:', err.message, '— falling back to browser voice');
@@ -1919,7 +1929,7 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
         400
       );
       setChatHistory(h => [...h, { role: "ai", text: result, ts: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
-      if (voiceMode) { voiceEngine === 'elevenlabs' ? xavierSpeakElevenLabs(result) : xavierSpeak(result); }
+      if (voiceModeRef.current) { voiceEngineRef.current === 'elevenlabs' ? xavierSpeakElevenLabs(result) : xavierSpeak(result); }
       setQueryCount(c => c + 1);
     } catch {
       setChatHistory(h => [...h, { role: "ai", text: "Can't reach the models right now. Check your API key and make sure the bridge is running.", ts: "" }]);
