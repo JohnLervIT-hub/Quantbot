@@ -1528,40 +1528,47 @@ SPEAKING STYLE: Use natural trader names — say "Gold" not "XAU/USD", "Cable" n
 // FIX 1 — natural speech preprocessing for ElevenLabs TTS
 function formatForSpeech(text) {
   return text
-    // strip markdown
-    .replace(/[#*`\[\]_~]/g, '')
-    // pair name replacements (code form first, then slash form)
-    .replace(/\bXAU[_\/]USD\b/gi, 'Gold')
-    .replace(/\bXAG[_\/]USD\b/gi, 'Silver')
-    .replace(/\bGBP[_\/]USD\b/gi, 'Cable')
-    .replace(/\bEUR[_\/]USD\b/gi, 'Euro Dollar')
-    .replace(/\bUSD[_\/]JPY\b/gi, 'Dollar Yen')
-    .replace(/\bNAS100[_\/]USD\b/gi, 'Nasdaq')
-    .replace(/\bJP225[_\/]USD\b/gi, 'Nikkei')
-    .replace(/\bAU200[_\/]AUD\b/gi, 'ASX 200')
-    .replace(/\bUK100[_\/]GBP\b/gi, 'FTSE')
-    .replace(/\bSPX500[_\/]USD\b/gi, 'S and P 500')
-    .replace(/\bBCO[_\/]USD\b/gi, 'Brent Crude')
-    .replace(/\bWTICO[_\/]USD\b/gi, 'WTI Crude')
-    .replace(/\bEUR[_\/]GBP\b/gi, 'Euro Sterling')
-    .replace(/\bAUD[_\/]USD\b/gi, 'Aussie Dollar')
-    .replace(/\bNZD[_\/]USD\b/gi, 'Kiwi')
-    .replace(/\bUSD[_\/]CAD\b/gi, 'Dollar CAD')
-    // session names
-    .replace(/\bPRIME\b/g, 'Prime session')
-    .replace(/\bLONDON\b/g, 'London session')
-    .replace(/\bTOKYO\b/g, 'Tokyo session')
-    .replace(/\bSYDNEY\b/g, 'Sydney session')
-    .replace(/\bAVOID\b/g, 'dead zone')
-    // direction
+    // Pairs → natural names
+    .replace(/XAU[_\/]USD/gi, 'Gold')
+    .replace(/XAG[_\/]USD/gi, 'Silver')
+    .replace(/EUR[_\/]USD/gi, 'Euro Dollar')
+    .replace(/GBP[_\/]USD/gi, 'Cable')
+    .replace(/EUR[_\/]GBP/gi, 'Euro Sterling')
+    .replace(/USD[_\/]JPY/gi, 'Dollar Yen')
+    .replace(/USD[_\/]CAD/gi, 'Dollar Canada')
+    .replace(/AUD[_\/]USD/gi, 'Aussie')
+    .replace(/NZD[_\/]USD/gi, 'Kiwi')
+    .replace(/NAS100[_\/]USD/gi, 'Nasdaq')
+    .replace(/JP225[_\/]USD/gi, 'Nikkei')
+    .replace(/AU200[_\/]AUD/gi, 'ASX two hundred')
+    .replace(/UK100[_\/]GBP/gi, 'FTSE')
+    .replace(/SPX500[_\/]USD/gi, 'S and P')
+    // Sessions
+    .replace(/\bPRIME\b/g, 'Prime')
+    .replace(/\bNY\b/g, 'New York')
+    .replace(/\bLONDON\b/g, 'London')
+    .replace(/\bTOKYO\b/g, 'Tokyo')
+    .replace(/\bSYDNEY\b/g, 'Sydney')
+    .replace(/\bAVOID\b/g, 'avoid')
+    // Numbers and R multiples
+    .replace(/\+(\d+\.\d+)R/g, 'plus $1 R')
+    .replace(/-(\d+\.\d+)R/g, 'minus $1 R')
+    .replace(/(\d+(?:\.\d+)?)%/g, '$1 percent')
+    .replace(/\$(\d+\.\d+)/g, '$1 dollars')
+    // Directions
     .replace(/\bLONG\b/g, 'long')
     .replace(/\bSHORT\b/g, 'short')
-    // R multiples: "2.5R" → "two point five R"
-    .replace(/(\d+(?:\.\d+)?)R\b/g, (_, n) => `${n} R`)
-    // percentages: "85%" → "85 percent"
-    .replace(/(\d+(?:\.\d+)?)%/g, (_, n) => `${n} percent`)
-    // newlines → spaces
-    .replace(/\n+/g, ' ')
+    .replace(/\bWIN\b/g, 'win')
+    .replace(/\bLOSS\b/g, 'loss')
+    // Clean markdown and formatting
+    .replace(/#{1,6}\s/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '')
+    .replace(/`/g, '')
+    .replace(/\[|\]/g, '')
+    .replace(/\n{2,}/g, '. ')
+    .replace(/\n/g, ', ')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
@@ -1888,7 +1895,14 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
         xavierSpeak(text);
         return;
       }
-      const blob = await response.blob();
+      const reader = response.body.getReader();
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const blob = new Blob(chunks, { type: 'audio/mpeg' });
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audio.onended = () => URL.revokeObjectURL(url);
