@@ -3030,7 +3030,7 @@ const MAX_SWING_HOLD_DAYS = 5;
 const MAX_SWING_HOLD_MS   = MAX_SWING_HOLD_DAYS * 24 * 60 * 60 * 1000;
 
 // ─── THREE-PHASE SWING TRAIL (BREAKEVEN → BAR_TO_BAR → EMA8 → EMA21) ─────────
-async function manageSwingTrailStop(tradeId, instrument, dir, entry, sl, currentR, unrealizedPnl) {
+async function manageSwingTrailStop(tradeId, instrument, dir, sl, currentR, unrealizedPnl) {
   const state = tradeManagementState.get(tradeId);
   if (!state) return;
   const now = Date.now();
@@ -3050,16 +3050,21 @@ async function manageSwingTrailStop(tradeId, instrument, dir, entry, sl, current
   let newSL       = sl;
   let trailMethod = '';
 
+  // Mutually exclusive phases (else if) — only one method fires per call.
+  // Bug 3: BREAKEVEN phase removed — main movedToBreakeven system handles it at 1.5R.
+  // Bug 2: prevHigh/prevLow guarded against 0 (malformed candle = skip BAR_TO_BAR).
   if (dir === 'SHORT') {
-    if (currentR >= 1.0 && sl > entry)       { newSL = Math.min(newSL, entry);            trailMethod = 'BREAKEVEN';  }
-    if (currentR >= 1.0 && currentR < 2.0)   { newSL = Math.min(newSL, prevHigh * 1.001); trailMethod = 'BAR_TO_BAR'; }
-    if (currentR >= 2.0 && currentR < 3.0)   { newSL = Math.min(newSL, ema8  * 1.001);    trailMethod = 'EMA8';       }
-    if (currentR >= 3.0)                      { newSL = Math.min(newSL, ema21 * 1.001);    trailMethod = 'EMA21';      }
+    if      (currentR >= 1.0 && currentR < 2.0) {
+      if (prevHigh > 0) { newSL = Math.min(newSL, prevHigh * 1.001); trailMethod = 'BAR_TO_BAR'; }
+    }
+    else if (currentR >= 2.0 && currentR < 3.0) { newSL = Math.min(newSL, ema8  * 1.001); trailMethod = 'EMA8';  }
+    else if (currentR >= 3.0)                   { newSL = Math.min(newSL, ema21 * 1.001); trailMethod = 'EMA21'; }
   } else {
-    if (currentR >= 1.0 && sl < entry)        { newSL = Math.max(newSL, entry);            trailMethod = 'BREAKEVEN';  }
-    if (currentR >= 1.0 && currentR < 2.0)    { newSL = Math.max(newSL, prevLow * 0.999);  trailMethod = 'BAR_TO_BAR'; }
-    if (currentR >= 2.0 && currentR < 3.0)    { newSL = Math.max(newSL, ema8  * 0.999);    trailMethod = 'EMA8';       }
-    if (currentR >= 3.0)                       { newSL = Math.max(newSL, ema21 * 0.999);    trailMethod = 'EMA21';      }
+    if      (currentR >= 1.0 && currentR < 2.0) {
+      if (prevLow > 0) { newSL = Math.max(newSL, prevLow * 0.999); trailMethod = 'BAR_TO_BAR'; }
+    }
+    else if (currentR >= 2.0 && currentR < 3.0) { newSL = Math.max(newSL, ema8  * 0.999); trailMethod = 'EMA8';  }
+    else if (currentR >= 3.0)                   { newSL = Math.max(newSL, ema21 * 0.999); trailMethod = 'EMA21'; }
   }
 
   const slImproved = dir === 'SHORT' ? newSL < sl : newSL > sl;
@@ -3384,7 +3389,8 @@ async function manageOpenTrades() {
     }
 
     // ── Trail stop: pair-specific start/distance (commodities trail earlier/tighter) ──
-    if (currentR >= trail.startR) {
+    // Swing trades use three-phase trail exclusively — skip standard trail to avoid SL conflicts
+    if (!isSwingTrade && currentR >= trail.startR) {
       const trailDist  = risk * trail.trailR;
       const trailPrice = dir === 'LONG'
         ? price - trailDist
@@ -3401,7 +3407,7 @@ async function manageOpenTrades() {
 
     // ── Three-phase swing trail (BREAKEVEN → BAR_TO_BAR → EMA8 → EMA21) ─────
     if (isSwingTrade && currentR >= 1.0) {
-      try { await manageSwingTrailStop(tradeId, instrument, dir, entry, sl, currentR, unrealizedPnl); }
+      try { await manageSwingTrailStop(tradeId, instrument, dir, sl, currentR, unrealizedPnl); }
       catch (e) { console.error('[SWING TRAIL]', instrument, 'error:', e.message); }
     }
   }
