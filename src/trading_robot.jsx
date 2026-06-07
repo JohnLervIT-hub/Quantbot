@@ -6966,9 +6966,9 @@ async function runBtSimulation(closes, candles, strat, sessRange, pair, btConfig
   const wins     = trades.filter(t => t.win);
   const losses   = trades.filter(t => !t.win);
   const winRate  = wins.length / trades.length * 100;
-  const expectancyR  = trades.reduce((s, t) => s + t.rMultiple, 0) / trades.length;
+  const expectancyR  = trades.reduce((s, t) => s + (parseFloat(t.rMultiple) || 0), 0) / trades.length;
   const profitFactor = losses.length > 0 ? (wins.length * 3) / losses.length : wins.length > 0 ? 999 : 0;
-  const equityCurve  = trades.reduce((acc, t) => { acc.push(acc[acc.length - 1] + t.rMultiple); return acc; }, [0]);
+  const equityCurve  = trades.reduce((acc, t) => { acc.push(acc[acc.length - 1] + (parseFloat(t.rMultiple) || 0)); return acc; }, [0]);
   let maxDD = 0, peak = equityCurve[0];
   for (const v of equityCurve) { if (v > peak) peak = v; if (peak - v > maxDD) maxDD = peak - v; }
   const rArr  = trades.map(t => t.rMultiple);

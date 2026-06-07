@@ -1851,9 +1851,13 @@ async function routeToConsensus(signal, patternAnalysis, instrument, isKillShot,
     if (score >= 65 && score < 85 && !hasMajor) {
       console.log(`[LAYER 2] ${instrument} score:${score} — JAMES light review ($0.00014)`);
       try {
-        const james     = await askDeepSeek(buildDeepSeekPrompt(rawParams), SYS_DEEP);
-        const confirmed = james.verdict === 'CONFIRM';
-        console.log(`[LAYER 2] ${instrument} — JAMES: ${james.verdict} "${james.reason}" → ${confirmed ? 'EXECUTE' : 'BLOCK'}`);
+        const james      = await askDeepSeek(buildDeepSeekPrompt(rawParams), SYS_DEEP);
+        const hasVerdict = james?.verdict === 'CONFIRM' || james?.verdict === 'REJECT';
+        if (!hasVerdict) {
+          console.warn(`[JAMES NO VERDICT] ${instrument} response: ${JSON.stringify(james)?.slice(0, 100)} — defaulting to REJECT`);
+        }
+        const confirmed = hasVerdict ? james.verdict === 'CONFIRM' : false;
+        console.log(`[LAYER 2] ${instrument} — JAMES: ${james?.verdict} "${james?.reason}" → ${confirmed ? 'EXECUTE' : 'BLOCK'}`);
         return {
           votesOk:         confirmed,
           votes:           { confirm: confirmed ? 1 : 0, reject: confirmed ? 0 : 1 },
@@ -1869,7 +1873,17 @@ async function routeToConsensus(signal, patternAnalysis, instrument, isKillShot,
           source:          'LIGHT_REVIEW',
         };
       } catch (e) {
-        console.warn(`[LAYER 2] JAMES failed (${e.message}) — escalating to Layer 3`);
+        console.warn(`[LAYER 2 FAILED] ${instrument} JAMES error: ${e.message} — escalating to Layer 3 (cost: $0.0158 instead of $0.00014)`);
+        sendDiscordEmbed({
+          title: '⚠️ Layer 2 Escalation',
+          color: 0xffaa00,
+          fields: [
+            { name: 'Pair',   value: instrument.replace('_', '/'), inline: true },
+            { name: 'Error',  value: e.message.slice(0, 100),      inline: false },
+            { name: 'Action', value: 'Escalating to full council ($0.0158)',  inline: false },
+          ],
+          timestamp: new Date().toISOString(),
+        }).catch(() => {});
       }
     }
   }
@@ -2693,6 +2707,18 @@ async function partialCloseTrade(tradeId, units) {
 }
 
 // ─── SUPABASE PERSISTENCE ─────────────────────────────────────────────────────
+// M4: trim trade_contexts table — keep only last 7 days
+async function cleanOldContexts() {
+  if (!supabase) return;
+  try {
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    await supabase.from('trade_contexts').delete().lt('created_at', cutoff);
+    console.log('[CONTEXT CLEANUP] deleted old contexts before', cutoff);
+  } catch (err) {
+    console.error('[CONTEXT CLEANUP]', err.message);
+  }
+}
+
 async function saveLesson(trade) {
   if (!supabase) return;
   await supabase
@@ -2896,6 +2922,30 @@ async function loadWeekendCloseState() {
     }
   } catch (err) {
     console.log('[WEEKEND CLOSE] fresh state');
+  }
+}
+
+// M7: per-trade peakR persistence — saves on advancement, loads on first seen after restart
+async function savePeakR(tradeId, peakR) {
+  if (!supabase) return;
+  try {
+    await supabase.from('system_state').upsert({
+      key:        `peak_r_${tradeId}`,
+      value:      String(peakR),
+      updated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[STATE] savePeakR failed:', err.message);
+  }
+}
+
+async function loadPeakR(tradeId) {
+  if (!supabase) return 0;
+  try {
+    const { data } = await supabase.from('system_state').select('value').eq('key', `peak_r_${tradeId}`).single();
+    return data ? parseFloat(data.value) : 0;
+  } catch {
+    return 0;
   }
 }
 
@@ -3162,7 +3212,7 @@ async function saveTradeToSupabase(trade) {
     }
 
     await updatePattern(trade);
-    if (trade.pnl < 0 && Math.abs(trade.rMultiple) >= 0.10) {
+    if (trade.pnl < 0 && trade.rMultiple != null && Math.abs(trade.rMultiple) >= 0.10) {
       await saveLesson(trade);
     }
   } catch (err) {
@@ -3233,12 +3283,27 @@ async function manageSwingTrailStop(tradeId, instrument, dir, sl, currentR, unre
 }
 
 // ─── OPEN TRADE MANAGER (runs every 10s) ─────────────────────────────────────
+// M1: timeout wrapper for all OANDA fetch calls in manageOpenTrades
+async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timeout);
+    return res;
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') console.error('[FETCH TIMEOUT]', url.slice(0, 50));
+    throw err;
+  }
+}
+
 async function manageOpenTrades() {
   if (process.env.AUTO_MODE_ENABLED !== 'true') return;
 
   let openTrades = [];
   try {
-    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
+    const r    = await fetchWithTimeout(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
     const data = await r.json();
     openTrades = data.trades || [];
   } catch (e) {
@@ -3253,7 +3318,7 @@ async function manageOpenTrades() {
       // Always fetch the closed trade to get instrument — handles manual closes too
       let _closedTrade = null;
       try {
-        const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${id}`, { headers: H });
+        const r    = await fetchWithTimeout(`${BASE}/v3/accounts/${ACCOUNT}/trades/${id}`, { headers: H });
         const data = await r.json();
         _closedTrade = data.trade || null;
       } catch (e) {
@@ -3422,7 +3487,7 @@ async function manageOpenTrades() {
           });
         } catch (e) { console.error('[SWING EXPIRED] Discord failed:', e.message); }
         try {
-          await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/close`, { method: 'PUT', headers: H });
+          await fetchWithTimeout(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/close`, { method: 'PUT', headers: H });
           const swingRecord = swingAutoTrades.find(s => String(s.oandaTradeId) === String(tradeId));
           if (swingRecord) { swingRecord.closed = true; saveSwingTrades().catch(() => {}); }
           console.log(`[SWING EXPIRED] ${instrument} — close order sent`);
@@ -3439,7 +3504,7 @@ async function manageOpenTrades() {
     // Fetch live mid price
     let price = 0;
     try {
-      const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/pricing?instruments=${instrument}`, { headers: H });
+      const r    = await fetchWithTimeout(`${BASE}/v3/accounts/${ACCOUNT}/pricing?instruments=${instrument}`, { headers: H });
       const data = await r.json();
       const px   = data.prices?.[0];
       if (!px) continue;
@@ -3450,10 +3515,17 @@ async function manageOpenTrades() {
     const currentR   = priceDelta / risk;
 
     if (!tradeManagementState.has(tradeId)) {
-      tradeManagementState.set(tradeId, { movedToBreakeven: false, partialClosed: false, peakR: 0, profitAtRiskAlerted: false });
+      const savedPeakR = await loadPeakR(tradeId); // M7: restore peakR on restart
+      tradeManagementState.set(tradeId, { movedToBreakeven: false, partialClosed: false, peakR: savedPeakR, profitAtRiskAlerted: false });
     }
-    const state   = tradeManagementState.get(tradeId);
-    state.peakR   = Math.max(state.peakR, currentR);
+    const state      = tradeManagementState.get(tradeId);
+    const newPeakR   = Math.max(state.peakR, currentR);
+    if (newPeakR > state.peakR) {
+      state.peakR = newPeakR;
+      savePeakR(tradeId, newPeakR).catch(() => {}); // M7: persist on advance only
+    } else {
+      state.peakR = newPeakR;
+    }
 
     // Pair-specific trail settings
     const trail = TRAIL_SETTINGS[instrument] || TRAIL_SETTINGS.default;
@@ -6310,6 +6382,7 @@ loadCooldowns().catch(e => console.error('[state] loadCooldowns startup:', e.mes
 loadPairPhases().catch(e => console.error('[state] loadPairPhases startup:', e.message));
 loadTradeManagementState().catch(e => console.error('[state] loadTradeManagementState startup:', e.message));
 loadPendingKillShots().catch(e => console.error('[state] loadPendingKillShots startup:', e.message));
+cleanOldContexts().catch(e => console.error('[state] cleanOldContexts startup:', e.message));
 loadSwingTrades().catch(e => console.error('[state] loadSwingTrades startup:', e.message));
 loadWeekendCloseState().catch(e => console.error('[state] loadWeekendCloseState startup:', e.message));
 verifySupabaseColumns().catch(e => console.error('[supabase] Column check startup:', e.message));
