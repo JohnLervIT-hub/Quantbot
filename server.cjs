@@ -6240,3 +6240,34 @@ async function weekendCloseCheck() {
   }
 }
 setInterval(() => weekendCloseCheck().catch(e => console.error('[weekend-close] Loop:', e.message)), 60_000);
+
+// ── Sunday optimization reminder (Monday 05:00 UTC = Sunday 11pm Calgary) ────
+setInterval(async () => {
+  const now    = new Date();
+  const utcDay = now.getUTCDay();
+  const utcHour = now.getUTCHours();
+  const utcMin  = now.getUTCMinutes();
+
+  if (utcDay === 1 && utcHour === 5 && utcMin < 5) {
+    console.log('[OPTIMIZATION REMINDER] Sunday optimization due');
+    try {
+      await sendDiscordEmbed({
+        title: '⚙️ Weekly Optimization Due',
+        color: 0xffaa00,
+        fields: [
+          {
+            name: 'Action Required',
+            value: 'Open dashboard to run:\nSchedule → Xavier Optimization → Run Now\n\nTakes ~60 minutes\nUpdates XAVIER_RULES for week',
+            inline: false,
+          },
+          {
+            name: 'Dashboard',
+            value: 'quantbot-phi.vercel.app',
+            inline: false,
+          },
+        ],
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e) { console.error('[OPTIMIZATION REMINDER] Discord failed:', e.message); }
+  }
+}, 60_000);
