@@ -1594,7 +1594,9 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [voiceMode, setVoiceMode] = useState(false);
+  const [voiceEngine, setVoiceEngine] = useState('elevenlabs');
   const transcriptRef = useRef('');
+  const ELEVENLABS_VOICE_ID = 'pNInz6obpgDQGcFmaJgB'; // Adam
 
   const heat = (openTrades.length * 1.5).toFixed(1);
   const openCount = openTrades.length;
@@ -1810,6 +1812,40 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
     else { synth.onvoiceschanged = setVoice; }
   };
 
+  const xavierSpeakElevenLabs = async (text) => {
+    try {
+      const clean = text.replace(/[#*`\[\]_~]/g, '').replace(/\n+/g, ' ').trim().slice(0, 500);
+      const apiKey = import.meta.env.VITE_ELEVENLABS_API_KEY;
+      if (!apiKey) { console.warn('[ELEVENLABS] no API key — falling back'); xavierSpeak(text); return; }
+      const response = await fetch(
+        `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+        {
+          method: 'POST',
+          headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: clean,
+            model_id: 'eleven_turbo_v2',
+            voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.3, use_speaker_boost: true },
+          }),
+        }
+      );
+      if (!response.ok) {
+        console.warn('[ELEVENLABS]', response.status, '— falling back to browser voice');
+        xavierSpeak(text);
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => URL.revokeObjectURL(url);
+      audio.play();
+      console.log('[ELEVENLABS] speaking ✅');
+    } catch (err) {
+      console.warn('[ELEVENLABS] failed:', err.message, '— falling back to browser voice');
+      xavierSpeak(text);
+    }
+  };
+
   const startListening = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -1870,7 +1906,7 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
         400
       );
       setChatHistory(h => [...h, { role: "ai", text: result, ts: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
-      if (voiceMode) xavierSpeak(result);
+      if (voiceMode) { voiceEngine === 'elevenlabs' ? xavierSpeakElevenLabs(result) : xavierSpeak(result); }
       setQueryCount(c => c + 1);
     } catch {
       setChatHistory(h => [...h, { role: "ai", text: "Can't reach the models right now. Check your API key and make sure the bridge is running.", ts: "" }]);
@@ -2158,9 +2194,15 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
               placeholder="Ask Xavier — pairs, setups, risk, anything…"
               style={{ flex: 1, fontSize: 11, padding: "8px 12px", borderRadius: 8, border: "1px solid #21262d", background: "#161b22", color: "#e6edf3", outline: "none", fontFamily: "inherit" }}
             />
-            <button onClick={() => setVoiceMode(v => !v)} title={voiceMode ? "Voice responses ON — click to mute" : "Voice responses OFF — click to enable"}
+            <button onClick={() => setVoiceMode(v => !v)} title={voiceMode ? `Voice ON (${voiceEngine === 'elevenlabs' ? 'ElevenLabs' : 'Browser'}) — click to mute` : "Voice responses OFF — click to enable"}
               style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${voiceMode ? "rgba(88,166,255,0.35)" : "#21262d"}`, background: voiceMode ? "rgba(88,166,255,0.08)" : "transparent", color: voiceMode ? "#58a6ff" : "#484f58", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, transition: "all 0.15s" }}
             >{voiceMode ? "🔊" : "🔇"}</button>
+            {voiceMode && (
+              <button onClick={() => setVoiceEngine(e => e === 'elevenlabs' ? 'browser' : 'elevenlabs')}
+                title={voiceEngine === 'elevenlabs' ? 'ElevenLabs — click for browser TTS' : 'Browser TTS — click for ElevenLabs'}
+                style={{ padding: "0 7px", height: 32, borderRadius: 8, border: "1px solid #21262d", background: "transparent", color: voiceEngine === 'elevenlabs' ? "#d29922" : "#484f58", cursor: "pointer", flexShrink: 0, fontSize: 9, fontFamily: "inherit", fontWeight: 700, letterSpacing: "0.06em", transition: "all 0.15s" }}
+              >{voiceEngine === 'elevenlabs' ? 'EL' : 'BR'}</button>
+            )}
             <button onClick={getRiskAdvice} disabled={riskLoading}
               style={{ padding: "8px 10px", borderRadius: 8, fontSize: 10, cursor: riskLoading ? "default" : "pointer", background: "rgba(248,81,73,0.08)", color: riskLoading ? "#484f58" : "#f85149", border: "1px solid rgba(248,81,73,0.25)", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0, fontWeight: 600 }}
             >{riskLoading ? "…" : "Risk Read"}</button>
