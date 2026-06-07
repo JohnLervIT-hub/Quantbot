@@ -860,6 +860,7 @@ const serverTradeLog = [];          // newest-first, capped at 500
 
 // Upgrade state — trade management, calendar, daily stats
 const tradeManagementState = new Map(); // tradeId → { movedToBreakeven, partialClosed, peakR, profitAtRiskAlerted }
+let   autoTradeRunning = false; // C5: concurrency lock — prevents overlapping serverAutoTrade calls
 const lastKnownTradeIds        = new Set(); // for closed trade detection (management loop)
 const serverAutoTradeOpenInstr = new Set(); // last-seen open instruments (auto-trade loop, for race-free cooldown detection)
 const signalFirstDetected      = new Map(); // instrument → ms timestamp when qualifying signal was first seen (for 5-min age gate)
@@ -1742,8 +1743,25 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
   // Only count models that actually responded with a valid verdict
   const availableModels = results.filter(r => r !== null && r?.verdict !== undefined).length;
   const confirms        = results.filter(r => r?.verdict === 'CONFIRM').length;
-  const requiredVotes   = isHighConviction ? availableModels : Math.ceil(availableModels * 0.75);
-  const votesOk         = confirms >= requiredVotes;
+
+  // C1 fix: never auto-confirm when no models responded
+  if (availableModels === 0) {
+    await sendDiscordEmbed({
+      title: '🚨 COUNCIL FAILURE — All Models Offline',
+      color: 0xff0000,
+      fields: [{ name: 'Action', value: 'Trade BLOCKED — no AI validation available', inline: false }],
+      timestamp: new Date().toISOString(),
+    }).catch(() => {});
+    return { votes: { confirm: 0, reject: 0 }, consensus: 'REJECT', confidence: '0%',
+      reason: 'All models offline — trade blocked for safety', models: [], voteLog: ['❌ All models offline'] };
+  }
+  if (availableModels < 2) {
+    return { votes: { confirm: confirms, reject: availableModels - confirms }, consensus: 'REJECT',
+      confidence: '0%', reason: 'Insufficient models — need at least 2', models: [], voteLog: [`⚠️ Only ${availableModels}/4 models online`] };
+  }
+
+  const requiredVotes = isHighConviction ? availableModels : Math.ceil(availableModels * 0.75);
+  const votesOk       = confirms >= requiredVotes;
 
   console.log('[COUNCIL]',
     'available:', availableModels,
@@ -1788,7 +1806,7 @@ async function runConsensus(rawParams, { isHighConviction = false } = {}) {
 // Layer 3 full   — kill shot / major event / no pattern / A+ edge case → all 4 models
 
 function isMajorEvent() {
-  if (economicEvents.length === 0) return false;
+  if (economicEvents.length === 0) return true; // C4 fix: fail safe when calendar unavailable
   const now         = Date.now();
   const twoHoursAgo = now - 2 * 60 * 60 * 1000;
   return economicEvents.some(e => e.time >= twoHoursAgo && e.time <= now);
@@ -2396,7 +2414,7 @@ async function refreshEconomicCalendar() {
 }
 
 function isNewsWindow(instrument) {
-  if (economicEvents.length === 0) return false;
+  if (economicEvents.length === 0) return true; // C4 fix: fail safe when calendar unavailable
   const now        = Date.now();
   const currencies = PAIR_CURRENCIES[instrument] || [];
   const windowMs   = (xavierWeights.newsWindowMins || 120) * 60_000;
@@ -2448,7 +2466,7 @@ async function hasOpenPosition(instrument) {
     console.log(`[PAIR CHECK] checking:${norm} open:[${open.join(',')}] duplicate:${exists}`);
     return exists;
   } catch {
-    return false; // fail open — OANDA is the final backstop
+    return true; // C2 fix: fail safe — assume position exists if OANDA unreachable
   }
 }
 
@@ -2785,6 +2803,38 @@ async function savePairPhases() {
     console.log('[PHASES SAVED]', JSON.stringify(PAIR_PHASE));
   } catch (err) {
     console.error('[PHASES SAVE ERROR]', err.message);
+  }
+}
+
+// C3: persist tradeManagementState across Railway restarts
+async function saveTradeManagementState() {
+  if (!supabase) return;
+  try {
+    const stateObj = {};
+    for (const [k, v] of tradeManagementState.entries()) stateObj[k] = v;
+    await supabase.from('system_state').upsert({
+      key:        'trade_mgmt_state',
+      value:      JSON.stringify(stateObj),
+      updated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[STATE] saveTradeManagementState failed:', err.message);
+  }
+}
+
+async function loadTradeManagementState() {
+  if (!supabase) return;
+  try {
+    const { data } = await supabase.from('system_state').select('value').eq('key', 'trade_mgmt_state').single();
+    if (data?.value) {
+      const saved = JSON.parse(data.value);
+      for (const [k, v] of Object.entries(saved)) tradeManagementState.set(k, v);
+      console.log('[STATE] loaded', Object.keys(saved).length, 'trade management states from Supabase');
+    } else {
+      console.log('[STATE] no saved trade management state — starting fresh');
+    }
+  } catch (err) {
+    console.log('[STATE] loadTradeManagementState —', err.message);
   }
 }
 
@@ -3348,6 +3398,7 @@ async function manageOpenTrades() {
       const moved   = await updateTradeSL(tradeId, bePrice, instrument);
       if (moved) {
         state.movedToBreakeven = true;
+        saveTradeManagementState().catch(() => {});
         console.log(`[DISCORD NOTIFY] attempting send for ${instrument} — breakeven`);
         await sendNotification(
           `🛡 <b>BREAKEVEN</b>\n` +
@@ -3376,6 +3427,7 @@ async function manageOpenTrades() {
         const result = await partialCloseTrade(tradeId, quarterUnits);
         if (result) {
           state.partialClosed = true;
+          saveTradeManagementState().catch(() => {});
           console.log(`[DISCORD NOTIFY] attempting send for ${instrument} — partial close`);
           await sendNotification(
             `💰 <b>PARTIAL CLOSE 25%</b>\n` +
@@ -3817,6 +3869,12 @@ function scoreCommentary(text) {
 }
 
 async function serverAutoTrade() {
+  if (autoTradeRunning) {
+    console.log('[auto] skipped — previous scan still running');
+    return;
+  }
+  autoTradeRunning = true;
+  try {
   lastScanAt = Date.now();
   diagCounters.loopRuns++;
   if (process.env.AUTO_MODE_ENABLED !== 'true') return;
@@ -4511,6 +4569,9 @@ async function serverAutoTrade() {
     } catch (e) {
       console.error(`[auto] Order error ${instrument}: ${e.message}`);
     }
+  }
+  } finally {
+    autoTradeRunning = false;
   }
 }
 
@@ -6146,6 +6207,7 @@ setInterval(() => maybeSendDailySummary().catch(e => console.error('[mgmt] Summa
 // Upgrade 2 — Economic calendar refresh every hour
 loadCooldowns().catch(e => console.error('[state] loadCooldowns startup:', e.message));
 loadPairPhases().catch(e => console.error('[state] loadPairPhases startup:', e.message));
+loadTradeManagementState().catch(e => console.error('[state] loadTradeManagementState startup:', e.message));
 verifySupabaseColumns().catch(e => console.error('[supabase] Column check startup:', e.message));
 refreshEconomicCalendar().catch(e => console.error('[calendar] Startup:', e.message));
 setInterval(() => refreshEconomicCalendar().catch(e => console.error('[calendar] Refresh:', e.message)), 60 * 60_000);
