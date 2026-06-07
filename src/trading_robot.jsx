@@ -1521,7 +1521,65 @@ DECISION FRAMEWORK — before any trade: Edge Identification · Risk-First · As
 
 WISDOM: Never trade for excitement — trade for edge. One bad trade can erase 10 good ones. Drawdown recovery is harder than prevention.
 
-SELF-AWARENESS: Monte Carlo stress testing: not built. Walk-forward validation: partial. Order flow data: not available. Live account validation: pending.`;
+SELF-AWARENESS: Monte Carlo stress testing: not built. Walk-forward validation: partial. Order flow data: not available. Live account validation: pending.
+
+SPEAKING STYLE: Use natural trader names — say "Gold" not "XAU/USD", "Cable" not "GBP/USD", "Euro Dollar" not "EUR/USD", "Dollar Yen" not "USD/JPY", "Nasdaq" not "NAS100", "Silver" not "XAG/USD", "Aussie" not "AUD/USD", "Kiwi" not "NZD/USD". Say "two and a half percent" not "2.5%". Say "one point five R" not "1.5R". Never use bullet points or markdown. Short punchy sentences. Speak like a trader on a dealing desk, not a textbook. Contractions always. Maximum 80 words per response.`;
+
+// FIX 1 — natural speech preprocessing for ElevenLabs TTS
+function formatForSpeech(text) {
+  return text
+    // strip markdown
+    .replace(/[#*`\[\]_~]/g, '')
+    // pair name replacements (code form first, then slash form)
+    .replace(/\bXAU[_\/]USD\b/gi, 'Gold')
+    .replace(/\bXAG[_\/]USD\b/gi, 'Silver')
+    .replace(/\bGBP[_\/]USD\b/gi, 'Cable')
+    .replace(/\bEUR[_\/]USD\b/gi, 'Euro Dollar')
+    .replace(/\bUSD[_\/]JPY\b/gi, 'Dollar Yen')
+    .replace(/\bNAS100[_\/]USD\b/gi, 'Nasdaq')
+    .replace(/\bJP225[_\/]USD\b/gi, 'Nikkei')
+    .replace(/\bAU200[_\/]AUD\b/gi, 'ASX 200')
+    .replace(/\bUK100[_\/]GBP\b/gi, 'FTSE')
+    .replace(/\bSPX500[_\/]USD\b/gi, 'S and P 500')
+    .replace(/\bBCO[_\/]USD\b/gi, 'Brent Crude')
+    .replace(/\bWTICO[_\/]USD\b/gi, 'WTI Crude')
+    .replace(/\bEUR[_\/]GBP\b/gi, 'Euro Sterling')
+    .replace(/\bAUD[_\/]USD\b/gi, 'Aussie Dollar')
+    .replace(/\bNZD[_\/]USD\b/gi, 'Kiwi')
+    .replace(/\bUSD[_\/]CAD\b/gi, 'Dollar CAD')
+    // session names
+    .replace(/\bPRIME\b/g, 'Prime session')
+    .replace(/\bLONDON\b/g, 'London session')
+    .replace(/\bTOKYO\b/g, 'Tokyo session')
+    .replace(/\bSYDNEY\b/g, 'Sydney session')
+    .replace(/\bAVOID\b/g, 'dead zone')
+    // direction
+    .replace(/\bLONG\b/g, 'long')
+    .replace(/\bSHORT\b/g, 'short')
+    // R multiples: "2.5R" → "two point five R"
+    .replace(/(\d+(?:\.\d+)?)R\b/g, (_, n) => `${n} R`)
+    // percentages: "85%" → "85 percent"
+    .replace(/(\d+(?:\.\d+)?)%/g, (_, n) => `${n} percent`)
+    // newlines → spaces
+    .replace(/\n+/g, ' ')
+    .trim();
+}
+
+// FIX 2 — display text cleanup for chat bubbles
+function formatForDisplay(text) {
+  return text
+    .replace(/\bXAU[_\/]USD\b/gi, 'Gold')
+    .replace(/\bXAG[_\/]USD\b/gi, 'Silver')
+    .replace(/\bNAS100[_\/]USD\b/gi, 'NAS100/USD')
+    .replace(/\bAU200[_\/]AUD\b/gi, 'AU200/AUD')
+    .replace(/\bUK100[_\/]GBP\b/gi, 'UK100/GBP')
+    .replace(/\bSPX500[_\/]USD\b/gi, 'SPX500/USD')
+    .replace(/\bJP225[_\/]USD\b/gi, 'JP225/USD')
+    .replace(/\bBCO[_\/]USD\b/gi, 'BCO/USD')
+    .replace(/\bWTICO[_\/]USD\b/gi, 'WTICO/USD')
+    // convert remaining underscored pairs to slash format
+    .replace(/\b([A-Z]{2,6})_([A-Z]{2,6})\b/g, '$1/$2');
+}
 
 function getXavierWisdom(session, closedTrades = []) {
   const recent = [...closedTrades].reverse();
@@ -1598,7 +1656,7 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
   const transcriptRef = useRef('');
   const voiceModeRef  = useRef(false);
   const voiceEngineRef = useRef('elevenlabs');
-  const ELEVENLABS_VOICE_ID = 'pNInz6obpgDQGcFmaJgB'; // Adam
+  const ELEVENLABS_VOICE_ID = 'vBKc2FfBKJfcZNyEt1n6'; // Xavier voice
 
   // Keep refs in sync so async callbacks always see current values
   useEffect(() => { voiceModeRef.current  = voiceMode;  }, [voiceMode]);
@@ -1820,18 +1878,19 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
 
   const xavierSpeakElevenLabs = async (text) => {
     try {
-      const clean = text.replace(/[#*`\[\]_~]/g, '').replace(/\n+/g, ' ').trim().slice(0, 500);
+      const spokenText = formatForSpeech(text).slice(0, 500);
       const apiKey = import.meta.env.VITE_ELEVENLABS_API_KEY;
       if (!apiKey) { console.warn('[ELEVENLABS] no API key — falling back'); xavierSpeak(text); return; }
       const response = await fetch(
-        `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+        `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`,
         {
           method: 'POST',
           headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            text: clean,
-            model_id: 'eleven_turbo_v2',
-            voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.3, use_speaker_boost: true },
+            text: spokenText,
+            model_id: 'eleven_turbo_v2_5',
+            optimize_streaming_latency: 3,
+            voice_settings: { stability: 0.4, similarity_boost: 0.85, style: 0.35, use_speaker_boost: true },
           }),
         }
       );
@@ -1928,7 +1987,7 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
         liveContext + buildSystemPrompt(freshPrices),
         400
       );
-      setChatHistory(h => [...h, { role: "ai", text: result, ts: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
+      setChatHistory(h => [...h, { role: "ai", text: formatForDisplay(result), ts: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
       if (voiceModeRef.current) { voiceEngineRef.current === 'elevenlabs' ? xavierSpeakElevenLabs(result) : xavierSpeak(result); }
       setQueryCount(c => c + 1);
     } catch {
