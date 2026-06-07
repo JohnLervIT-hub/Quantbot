@@ -2183,7 +2183,7 @@ app.post('/auto-mode', requireAuth, (req, res) => {
 
 // ─── RECOVERY STATUS ENDPOINT ────────────────────────────────────────────────
 app.get('/recovery-status', requireAuth, (_req, res) => {
-  const drawdown = peakBalance > 0 ? parseFloat(((peakBalance - currentBalance) / peakBalance * 100).toFixed(2)) : 0;
+  const drawdown = (peakBalance > 0 && currentBalance > 0) ? parseFloat((Math.max(0, (peakBalance - currentBalance) / peakBalance * 100)).toFixed(2)) : 0;
   res.json({
     recoveryMode,
     peakBalance:     parseFloat(peakBalance.toFixed(2)),
@@ -2467,7 +2467,11 @@ async function updateTradeSL(tradeId, newSLPrice, instrument) {
 
 // Fresh OANDA check — used as a final duplicate guard before any order is placed
 function normalizeInstrument(inst) {
-  return inst?.replace('/', '_')?.replace('-', '_')?.toUpperCase() || inst;
+  if (!inst) {
+    console.warn('[NORMALIZE] null instrument — returning empty');
+    return '';
+  }
+  return inst.replace(/[\/\-]/g, '_').toUpperCase() || '';
 }
 
 async function hasOpenPosition(instrument) {
@@ -2728,7 +2732,7 @@ async function saveLesson(trade) {
       pair:       trade.pair,
       session:    trade.session,
       strategy:   trade.strategy,
-      lesson:     `${trade.pair} ${trade.session} ${trade.strategy} lost ${trade.rMultiple}R — review setup conditions`,
+      lesson:     `${trade.pair} ${trade.session} ${trade.strategy} lost ${trade.rMultiple != null ? trade.rMultiple + 'R' : 'unknown R'} — review setup conditions`,
       severity:   Math.abs(trade.rMultiple) > 1 ? 'CRITICAL' : 'WARNING',
       trade_id:   trade.id,
       created_at: new Date().toISOString(),
@@ -3742,7 +3746,10 @@ async function monitorDrawdown() {
     const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/summary`, { headers: H });
     const data = await r.json();
     const balance = parseFloat(data.account?.balance || 0);
-    if (!balance) return;
+    if (!balance) {
+      console.warn('[BALANCE FETCH FAILED] showing 0% drawdown');
+      return;
+    }
 
     currentBalance = balance;
     if (balance > peakBalance) {

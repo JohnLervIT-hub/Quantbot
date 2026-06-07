@@ -6509,9 +6509,13 @@ function TradeHistoryTab({ isVisible }) {
     return true;
   });
 
+  // Dedup by ID — Supabase can return duplicates on concurrent saves
+  const _seen = new Set();
+  const dedupedTrades = allFiltered.filter(t => { if (_seen.has(t.id)) return false; _seen.add(t.id); return true; });
+
   // Sort
   const sortKey = { close_time: t => new Date(t.close_time || 0).getTime(), r_multiple: t => t.r_multiple ?? -Infinity, pnl: t => t.pnl ?? -Infinity, score: t => t.score ?? -Infinity };
-  const sorted = [...allFiltered].sort((a, b) => (sortKey[sortBy]?.(b) ?? 0) - (sortKey[sortBy]?.(a) ?? 0));
+  const sorted = [...dedupedTrades].sort((a, b) => (sortKey[sortBy]?.(b) ?? 0) - (sortKey[sortBy]?.(a) ?? 0));
 
   const filtered   = sorted;
   const paginated  = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
