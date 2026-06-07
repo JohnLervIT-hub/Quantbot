@@ -567,7 +567,7 @@ app.get('/candles/:instrument', async (req, res) => {
 });
 
 // ─── BACKTEST CANDLES — fetches up to 365 days via sequential 5000-candle requests ─
-app.get('/backtest/candles', async (req, res) => {
+app.get('/backtest/candles', requireAuth, async (req, res) => {
   const { instrument, granularity = 'M5' } = req.query;
   const days = Math.min(parseInt(req.query.days) || 30, 365);
   if (!instrument) return res.status(400).json({ error: 'instrument required' });
@@ -2194,16 +2194,16 @@ app.get('/test-recovery-trigger', requireAuth, async (req, res) => {
 });
 
 // ─── AUTO TRADES ENDPOINT ─────────────────────────────────────────────────────
-app.get('/auto-trades', (_req, res) => {
+app.get('/auto-trades', requireAuth, (_req, res) => {
   res.json({ autoMode: process.env.AUTO_MODE_ENABLED === 'true', count: autoTrades.length, trades: autoTrades });
 });
 
 // ─── SWING AUTO TRADES ENDPOINT ──────────────────────────────────────────────
-app.get('/swing-auto-trades', (_req, res) => {
+app.get('/swing-auto-trades', requireAuth, (_req, res) => {
   res.json({ count: swingAutoTrades.length, trades: swingAutoTrades });
 });
 
-app.get('/swing/status', (_req, res) => {
+app.get('/swing/status', requireAuth, (_req, res) => {
   res.json({
     status:     swingStatus.status,
     message:    swingStatus.message,
@@ -2213,7 +2213,7 @@ app.get('/swing/status', (_req, res) => {
 });
 
 // ─── PAPER TRADES ENDPOINT ────────────────────────────────────────────────────
-app.get('/paper-trades', (_req, res) => {
+app.get('/paper-trades', requireAuth, (_req, res) => {
   res.json({ count: paperTrades.length, trades: paperTrades });
 });
 
@@ -2222,7 +2222,7 @@ app.get('/trade-log', (_req, res) => {
 });
 
 // ─── AUTO STATUS ENDPOINT ─────────────────────────────────────────────────────
-app.get('/auto-status', (_req, res) => {
+app.get('/auto-status', requireAuth, (_req, res) => {
   const session = getServerSession();
   const rule    = XAVIER_RULES[session] || {};
   res.json({
@@ -2806,6 +2806,99 @@ async function savePairPhases() {
   }
 }
 
+// H1: persist pendingKillShots across Railway restarts
+async function savePendingKillShots() {
+  if (!supabase) return;
+  try {
+    const shots = {};
+    pendingKillShots.forEach((v, k) => { shots[k] = v; }); // v is the signal (with expiresAt embedded)
+    await supabase.from('system_state').upsert({
+      key:        'pending_kill_shots',
+      value:      JSON.stringify(shots),
+      updated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[STATE] savePendingKillShots failed:', err.message);
+  }
+}
+
+async function loadPendingKillShots() {
+  if (!supabase) return;
+  try {
+    const { data } = await supabase.from('system_state').select('value').eq('key', 'pending_kill_shots').single();
+    if (data?.value) {
+      const shots = JSON.parse(data.value);
+      Object.entries(shots).forEach(([pair, signal]) => {
+        if (signal.expiresAt && new Date(signal.expiresAt) > new Date()) {
+          pendingKillShots.set(pair, signal);
+          console.log('[KILL SHOT RESTORED]', pair, 'expires:', signal.expiresAt);
+        }
+      });
+    }
+  } catch (err) {
+    console.log('[KILL SHOTS] fresh state');
+  }
+}
+
+// H3: persist swingAutoTrades across Railway restarts
+async function saveSwingTrades() {
+  if (!supabase) return;
+  try {
+    await supabase.from('system_state').upsert({
+      key:        'swing_auto_trades',
+      value:      JSON.stringify(swingAutoTrades),
+      updated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[STATE] saveSwingTrades failed:', err.message);
+  }
+}
+
+async function loadSwingTrades() {
+  if (!supabase) return;
+  try {
+    const { data } = await supabase.from('system_state').select('value').eq('key', 'swing_auto_trades').single();
+    if (data?.value) {
+      const trades = JSON.parse(data.value);
+      swingAutoTrades.push(...trades);
+      console.log('[SWING TRADES RESTORED]', trades.length, 'trades');
+    }
+  } catch (err) {
+    console.log('[SWING TRADES] fresh state');
+  }
+}
+
+// H7: persist weekend close state across Railway restarts
+async function saveWeekendCloseState() {
+  if (!supabase) return;
+  try {
+    await supabase.from('system_state').upsert({
+      key:        'weekend_close_fired',
+      value:      JSON.stringify({ fired: _weekendCloseState.closeFired, date: new Date().toISOString() }),
+      updated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[STATE] saveWeekendCloseState failed:', err.message);
+  }
+}
+
+async function loadWeekendCloseState() {
+  if (!supabase) return;
+  try {
+    const { data } = await supabase.from('system_state').select('value').eq('key', 'weekend_close_fired').single();
+    if (data?.value) {
+      const state = JSON.parse(data.value);
+      const hoursSince = (Date.now() - new Date(state.date).getTime()) / 3_600_000;
+      if (state.fired && hoursSince < 1) {
+        _weekendCloseState.closeFired = true;
+        console.log('[WEEKEND CLOSE] state restored — already fired');
+      }
+    }
+  } catch (err) {
+    console.log('[WEEKEND CLOSE] fresh state');
+  }
+}
+
 // C3: persist tradeManagementState across Railway restarts
 async function saveTradeManagementState() {
   if (!supabase) return;
@@ -2929,7 +3022,7 @@ async function saveTradeToSupabase(trade) {
           duration_mins: trade.durationMins,
           stop_loss:     trade.stopLoss,
           take_profit:   trade.takeProfit,
-          created_at:    nowIso,
+          // created_at intentionally omitted — H6: never overwrite open time on close
         })
         .eq('id', trade.id)
         .is('close_time', null)
@@ -2958,7 +3051,8 @@ async function saveTradeToSupabase(trade) {
             outcome, pnl: trade.pnl, close_time: nowIso,
             r_multiple: trade.rMultiple, exit_price: trade.exitPrice,
             duration_mins: trade.durationMins, stop_loss: trade.stopLoss,
-            take_profit: trade.takeProfit, created_at: nowIso,
+            take_profit: trade.takeProfit,
+            // created_at intentionally omitted — H6
           }).eq('id', nullRecord.id));
           if (error) console.error('[SUPABASE UPDATE ERROR]', error.message);
           else console.log('[SUPABASE UPDATE] pair-fallback ✅', instrument);
@@ -3330,7 +3424,7 @@ async function manageOpenTrades() {
         try {
           await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/close`, { method: 'PUT', headers: H });
           const swingRecord = swingAutoTrades.find(s => String(s.oandaTradeId) === String(tradeId));
-          if (swingRecord) swingRecord.closed = true;
+          if (swingRecord) { swingRecord.closed = true; saveSwingTrades().catch(() => {}); }
           console.log(`[SWING EXPIRED] ${instrument} — close order sent`);
         } catch (e) { console.error('[SWING EXPIRED] Close failed:', e.message); }
         continue;
@@ -5198,6 +5292,7 @@ async function executeKillShot(pending) {
     closed: false,
   });
   if (swingAutoTrades.length > 50) swingAutoTrades.pop();
+  saveSwingTrades().catch(() => {});
 
   return { ok: true, fill, tradeId };
 }
@@ -5205,16 +5300,18 @@ async function executeKillShot(pending) {
 // ─── KILL SHOT APPROVAL REQUEST ────────────────────────────────────────────────
 async function requestKillShotApproval(signal) {
   const instrument = signal.instrument;
-  pendingKillShots.set(instrument, signal);
-
   const utcHour = new Date().getUTCHours();
   const isOvernightHour = utcHour >= 22 || utcHour < 6; // Sydney/Tokyo quiet hours
   const expiryMs = isOvernightHour ? 4 * 60 * 60 * 1000 : 2 * 60 * 60 * 1000;
+  signal.expiresAt = new Date(Date.now() + expiryMs).toISOString(); // H1: persist TTL
+  pendingKillShots.set(instrument, signal);
+  savePendingKillShots().catch(() => {});
 
   // Auto-expire
   setTimeout(async () => {
     if (pendingKillShots.get(instrument) === signal) {
       pendingKillShots.delete(instrument);
+      savePendingKillShots().catch(() => {});
       console.log(`[KILL SHOT EXPIRED] ${instrument} — approval timeout`);
       try {
         await sendDiscordEmbed({
@@ -5417,6 +5514,7 @@ app.post('/discord/interaction', async (req, res) => {
       const pending    = pendingKillShots.get(instrument);
       if (!pending) return res.json({ type: 4, data: { content: `⚠️ ${instrument.replace('_', '/')} — setup expired or already handled.`, flags: 64 } });
       pendingKillShots.delete(instrument);
+      savePendingKillShots().catch(() => {});
       const result = await executeKillShot(pending);
       return res.json({ type: 4, data: { content: result.ok
         ? `✅ **Kill Shot executing** — ${instrument.replace('_', '/')} @ ${result.fill}`
@@ -5427,6 +5525,7 @@ app.post('/discord/interaction', async (req, res) => {
     if (customId.startsWith('skip_')) {
       const instrument = customId.replace('skip_', '');
       pendingKillShots.delete(instrument);
+      savePendingKillShots().catch(() => {});
       console.log(`[KILL SHOT SKIPPED] ${instrument}`);
       return res.json({ type: 4, data: { content: `❌ **Kill Shot skipped** — ${instrument.replace('_', '/')}` } });
     }
@@ -5560,6 +5659,7 @@ async function pollDiscordCommands() {
           await sendDiscordChannelMessage(`⚠️ No pending Kill Shot for **${instrument.replace('_', '/')}** — expired or already handled.`);
         } else {
           pendingKillShots.delete(instrument);
+          savePendingKillShots().catch(() => {});
           console.log(`[DISCORD CMD] !execute ${instrument}`);
           const result = await executeKillShot(pending);
           await sendDiscordChannelMessage(result.ok
@@ -5571,6 +5671,7 @@ async function pollDiscordCommands() {
       } else if (msg.content.startsWith('!skip ')) {
         const instrument = msg.content.slice('!skip '.length).trim().toUpperCase();
         pendingKillShots.delete(instrument);
+        savePendingKillShots().catch(() => {});
         console.log(`[DISCORD CMD] !skip ${instrument}`);
         await sendDiscordChannelMessage(`❌ **Kill Shot skipped** — ${instrument.replace('_', '/')}`);
       }
@@ -6208,6 +6309,9 @@ setInterval(() => maybeSendDailySummary().catch(e => console.error('[mgmt] Summa
 loadCooldowns().catch(e => console.error('[state] loadCooldowns startup:', e.message));
 loadPairPhases().catch(e => console.error('[state] loadPairPhases startup:', e.message));
 loadTradeManagementState().catch(e => console.error('[state] loadTradeManagementState startup:', e.message));
+loadPendingKillShots().catch(e => console.error('[state] loadPendingKillShots startup:', e.message));
+loadSwingTrades().catch(e => console.error('[state] loadSwingTrades startup:', e.message));
+loadWeekendCloseState().catch(e => console.error('[state] loadWeekendCloseState startup:', e.message));
 verifySupabaseColumns().catch(e => console.error('[supabase] Column check startup:', e.message));
 refreshEconomicCalendar().catch(e => console.error('[calendar] Startup:', e.message));
 setInterval(() => refreshEconomicCalendar().catch(e => console.error('[calendar] Refresh:', e.message)), 60 * 60_000);
@@ -6263,6 +6367,7 @@ async function weekendCloseCheck() {
   // Friday 23:00 UTC — force close all open swing positions
   if (hourUTC === 23 && !_weekendCloseState.closeFired) {
     _weekendCloseState.closeFired = true;
+    saveWeekendCloseState().catch(() => {}); // H7: persist so restart doesn't double-fire
     console.log('[WEEKEND CLOSE] Friday 23:00 UTC — closing all open swing trades');
 
     let openTrades = [];
@@ -6293,7 +6398,7 @@ async function weekendCloseCheck() {
         closedCount++;
         results.push(`${t.instrument.replace('_', '/')} ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
         const swingRecord = swingAutoTrades.find(s => String(s.oandaTradeId) === String(t.id));
-        if (swingRecord) swingRecord.closed = true;
+        if (swingRecord) { swingRecord.closed = true; saveSwingTrades().catch(() => {}); }
         console.log(`[WEEKEND CLOSE] ${t.instrument} closed — P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
       } catch (e) {
         console.error('[WEEKEND CLOSE]', t.instrument, 'close failed:', e.message);
