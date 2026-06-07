@@ -1660,13 +1660,17 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
   const [transcript, setTranscript] = useState('');
   const [voiceMode, setVoiceMode] = useState(false);
   const [voiceEngine, setVoiceEngine] = useState('elevenlabs');
+  const [conversationMode, setConversationMode] = useState(false);
   const transcriptRef = useRef('');
   const voiceModeRef  = useRef(false);
   const voiceEngineRef = useRef('elevenlabs');
+  const conversationModeRef = useRef(false);
+  const startListeningRef = useRef(null);
 
   // Keep refs in sync so async callbacks always see current values
   useEffect(() => { voiceModeRef.current  = voiceMode;  }, [voiceMode]);
   useEffect(() => { voiceEngineRef.current = voiceEngine; }, [voiceEngine]);
+  useEffect(() => { conversationModeRef.current = conversationMode; }, [conversationMode]);
 
   const heat = (openTrades.length * 1.5).toFixed(1);
   const openCount = openTrades.length;
@@ -1878,6 +1882,7 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
       if (preferred) utterance.voice = preferred;
       synth.speak(utterance);
     };
+    utterance.onend = () => { if (conversationModeRef.current) startListeningRef.current?.(); };
     if (synth.getVoices().length > 0) setVoice();
     else { synth.onvoiceschanged = setVoice; }
   };
@@ -1905,7 +1910,10 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
       const blob = new Blob(chunks, { type: 'audio/mpeg' });
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
-      audio.onended = () => URL.revokeObjectURL(url);
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        if (conversationModeRef.current) startListeningRef.current?.();
+      };
       await audio.play().catch(err => {
         console.warn('[TTS] autoplay blocked:', err.message, '— using browser TTS');
         URL.revokeObjectURL(url);
@@ -1954,9 +1962,14 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
       const final = transcriptRef.current.trim();
       if (final) { askQuestion(final); setTranscript(''); transcriptRef.current = ''; }
     };
-    recognition.onerror = (e) => { setListening(false); console.warn('[VOICE] error:', e.error); };
+    recognition.onerror = (e) => {
+      setListening(false);
+      console.warn('[VOICE] error:', e.error);
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') setConversationMode(false);
+    };
     recognition.start();
   };
+  startListeningRef.current = startListening;
 
   const askQuestion = async (override) => {
     const text = (override ?? question).trim();
@@ -1991,7 +2004,7 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
         400
       );
       setChatHistory(h => [...h, { role: "ai", text: formatForDisplay(result), ts: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
-      if (voiceModeRef.current) { voiceEngineRef.current === 'elevenlabs' ? xavierSpeakElevenLabs(result) : xavierSpeak(result); }
+      if (conversationModeRef.current || voiceModeRef.current) { voiceEngineRef.current === 'elevenlabs' ? xavierSpeakElevenLabs(result) : xavierSpeak(result); }
       setQueryCount(c => c + 1);
     } catch {
       setChatHistory(h => [...h, { role: "ai", text: "Can't reach the models right now. Check your API key and make sure the bridge is running.", ts: "" }]);
@@ -2269,25 +2282,26 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
 
           {/* Input row */}
           <div style={{ padding: "10px 16px 12px", borderTop: "1px solid #21262d", display: "flex", gap: 7, alignItems: "center" }}>
-            <button onClick={startListening} title={listening ? "Listening…" : "Voice input"} disabled={listening || chatLoading}
-              style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${listening ? "rgba(248,81,73,0.4)" : "#21262d"}`, background: listening ? "rgba(248,81,73,0.1)" : "transparent", color: listening ? "#f85149" : "#8b949e", cursor: listening || chatLoading ? "default" : "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, transition: "all 0.15s" }}
-            >{listening ? "⏹" : "🎤"}</button>
+            <button
+              onClick={() => {
+                if (conversationMode) {
+                  setConversationMode(false);
+                } else {
+                  setConversationMode(true);
+                  startListening();
+                }
+              }}
+              disabled={chatLoading}
+              title={conversationMode ? "Stop conversation" : "Start voice conversation — Xavier speaks back automatically"}
+              style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${conversationMode ? (listening ? "rgba(248,81,73,0.6)" : "rgba(88,166,255,0.4)") : "#21262d"}`, background: conversationMode ? (listening ? "rgba(248,81,73,0.12)" : "rgba(88,166,255,0.08)") : "transparent", color: conversationMode ? (listening ? "#f85149" : "#58a6ff") : "#8b949e", cursor: chatLoading ? "default" : "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, transition: "all 0.15s" }}
+            >{conversationMode ? (listening ? "⏹" : "💬") : "🎤"}</button>
             <input
               value={question}
               onChange={e => setQuestion(e.target.value)}
               onKeyDown={e => e.key === "Enter" && askQuestion()}
-              placeholder="Ask Xavier — pairs, setups, risk, anything…"
-              style={{ flex: 1, fontSize: 11, padding: "8px 12px", borderRadius: 8, border: "1px solid #21262d", background: "#161b22", color: "#e6edf3", outline: "none", fontFamily: "inherit" }}
+              placeholder={conversationMode ? (listening ? "Listening…" : "Xavier is ready — speak or type…") : "Ask Xavier — pairs, setups, risk, anything…"}
+              style={{ flex: 1, fontSize: 11, padding: "8px 12px", borderRadius: 8, border: `1px solid ${conversationMode ? "rgba(88,166,255,0.2)" : "#21262d"}`, background: "#161b22", color: "#e6edf3", outline: "none", fontFamily: "inherit" }}
             />
-            <button onClick={() => setVoiceMode(v => !v)} title={voiceMode ? `Voice ON (${voiceEngine === 'elevenlabs' ? 'ElevenLabs' : 'Browser'}) — click to mute` : "Voice responses OFF — click to enable"}
-              style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${voiceMode ? "rgba(88,166,255,0.35)" : "#21262d"}`, background: voiceMode ? "rgba(88,166,255,0.08)" : "transparent", color: voiceMode ? "#58a6ff" : "#484f58", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, transition: "all 0.15s" }}
-            >{voiceMode ? "🔊" : "🔇"}</button>
-            {voiceMode && (
-              <button onClick={() => setVoiceEngine(e => e === 'elevenlabs' ? 'browser' : 'elevenlabs')}
-                title={voiceEngine === 'elevenlabs' ? 'ElevenLabs — click for browser TTS' : 'Browser TTS — click for ElevenLabs'}
-                style={{ padding: "0 7px", height: 32, borderRadius: 8, border: "1px solid #21262d", background: "transparent", color: voiceEngine === 'elevenlabs' ? "#d29922" : "#484f58", cursor: "pointer", flexShrink: 0, fontSize: 9, fontFamily: "inherit", fontWeight: 700, letterSpacing: "0.06em", transition: "all 0.15s" }}
-              >{voiceEngine === 'elevenlabs' ? 'EL' : 'BR'}</button>
-            )}
             <button onClick={getRiskAdvice} disabled={riskLoading}
               style={{ padding: "8px 10px", borderRadius: 8, fontSize: 10, cursor: riskLoading ? "default" : "pointer", background: "rgba(248,81,73,0.08)", color: riskLoading ? "#484f58" : "#f85149", border: "1px solid rgba(248,81,73,0.25)", fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0, fontWeight: 600 }}
             >{riskLoading ? "…" : "Risk Read"}</button>
