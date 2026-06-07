@@ -1858,9 +1858,22 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
     recognition.continuous = false;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
+
+    // Hint the recognizer about "Xavier" — reduces mishearing as "Sylvia", "Javier", etc.
+    const SpeechGrammarList = window.SpeechGrammarList || window.webkitSpeechGrammarList;
+    if (SpeechGrammarList) {
+      const gl = new SpeechGrammarList();
+      gl.addFromString('#JSGF V1.0; grammar words; public <word> = Xavier | EUR USD | GBP USD | XAU USD;', 1);
+      recognition.grammars = gl;
+    }
+
+    // Correct known Xavier mishearings before sending
+    const fixTranscript = (t) => t
+      .replace(/\b(sylvia|javier|zavier|savior|savier|Xavier's)\b/gi, (m) => m.toLowerCase() === "xavier's" ? "Xavier's" : 'Xavier');
+
     recognition.onstart = () => { setListening(true); };
     recognition.onresult = (event) => {
-      const text = Array.from(event.results).map(r => r[0].transcript).join('');
+      const text = fixTranscript(Array.from(event.results).map(r => r[0].transcript).join(''));
       setTranscript(text);
       transcriptRef.current = text;
     };
