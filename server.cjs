@@ -2197,11 +2197,38 @@ app.post('/swing-consensus', requireAuth, async (req, res) => {
 });
 
 // ─── AUTO MODE TOGGLE ────────────────────────────────────────────────────────
-app.post('/auto-mode', requireAuth, (req, res) => {
+async function saveAutoMode(enabled) {
+  if (!supabase) return;
+  try {
+    await supabase.from('system_state').upsert({
+      key:        'auto_mode_enabled',
+      value:      enabled ? 'true' : 'false',
+      updated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[STATE] saveAutoMode failed:', err.message);
+  }
+}
+
+async function loadAutoMode() {
+  if (!supabase) return;
+  try {
+    const { data } = await supabase.from('system_state').select('value').eq('key', 'auto_mode_enabled').single();
+    if (data?.value !== undefined) {
+      process.env.AUTO_MODE_ENABLED = data.value;
+      console.log(`[STATE] Auto mode restored: ${data.value}`);
+    }
+  } catch {
+    console.log('[STATE] Auto mode: using env default');
+  }
+}
+
+app.post('/auto-mode', requireAuth, async (req, res) => {
   const { enabled } = req.body;
   if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be boolean' });
   process.env.AUTO_MODE_ENABLED = enabled ? 'true' : 'false';
   console.log(`AUTO MODE: ${enabled ? 'ENABLED ⚡' : 'disabled'}`);
+  await saveAutoMode(enabled);
   res.json({ autoMode: enabled });
 });
 
@@ -6431,6 +6458,7 @@ setInterval(() => maybeSendDailySummary().catch(e => console.error('[mgmt] Summa
 loadCooldowns().catch(e => console.error('[state] loadCooldowns startup:', e.message));
 loadPairPhases().catch(e => console.error('[state] loadPairPhases startup:', e.message));
 loadTradeManagementState().catch(e => console.error('[state] loadTradeManagementState startup:', e.message));
+loadAutoMode().catch(e => console.error('[state] loadAutoMode startup:', e.message));
 loadPendingKillShots().catch(e => console.error('[state] loadPendingKillShots startup:', e.message));
 cleanOldContexts().catch(e => console.error('[state] cleanOldContexts startup:', e.message));
 loadSwingTrades().catch(e => console.error('[state] loadSwingTrades startup:', e.message));
