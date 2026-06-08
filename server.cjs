@@ -3133,6 +3133,13 @@ async function saveTradeToSupabase(trade) {
            || await getContextFromSupabase(trade.id)
            || {};
     console.log('[JOURNAL DEBUG]', 'trade.id:', trade.id, 'map keys:', Array.from(openTradeContexts.keys()), 'map found:', openTradeContexts.has(trade.id?.toString()), 'ctx found:', Object.keys(ctx).length > 0, 'session:', ctx.session, 'source:', ctx.tradeSource);
+
+    // ROOT CAUSE 1: session fallback — context map miss (Railway restart loses in-memory map)
+    if (!ctx.session) {
+      const fallbackSession = getServerSession();
+      ctx = { ...ctx, session: fallbackSession, tradeSource: ctx.tradeSource || 'M5_AUTO' };
+      console.log('[CONTEXT FALLBACK]', trade.pair, 'using session fallback:', fallbackSession);
+    }
     const instrument = trade.pair;
     const outcome = trade.pnl > 0 ? 'WIN' : trade.pnl < 0 ? 'LOSS' : 'BREAKEVEN';
     const nowIso  = new Date().toISOString();
@@ -3164,7 +3171,18 @@ async function saveTradeToSupabase(trade) {
         // No open record found for this ID — check if already closed (duplicate call)
         const { data: check } = await supabase.from('trades').select('close_time').eq('id', trade.id).maybeSingle();
         if (check?.close_time) {
-          console.log('[SUPABASE] duplicate close detected, skipping', instrument);
+          // ROOT CAUSE 2: duplicate — patch session/source if the first save had null session
+          if (ctx.session) {
+            const { error: patchErr } = await supabase
+              .from('trades')
+              .update({ session: ctx.session, trade_source: ctx.tradeSource || null })
+              .eq('id', trade.id)
+              .is('session', null);
+            if (!patchErr) console.log('[SUPABASE] duplicate — patched null session:', instrument, ctx.session);
+            else console.log('[SUPABASE] duplicate close detected, skipping', instrument);
+          } else {
+            console.log('[SUPABASE] duplicate close detected, skipping', instrument);
+          }
           return;
         }
         // Record doesn't exist at all (Railway restart with no open-context save) — fall through to pair search
