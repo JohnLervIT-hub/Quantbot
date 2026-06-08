@@ -1960,7 +1960,12 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
     recognition.onend = () => {
       setListening(false);
       const final = transcriptRef.current.trim();
-      if (final) { askQuestion(final); setTranscript(''); transcriptRef.current = ''; }
+      if (final) {
+        askQuestion(final); setTranscript(''); transcriptRef.current = '';
+      } else if (conversationModeRef.current) {
+        // silence — restart mic automatically
+        setTimeout(() => { if (conversationModeRef.current) startListeningRef.current?.(); }, 300);
+      }
     };
     recognition.onerror = (e) => {
       setListening(false);
@@ -7773,6 +7778,94 @@ const useSupabaseData = () => {
   return { ...supaData, refresh: fetchSupa };
 };
 
+// ─── GLOBAL XAVIER FLOATING MIC ──────────────────────────────────────────────
+function GlobalXavierMic({ isMobile }) {
+  const [active, setActive]   = useState(false);
+  const [listening, setListening] = useState(false);
+  const [speaking, setSpeaking]   = useState(false);
+  const [reply, setReply]     = useState('');
+  const activeRef   = useRef(false);
+  const transcriptRef = useRef('');
+  const startRef    = useRef(null);
+
+  useEffect(() => { activeRef.current = active; }, [active]);
+
+  const speakReply = async (text) => {
+    setSpeaking(true);
+    try {
+      const r = await fetch(`${BRIDGE}/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ text: formatForSpeech(text).slice(0, 500) }),
+      });
+      if (!r.ok) throw new Error('tts');
+      const reader = r.body.getReader();
+      const chunks = [];
+      while (true) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); }
+      const url = URL.createObjectURL(new Blob(chunks, { type: 'audio/mpeg' }));
+      const audio = new Audio(url);
+      audio.onended = () => { URL.revokeObjectURL(url); setSpeaking(false); if (activeRef.current) startRef.current?.(); };
+      await audio.play().catch(() => { setSpeaking(false); if (activeRef.current) startRef.current?.(); });
+    } catch { setSpeaking(false); if (activeRef.current) startRef.current?.(); }
+  };
+
+  const ask = async (text) => {
+    try {
+      const r = await fetch(`${BRIDGE}/ai`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ prompt: text, maxTokens: 60 }),
+      });
+      const data = await r.json();
+      const result = data.content?.[0]?.text;
+      if (result) { setReply(formatForDisplay(result)); await speakReply(result); }
+      else if (activeRef.current) startRef.current?.();
+    } catch { if (activeRef.current) startRef.current?.(); }
+  };
+
+  const startListening = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+    transcriptRef.current = '';
+    const rec = new SR();
+    rec.continuous = false; rec.interimResults = false; rec.lang = 'en-US';
+    rec.onstart = () => setListening(true);
+    rec.onresult = (e) => { transcriptRef.current = Array.from(e.results).map(r => r[0].transcript).join(''); };
+    rec.onend = () => {
+      setListening(false);
+      const final = transcriptRef.current.trim();
+      if (final) ask(final);
+      else if (activeRef.current) setTimeout(() => { if (activeRef.current) startRef.current?.(); }, 300);
+    };
+    rec.onerror = (e) => { setListening(false); if (e.error === 'not-allowed') setActive(false); };
+    rec.start();
+  };
+  startRef.current = startListening;
+
+  const toggle = () => {
+    if (active) { setActive(false); setReply(''); }
+    else { setActive(true); startListening(); }
+  };
+
+  const bottom = isMobile ? 90 : 24;
+  const color = listening ? '#f85149' : speaking ? '#d29922' : active ? '#58a6ff' : '#8b949e';
+  const bg    = listening ? 'rgba(248,81,73,0.15)' : speaking ? 'rgba(210,153,34,0.15)' : active ? 'rgba(88,166,255,0.12)' : '#161b22';
+
+  return (
+    <div style={{ position: 'fixed', bottom, right: 20, zIndex: 500, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, pointerEvents: 'none' }}>
+      {active && reply && (
+        <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 10, padding: '10px 14px', maxWidth: 240, fontSize: 12, color: '#e6edf3', lineHeight: 1.55, boxShadow: '0 4px 24px rgba(0,0,0,0.5)', pointerEvents: 'auto' }}>
+          <div style={{ fontSize: 9, color: '#58a6ff', fontWeight: 700, letterSpacing: '0.08em', marginBottom: 5 }}>XAVIER</div>
+          {reply}
+        </div>
+      )}
+      <button onClick={toggle} title={active ? 'Stop Xavier' : 'Talk to Xavier — any tab'}
+        style={{ width: 48, height: 48, borderRadius: '50%', border: `2px solid ${color}`, background: bg, color, cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: active ? `0 0 0 6px ${color}18` : '0 2px 12px rgba(0,0,0,0.4)', transition: 'all 0.2s', pointerEvents: 'auto', fontFamily: 'inherit' }}
+      >{listening ? '⏹' : speaking ? '◉' : '🎤'}</button>
+    </div>
+  );
+}
+
 export default function TradingRobot() {
   const [strategy, setStrategy] = useState(() => localStorage.getItem("active_strategy") || "Mean Revert");
   const [trades, setTrades] = useState([]);
@@ -9053,6 +9146,9 @@ export default function TradingRobot() {
 
       {/* ── Toast notifications ── */}
       <ToastContainer toasts={toasts} onDismiss={id => setToasts(prev => prev.filter(t => t.id !== id))} />
+
+      {/* ── Global Xavier floating mic — available on every tab ── */}
+      <GlobalXavierMic isMobile={isMobile} />
 
       {/* ── Mobile bottom nav ── */}
       {isMobile && (
