@@ -2432,6 +2432,29 @@ const PAIR_CURRENCIES = {
   WTICO_USD:  ['USD'],
 };
 
+async function checkUpcomingEvents() {
+  const now = Date.now();
+  for (const event of economicEvents) {
+    const minsUntil = (event.time - now) / 60000;
+    if (minsUntil > 28 && minsUntil <= 30) {
+      const eventTimeStr = new Date(event.time).toUTCString().replace(' GMT', ' UTC');
+      await sendThrottled(
+        'news_warning_' + event.title,
+        24 * 60 * 60 * 1000,
+        () => ({
+          title: '📅 High Impact News in 30min',
+          color: 0xffaa00,
+          fields: [{
+            name: event.title + ' (' + event.currency + ')',
+            value: 'Time: ' + eventTimeStr + '\nTrading paused on affected pairs\nAuto mode continues ✅',
+            inline: false,
+          }],
+        })
+      );
+    }
+  }
+}
+
 async function refreshEconomicCalendar() {
   try {
     const r    = await fetch(CALENDAR_URL, { headers: { 'User-Agent': 'QuantBot/1.0' } });
@@ -2446,6 +2469,7 @@ async function refreshEconomicCalendar() {
       }))
       .filter(e => !isNaN(e.time));
     console.log(`[calendar] Loaded ${economicEvents.length} high-impact events`);
+    await checkUpcomingEvents();
   } catch (e) {
     console.error('[calendar] Fetch failed:', e.message);
   }
@@ -4160,11 +4184,6 @@ async function serverAutoTrade() {
       console.log(`[auto] ${instrument} — NEWS BLOCK (high-impact event ±2h)`);
       serverRejections.unshift({ ts, instrument, direction: '?', score: 0, session, strategy, rejections: [{ condition: 'Information Filtering (Principle 33)', actual: `High-impact event ±${xavierWeights.newsWindowMins || 120}min`, threshold: 'No trading', reason: 'Standing down.' }] });
       if (serverRejections.length > 50) serverRejections.pop();
-      await sendThrottled(
-        'news_block_' + instrument,
-        60 * 60 * 1000,
-        () => ({ title: '📰 News Block', description: instrument + ' blocked — news window active' })
-      );
       diagCounters.blockedNews++;
       continue;
     }
@@ -6419,6 +6438,8 @@ loadWeekendCloseState().catch(e => console.error('[state] loadWeekendCloseState 
 verifySupabaseColumns().catch(e => console.error('[supabase] Column check startup:', e.message));
 refreshEconomicCalendar().catch(e => console.error('[calendar] Startup:', e.message));
 setInterval(() => refreshEconomicCalendar().catch(e => console.error('[calendar] Refresh:', e.message)), 60 * 60_000);
+// Check upcoming events every 5 min so the 28–30 min window is never missed between hourly refreshes
+setInterval(() => checkUpcomingEvents().catch(e => console.error('[calendar] Upcoming check:', e.message)), 5 * 60_000);
 
 // Discord two-way command polling — every 30s (requires DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID)
 setTimeout(() => pollDiscordCommands().catch(e => console.error('[discord-poll] Startup:', e.message)), 8_000);
