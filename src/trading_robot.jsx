@@ -7778,20 +7778,33 @@ const useSupabaseData = () => {
   return { ...supaData, refresh: fetchSupa };
 };
 
-// ─── GLOBAL XAVIER FLOATING MIC ──────────────────────────────────────────────
+// ─── GLOBAL XAVIER FLOATING MIC (wake-word enabled) ─────────────────────────
+// mode: 'off' → 'wake' (background listen for "Hello Xavier") → 'convo' (active exchange)
+// After each Xavier reply, returns to conversation listening; silence → back to wake mode.
 function GlobalXavierMic({ isMobile }) {
-  const [active, setActive]   = useState(false);
-  const [listening, setListening] = useState(false);
-  const [speaking, setSpeaking]   = useState(false);
-  const [reply, setReply]     = useState('');
-  const activeRef   = useRef(false);
-  const transcriptRef = useRef('');
-  const startRef    = useRef(null);
+  const [mode, setMode]     = useState('off');   // 'off' | 'wake' | 'convo'
+  const [status, setStatus] = useState('idle');  // 'idle' | 'listening' | 'thinking' | 'speaking'
+  const [reply, setReply]   = useState('');
 
-  useEffect(() => { activeRef.current = active; }, [active]);
+  const modeRef      = useRef('off');
+  const transcriptRef = useRef('');
+  const wakeRecRef   = useRef(null);
+  const startConvRef = useRef(null);
+  const startWakeRef = useRef(null);
+
+  useEffect(() => { modeRef.current = mode; }, [mode]);
+
+  const WAKE_RE = /hell?o\s+(xavier|savior|javier|zavier)|hey\s+(xavier|savior|javier|zavier)/i;
+
+  const returnToWake = () => {
+    setMode('wake');
+    modeRef.current = 'wake';
+    setStatus('idle');
+    setTimeout(() => { if (modeRef.current === 'wake') startWakeRef.current?.(); }, 200);
+  };
 
   const speakReply = async (text) => {
-    setSpeaking(true);
+    setStatus('speaking');
     try {
       const r = await fetch(`${BRIDGE}/tts`, {
         method: 'POST',
@@ -7804,12 +7817,14 @@ function GlobalXavierMic({ isMobile }) {
       while (true) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); }
       const url = URL.createObjectURL(new Blob(chunks, { type: 'audio/mpeg' }));
       const audio = new Audio(url);
-      audio.onended = () => { URL.revokeObjectURL(url); setSpeaking(false); if (activeRef.current) startRef.current?.(); };
-      await audio.play().catch(() => { setSpeaking(false); if (activeRef.current) startRef.current?.(); });
-    } catch { setSpeaking(false); if (activeRef.current) startRef.current?.(); }
+      const afterSpeak = () => { URL.revokeObjectURL(url); setStatus('idle'); if (modeRef.current === 'convo') startConvRef.current?.(); };
+      audio.onended = afterSpeak;
+      await audio.play().catch(() => { URL.revokeObjectURL(url); setStatus('idle'); if (modeRef.current === 'convo') startConvRef.current?.(); });
+    } catch { setStatus('idle'); if (modeRef.current === 'convo') startConvRef.current?.(); }
   };
 
   const ask = async (text) => {
+    setStatus('thinking');
     try {
       const r = await fetch(`${BRIDGE}/ai`, {
         method: 'POST',
@@ -7819,49 +7834,103 @@ function GlobalXavierMic({ isMobile }) {
       const data = await r.json();
       const result = data.content?.[0]?.text;
       if (result) { setReply(formatForDisplay(result)); await speakReply(result); }
-      else if (activeRef.current) startRef.current?.();
-    } catch { if (activeRef.current) startRef.current?.(); }
+      else returnToWake();
+    } catch { returnToWake(); }
   };
 
-  const startListening = () => {
+  const startConversation = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
+    if (!SR || modeRef.current !== 'convo') return;
     transcriptRef.current = '';
     const rec = new SR();
     rec.continuous = false; rec.interimResults = false; rec.lang = 'en-US';
-    rec.onstart = () => setListening(true);
+    rec.onstart = () => setStatus('listening');
     rec.onresult = (e) => { transcriptRef.current = Array.from(e.results).map(r => r[0].transcript).join(''); };
     rec.onend = () => {
-      setListening(false);
       const final = transcriptRef.current.trim();
-      if (final) ask(final);
-      else if (activeRef.current) setTimeout(() => { if (activeRef.current) startRef.current?.(); }, 300);
+      if (final) { ask(final); }
+      else if (modeRef.current === 'convo') returnToWake(); // silence → back to wake
     };
-    rec.onerror = (e) => { setListening(false); if (e.error === 'not-allowed') setActive(false); };
-    rec.start();
+    rec.onerror = (e) => {
+      setStatus('idle');
+      if (e.error === 'not-allowed') { setMode('off'); modeRef.current = 'off'; }
+      else if (modeRef.current === 'convo') returnToWake();
+    };
+    try { rec.start(); } catch { returnToWake(); }
   };
-  startRef.current = startListening;
+  startConvRef.current = startConversation;
+
+  const startWakeListening = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR || modeRef.current !== 'wake') return;
+    if (wakeRecRef.current) { try { wakeRecRef.current.stop(); } catch {} wakeRecRef.current = null; }
+    const rec = new SR();
+    rec.continuous = true; rec.interimResults = true; rec.lang = 'en-US';
+    wakeRecRef.current = rec;
+    rec.onresult = (e) => {
+      if (modeRef.current !== 'wake') return;
+      const t = Array.from(e.results).map(r => r[0].transcript).join(' ');
+      if (WAKE_RE.test(t)) {
+        try { rec.stop(); } catch {}
+        wakeRecRef.current = null;
+        setMode('convo'); modeRef.current = 'convo';
+        setReply('');
+        setTimeout(() => startConvRef.current?.(), 400);
+      }
+    };
+    rec.onend = () => {
+      if (modeRef.current === 'wake') setTimeout(() => { if (modeRef.current === 'wake') startWakeRef.current?.(); }, 300);
+    };
+    rec.onerror = (e) => { if (e.error === 'not-allowed') { setMode('off'); modeRef.current = 'off'; } };
+    try { rec.start(); } catch {}
+  };
+  startWakeRef.current = startWakeListening;
 
   const toggle = () => {
-    if (active) { setActive(false); setReply(''); }
-    else { setActive(true); startListening(); }
+    if (mode !== 'off') {
+      if (wakeRecRef.current) { try { wakeRecRef.current.stop(); } catch {} wakeRecRef.current = null; }
+      setMode('off'); modeRef.current = 'off'; setStatus('idle'); setReply('');
+    } else {
+      setMode('wake'); modeRef.current = 'wake'; setReply('');
+      setTimeout(() => startWakeRef.current?.(), 50);
+    }
   };
 
+  useEffect(() => () => { if (wakeRecRef.current) { try { wakeRecRef.current.stop(); } catch {} } }, []);
+
   const bottom = isMobile ? 90 : 24;
-  const color = listening ? '#f85149' : speaking ? '#d29922' : active ? '#58a6ff' : '#8b949e';
-  const bg    = listening ? 'rgba(248,81,73,0.15)' : speaking ? 'rgba(210,153,34,0.15)' : active ? 'rgba(88,166,255,0.12)' : '#161b22';
+  const color = mode === 'off' ? '#8b949e'
+    : mode === 'wake' ? '#3fb950'
+    : status === 'listening' ? '#f85149'
+    : status === 'speaking' || status === 'thinking' ? '#d29922'
+    : '#58a6ff';
+  const bg = mode === 'off' ? '#161b22'
+    : mode === 'wake' ? 'rgba(63,185,80,0.12)'
+    : status === 'listening' ? 'rgba(248,81,73,0.15)'
+    : status === 'speaking' || status === 'thinking' ? 'rgba(210,153,34,0.15)'
+    : 'rgba(88,166,255,0.12)';
+  const icon = mode === 'off' ? '🎤' : mode === 'wake' ? '👂' : status === 'listening' ? '⏹' : '◉';
+  const hint = mode === 'wake' ? 'Say Hello Xavier'
+    : status === 'listening' ? 'Listening...'
+    : status === 'thinking' ? 'Thinking...'
+    : status === 'speaking' ? 'Speaking...' : null;
 
   return (
     <div style={{ position: 'fixed', bottom, right: 20, zIndex: 500, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, pointerEvents: 'none' }}>
-      {active && reply && (
+      {mode !== 'off' && reply && (
         <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 10, padding: '10px 14px', maxWidth: 240, fontSize: 12, color: '#e6edf3', lineHeight: 1.55, boxShadow: '0 4px 24px rgba(0,0,0,0.5)', pointerEvents: 'auto' }}>
           <div style={{ fontSize: 9, color: '#58a6ff', fontWeight: 700, letterSpacing: '0.08em', marginBottom: 5 }}>XAVIER</div>
           {reply}
         </div>
       )}
-      <button onClick={toggle} title={active ? 'Stop Xavier' : 'Talk to Xavier — any tab'}
-        style={{ width: 48, height: 48, borderRadius: '50%', border: `2px solid ${color}`, background: bg, color, cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: active ? `0 0 0 6px ${color}18` : '0 2px 12px rgba(0,0,0,0.4)', transition: 'all 0.2s', pointerEvents: 'auto', fontFamily: 'inherit' }}
-      >{listening ? '⏹' : speaking ? '◉' : '🎤'}</button>
+      {hint && (
+        <div style={{ fontSize: 10, color, background: bg, border: `1px solid ${color}40`, borderRadius: 6, padding: '3px 8px', fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.04em', pointerEvents: 'none' }}>
+          {hint}
+        </div>
+      )}
+      <button onClick={toggle} title={mode === 'off' ? 'Enable Xavier — say Hello Xavier to activate' : 'Disable Xavier'}
+        style={{ width: 48, height: 48, borderRadius: '50%', border: `2px solid ${color}`, background: bg, color, cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: mode !== 'off' ? `0 0 0 6px ${color}18` : '0 2px 12px rgba(0,0,0,0.4)', transition: 'all 0.2s', pointerEvents: 'auto', fontFamily: 'inherit' }}
+      >{icon}</button>
     </div>
   );
 }
