@@ -7778,15 +7778,16 @@ const useSupabaseData = () => {
   return { ...supaData, refresh: fetchSupa };
 };
 
-// ─── GLOBAL XAVIER FLOATING MIC (wake-word enabled) ─────────────────────────
-// mode: 'off' → 'wake' (background listen for "Hello Xavier") → 'convo' (active exchange)
-// After each Xavier reply, returns to conversation listening; silence → back to wake mode.
+// ─── GLOBAL XAVIER FLOATING MIC (always-on wake word) ────────────────────────
+// Auto-starts wake listening on mount — no button press needed.
+// Say "Hello Xavier" anywhere to activate. Button is a mute/unmute toggle.
+// mode: 'off' (muted) | 'wake' (background listening) | 'convo' (active exchange)
 function GlobalXavierMic({ isMobile }) {
-  const [mode, setMode]     = useState('off');   // 'off' | 'wake' | 'convo'
+  const [mode, setMode]     = useState('wake');  // start in wake mode
   const [status, setStatus] = useState('idle');  // 'idle' | 'listening' | 'thinking' | 'speaking'
   const [reply, setReply]   = useState('');
 
-  const modeRef      = useRef('off');
+  const modeRef      = useRef('wake');
   const transcriptRef = useRef('');
   const wakeRecRef   = useRef(null);
   const startConvRef = useRef(null);
@@ -7896,7 +7897,11 @@ function GlobalXavierMic({ isMobile }) {
     }
   };
 
-  useEffect(() => () => { if (wakeRecRef.current) { try { wakeRecRef.current.stop(); } catch {} } }, []);
+  // Auto-start wake listening on mount
+  useEffect(() => {
+    const t = setTimeout(() => { if (modeRef.current === 'wake') startWakeRef.current?.(); }, 600);
+    return () => { clearTimeout(t); if (wakeRecRef.current) { try { wakeRecRef.current.stop(); } catch {} } };
+  }, []);
 
   const bottom = isMobile ? 90 : 24;
   const color = mode === 'off' ? '#8b949e'
@@ -7928,7 +7933,7 @@ function GlobalXavierMic({ isMobile }) {
           {hint}
         </div>
       )}
-      <button onClick={toggle} title={mode === 'off' ? 'Enable Xavier — say Hello Xavier to activate' : 'Disable Xavier'}
+      <button onClick={toggle} title={mode === 'off' ? 'Unmute Xavier (say Hello Xavier to activate)' : 'Mute Xavier'}
         style={{ width: 48, height: 48, borderRadius: '50%', border: `2px solid ${color}`, background: bg, color, cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: mode !== 'off' ? `0 0 0 6px ${color}18` : '0 2px 12px rgba(0,0,0,0.4)', transition: 'all 0.2s', pointerEvents: 'auto', fontFamily: 'inherit' }}
       >{icon}</button>
     </div>
