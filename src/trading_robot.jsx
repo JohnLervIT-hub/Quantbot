@@ -7887,7 +7887,9 @@ function GlobalXavierMic({ isMobile }) {
         wakeRecRef.current = null;
         setMode('convo'); modeRef.current = 'convo';
         setReply('');
-        setTimeout(() => startConvRef.current?.(), 400);
+        // Greet first — speakReply's afterSpeak will auto-start listening when done
+        const greetings = ["Yeah, what's up?", "Talk to me.", "Go ahead.", "What do you need?", "Here, what's on your mind?"];
+        speakReply(greetings[Math.floor(Math.random() * greetings.length)]);
       }
     };
     rec.onend = () => {
