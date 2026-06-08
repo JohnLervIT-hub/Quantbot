@@ -185,7 +185,7 @@ const ANTHROPIC_KEY    = process.env.ANTHROPIC_API_KEY  || process.env.VITE_ANTH
 const DEEPSEEK_KEY     = process.env.DEEPSEEK_API_KEY   || process.env.VITE_DEEPSEEK_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const ELEVENLABS_KEY   = process.env.ELEVENLABS_API_KEY || process.env.VITE_ELEVENLABS_API_KEY;
-const ELEVENLABS_VOICE = 'vBKc2FfBKJfcZNyEt1n6';
+const ELEVENLABS_VOICE = 'vBKc2FfBKJfcZNyEt1n6'; // Finn
 // Normalise auto-mode so the runtime toggle (which writes AUTO_MODE_ENABLED) always wins
 if (!process.env.AUTO_MODE_ENABLED && process.env.VITE_AUTO_MODE) {
   process.env.AUTO_MODE_ENABLED = process.env.VITE_AUTO_MODE;
