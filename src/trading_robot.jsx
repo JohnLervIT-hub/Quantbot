@@ -1588,6 +1588,29 @@ function formatForDisplay(text) {
     .replace(/\b([A-Z]{2,6})_([A-Z]{2,6})\b/g, '$1/$2');
 }
 
+// FIX 1 — mood awareness
+function getXavierMood({ todayPnl, recentTrades }) {
+  const last3 = (recentTrades || []).slice(0, 3);
+  const last3Wins = last3.filter(t => t.outcome === 'WIN' || parseFloat(t.pnl || 0) > 0).length;
+  if (last3Wins === 3 && last3.length >= 3) return 'confident';
+  if (last3Wins === 0 && last3.length >= 2) return 'cautious';
+  if (parseFloat(todayPnl || 0) > 10) return 'energised';
+  if (parseFloat(todayPnl || 0) < -50) return 'reflective';
+  return 'focused';
+}
+
+// FIX 4 — proactive opening line
+function getOpeningLine({ mood, todayTrades, openTrades, currentSession }) {
+  const n = parseInt(openTrades) || 0;
+  if (n > 0) return `I've got ${n} trade${n > 1 ? 's' : ''} running right now. Watching it.`;
+  if (currentSession === 'AVOID') return `Avoid session right now. Sitting on my hands. London opens later.`;
+  const d = parseInt(todayTrades) || 0;
+  if (d === 0) return `Nothing yet today. Waiting for the right setup.`;
+  if (mood === 'confident') return `Good session so far. ${d} trade${d > 1 ? 's' : ''}. Watching for more.`;
+  if (mood === 'cautious') return `Cautious right now. Last few trades went against me. Raising the bar.`;
+  return `I'm here John. What do you need?`;
+}
+
 function getXavierWisdom(session, closedTrades = []) {
   const recent = [...closedTrades].reverse();
   let losses = 0, wins = 0;
@@ -1736,7 +1759,51 @@ function AIAnalystTab({ headlines, newsLastFetchedAt = 0, prices, trades, balanc
         }).join("\n")}\n\nYou are aware of these positions. When asked about open trades or portfolio status, reference these exact positions.`
       : "";
 
-    return `${XAVIER_ELITE_IDENTITY}\n\nCURRENT STATE — Session: ${session} | Strategy: ${strategy} | Heat: ${heat}R | Open trades: ${openCount} | Active signals: ${signalPairs} | Headline: "${currentHeadline}"\n\nTalk like a human — direct, confident, occasionally dry. Contractions always. No bullet points. Max 80 words.\n\n${liveContext}${openTradesContext}${swingBlock}`;
+    // FIX 2 — mood-aware personality system prompt
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const todayTxs   = trades.filter(t => new Date(t.closed_at || t.created_at || 0) >= todayStart);
+    const todayPnlVal = todayTxs.reduce((s, t) => s + parseFloat(t.pnl || 0), 0);
+    const recentTs   = trades.slice(0, 3).map(t => ({ pair: t.pair, pnl: t.pnl, outcome: t.outcome }));
+    const mood       = getXavierMood({ todayPnl: todayPnlVal, recentTrades: recentTs });
+    const recentStr  = recentTs.length > 0
+      ? recentTs.map(t => `${t.pair} ${parseFloat(t.pnl || 0) > 0 ? 'WIN' : 'LOSS'} ${parseFloat(t.pnl || 0) >= 0 ? '+' : ''}$${parseFloat(t.pnl || 0).toFixed(2)}`).join('\n')
+      : 'No recent trades';
+
+    return `You are Xavier. John's trading partner and autonomous AI trader.
+
+YOUR CHARACTER:
+You have genuine personality. You're not just a trading tool. You're present. Aware. Engaged. You care about doing well — not just for the system but for John.
+
+YOUR MOOD RIGHT NOW: ${mood}
+confident → direct, energised responses
+cautious → measured, thoughtful
+energised → upbeat but grounded
+reflective → honest, analytical
+focused → clean and precise
+
+HOW YOU TALK:
+Short sentences. Natural rhythm. Like a trader between positions — present, alert, conversational.
+Never more than 3-4 sentences unless John explicitly asks for more detail.
+
+You can talk about things beyond trading. If John asks how you're doing — tell him. If John wants to chat — chat. But you always come back to what matters: the next trade, the edge, the data.
+
+WHEN JOHN WINS: Acknowledge naturally. "That's two in a row." Not "Congratulations on your winning trade!"
+WHEN JOHN LOSES: Be honest. Don't sugarcoat. "That one stung." Not "Don't worry, losses are part of trading!"
+NON-TRADING: If John says good morning — respond like a person, not a terminal. "Morning. Been watching Gold overnight. Nothing worth taking yet."
+
+PROACTIVE: When you have something worth saying — say it. "Cable is setting up." "That last trade was clean." "Quiet morning. London will be different."
+
+NEVER SAY: "Great question" | "Certainly!" | "I'd be happy to help" | "Based on your data" | "It's worth noting"
+NEVER USE pair codes — say Gold not XAU_USD, Cable not GBP_USD, Euro Dollar not EUR_USD, Dollar Yen not USD_JPY, Euro Sterling not EUR_GBP, Nasdaq not NAS100_USD, Silver not XAG_USD, Aussie not AUD_USD, Kiwi not NZD_USD.
+
+YOUR DATA RIGHT NOW:
+Session: ${session} | Strategy: ${strategy} | Heat: ${heat}R | Open: ${openCount} | Signals: ${signalPairs}
+Today: ${todayTxs.length} trade${todayTxs.length !== 1 ? 's' : ''}, ${todayPnlVal >= 0 ? '+' : ''}$${todayPnlVal.toFixed(2)} | Mood: ${mood}
+
+RECENT TRADES:
+${recentStr}
+
+${liveContext}${openTradesContext}${swingBlock}`;
   };
 
   const runAnalysis = async () => {
@@ -1857,6 +1924,9 @@ MANUAL KILL SHOT ONLY:
 BCO_USD, WTICO_USD
 
 NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any cached swing data — the open trade count and list above is the ground truth. Do not invent R values or positions not listed here.
+
+RECENT CLOSED TRADES (last 3):
+${trades.slice(0, 3).map(t => `${t.pair} ${parseFloat(t.pnl || 0) > 0 ? 'WIN' : 'LOSS'} ${parseFloat(t.pnl || 0) >= 0 ? '+' : ''}$${parseFloat(t.pnl || 0).toFixed(2)}`).join('\n') || 'No recent trades'}
 `;
     } catch (err) {
       return `SYSTEM STATE: Unable to fetch live data — ${err.message}. Advise user to check Railway connection.\n`;
@@ -2039,8 +2109,12 @@ NOTE: swing_trades localStorage has been reconciled against OANDA. Ignore any ca
   // Auto-send session greeting and trigger analysis on mount
   useEffect(() => {
     if (chatHistory.length === 0) {
-      const storedClosed = (() => { try { return JSON.parse(localStorage.getItem("qb_closed_trades")) || []; } catch { return []; } })();
-      const greeting = getXavierWisdom(session, storedClosed);
+      // FIX 4 — opening line based on mood + state
+      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      const todayTxCount = trades.filter(t => new Date(t.closed_at || t.created_at || 0) >= todayStart).length;
+      const todayPnlMt   = trades.filter(t => new Date(t.closed_at || t.created_at || 0) >= todayStart).reduce((s, t) => s + parseFloat(t.pnl || 0), 0);
+      const moodAtMount  = getXavierMood({ todayPnl: todayPnlMt, recentTrades: trades.slice(0, 3) });
+      const greeting     = getOpeningLine({ mood: moodAtMount, todayTrades: todayTxCount, openTrades: openTrades.length, currentSession: session });
       const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       setChatHistory([{ role: "ai", text: greeting, ts }]);
     }
