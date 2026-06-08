@@ -7882,40 +7882,63 @@ function GlobalXavierMic({ isMobile }) {
   const speakReply = async (text) => {
     setStatus('speaking');
     try {
+      // freeze fix 1: abort TTS fetch after 15s
+      const ttsCtrl = new AbortController();
+      const ttsFallback = setTimeout(() => ttsCtrl.abort(), 15000);
       const r = await fetch(`${BRIDGE}/tts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ text: formatForSpeech(text).slice(0, 500) }),
+        signal: ttsCtrl.signal,
       });
+      clearTimeout(ttsFallback);
       if (!r.ok) throw new Error('tts');
+
+      // freeze fix 4: cancel stream reader after 15s to prevent infinite read loop
       const reader = r.body.getReader();
+      const readAbort = setTimeout(() => reader.cancel(), 15000);
       const chunks = [];
       while (true) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); }
+      clearTimeout(readAbort);
+
       const url = URL.createObjectURL(new Blob(chunks, { type: 'audio/mpeg' }));
       const audio = new Audio(url);
       audioRef.current = audio;
+
+      // freeze fix 3: guard against double-call from onerror + play().catch() both firing
+      let afterSpeakCalled = false;
       const afterSpeak = () => {
+        if (afterSpeakCalled) return;
+        afterSpeakCalled = true;
+        clearTimeout(safetyTimer);
         URL.revokeObjectURL(url);
         audioRef.current = null;
         setStatus('idle');
         if (modeRef.current === 'convo') startConvRef.current?.();
         else if (modeRef.current === 'wake') startWakeRef.current?.();
       };
+      // freeze fix 5 (partial): 60s hard cap — if audio never ends, force recovery
+      const safetyTimer = setTimeout(afterSpeak, 60000);
       audio.onended = afterSpeak;
-      audio.onerror = afterSpeak; // gap 1: handle mid-play error so we never get stuck
-      await audio.play().catch(() => { afterSpeak(); });
+      audio.onerror = afterSpeak;
+      await audio.play().catch(() => afterSpeak());
     } catch { setStatus('idle'); returnToWake(); }
   };
 
   const ask = async (text) => {
-    if (modeRef.current === 'off') return; // gap 2: ignore if muted after transcript captured
+    if (modeRef.current === 'off') return;
     setStatus('thinking');
     try {
+      // freeze fix 2: abort AI fetch after 25s
+      const aiCtrl = new AbortController();
+      const aiTimeout = setTimeout(() => aiCtrl.abort(), 25000);
       const r = await fetch(`${BRIDGE}/ai`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ prompt: text, maxTokens: 60 }),
+        signal: aiCtrl.signal,
       });
+      clearTimeout(aiTimeout);
       const data = await r.json();
       const result = data.content?.[0]?.text;
       if (result) { setReply(formatForDisplay(result)); await speakReply(result); }
@@ -7987,7 +8010,20 @@ function GlobalXavierMic({ isMobile }) {
     }
   };
 
-  // gap 6: auto-start on mount for desktop (may silently fail on iOS — toggle acts as gesture fallback)
+  // freeze fix 5: watchdog — if stuck in thinking/speaking >35s, force reset to wake
+  useEffect(() => {
+    if (status !== 'thinking' && status !== 'speaking') return;
+    const watchdog = setTimeout(() => {
+      if (modeRef.current !== 'off') {
+        setStatus('idle');
+        setMode('wake'); modeRef.current = 'wake';
+        setTimeout(() => { if (modeRef.current === 'wake') startWakeRef.current?.(); }, 200);
+      }
+    }, 35000);
+    return () => clearTimeout(watchdog);
+  }, [status]);
+
+  // auto-start on mount for desktop (may silently fail on iOS — toggle acts as gesture fallback)
   useEffect(() => {
     const t = setTimeout(() => { if (modeRef.current === 'wake') startWakeRef.current?.(); }, 600);
     return () => {
