@@ -7782,20 +7782,21 @@ const useSupabaseData = () => {
 // Auto-starts wake listening on mount — no button press needed.
 // Say "Hello Xavier" anywhere to activate. Button is a mute/unmute toggle.
 // mode: 'off' (muted) | 'wake' (background listening) | 'convo' (active exchange)
+const XAVIER_WAKE_RE = /hell?o\s+(xavier|savior|javier|zavier)|hey\s+(xavier|savior|javier|zavier)/i;
+
 function GlobalXavierMic({ isMobile }) {
   const [mode, setMode]     = useState('wake');  // start in wake mode
   const [status, setStatus] = useState('idle');  // 'idle' | 'listening' | 'thinking' | 'speaking'
   const [reply, setReply]   = useState('');
 
-  const modeRef      = useRef('wake');
+  const modeRef       = useRef('wake');
   const transcriptRef = useRef('');
-  const wakeRecRef   = useRef(null);
-  const startConvRef = useRef(null);
-  const startWakeRef = useRef(null);
+  const wakeRecRef    = useRef(null);
+  const audioRef      = useRef(null);   // gap 4: hold audio so toggle can stop it
+  const startConvRef  = useRef(null);
+  const startWakeRef  = useRef(null);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
-
-  const WAKE_RE = /hell?o\s+(xavier|savior|javier|zavier)|hey\s+(xavier|savior|javier|zavier)/i;
 
   const returnToWake = () => {
     setMode('wake');
@@ -7818,13 +7819,22 @@ function GlobalXavierMic({ isMobile }) {
       while (true) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); }
       const url = URL.createObjectURL(new Blob(chunks, { type: 'audio/mpeg' }));
       const audio = new Audio(url);
-      const afterSpeak = () => { URL.revokeObjectURL(url); setStatus('idle'); if (modeRef.current === 'convo') startConvRef.current?.(); };
+      audioRef.current = audio;
+      const afterSpeak = () => {
+        URL.revokeObjectURL(url);
+        audioRef.current = null;
+        setStatus('idle');
+        if (modeRef.current === 'convo') startConvRef.current?.();
+        else if (modeRef.current === 'wake') startWakeRef.current?.();
+      };
       audio.onended = afterSpeak;
-      await audio.play().catch(() => { URL.revokeObjectURL(url); setStatus('idle'); if (modeRef.current === 'convo') startConvRef.current?.(); });
-    } catch { setStatus('idle'); if (modeRef.current === 'convo') startConvRef.current?.(); }
+      audio.onerror = afterSpeak; // gap 1: handle mid-play error so we never get stuck
+      await audio.play().catch(() => { afterSpeak(); });
+    } catch { setStatus('idle'); returnToWake(); }
   };
 
   const ask = async (text) => {
+    if (modeRef.current === 'off') return; // gap 2: ignore if muted after transcript captured
     setStatus('thinking');
     try {
       const r = await fetch(`${BRIDGE}/ai`, {
@@ -7849,8 +7859,8 @@ function GlobalXavierMic({ isMobile }) {
     rec.onresult = (e) => { transcriptRef.current = Array.from(e.results).map(r => r[0].transcript).join(''); };
     rec.onend = () => {
       const final = transcriptRef.current.trim();
-      if (final) { ask(final); }
-      else if (modeRef.current === 'convo') returnToWake(); // silence → back to wake
+      if (final) { ask(final); } // ask() guards against mode='off' internally
+      else if (modeRef.current === 'convo') returnToWake();
     };
     rec.onerror = (e) => {
       setStatus('idle');
@@ -7870,8 +7880,9 @@ function GlobalXavierMic({ isMobile }) {
     wakeRecRef.current = rec;
     rec.onresult = (e) => {
       if (modeRef.current !== 'wake') return;
-      const t = Array.from(e.results).map(r => r[0].transcript).join(' ');
-      if (WAKE_RE.test(t)) {
+      // gap 3: only check last 3 results — don't accumulate entire session history
+      const recent = Array.from(e.results).slice(-3).map(r => r[0].transcript).join(' ');
+      if (XAVIER_WAKE_RE.test(recent)) {
         try { rec.stop(); } catch {}
         wakeRecRef.current = null;
         setMode('convo'); modeRef.current = 'convo';
@@ -7889,18 +7900,25 @@ function GlobalXavierMic({ isMobile }) {
 
   const toggle = () => {
     if (mode !== 'off') {
+      // Mute: stop wake rec + stop any playing audio (gap 4)
       if (wakeRecRef.current) { try { wakeRecRef.current.stop(); } catch {} wakeRecRef.current = null; }
+      if (audioRef.current) { try { audioRef.current.pause(); } catch {} audioRef.current = null; }
       setMode('off'); modeRef.current = 'off'; setStatus('idle'); setReply('');
     } else {
+      // Unmute — gap 6: first toggle acts as user gesture for iOS mic permission
       setMode('wake'); modeRef.current = 'wake'; setReply('');
       setTimeout(() => startWakeRef.current?.(), 50);
     }
   };
 
-  // Auto-start wake listening on mount
+  // gap 6: auto-start on mount for desktop (may silently fail on iOS — toggle acts as gesture fallback)
   useEffect(() => {
     const t = setTimeout(() => { if (modeRef.current === 'wake') startWakeRef.current?.(); }, 600);
-    return () => { clearTimeout(t); if (wakeRecRef.current) { try { wakeRecRef.current.stop(); } catch {} } };
+    return () => {
+      clearTimeout(t);
+      if (wakeRecRef.current) { try { wakeRecRef.current.stop(); } catch {} }
+      if (audioRef.current) { try { audioRef.current.pause(); } catch {} }
+    };
   }, []);
 
   const bottom = isMobile ? 90 : 24;
