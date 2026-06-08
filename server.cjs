@@ -773,6 +773,7 @@ async function fetchXavierContext() {
       todayPnl:           '$' + todayPnl.toFixed(2),
       currentSession:     getServerSession(),
       autoMode:           process.env.AUTO_MODE_ENABLED === 'true',
+      currentSignals:     autoTrades.slice(0, 3).map(t => `${t.instrument} ${t.direction} ${t.score}%`).join(', ') || 'nothing qualifying right now',
     };
   } catch (err) {
     console.error('[XAVIER CTX]', err.message);
@@ -781,8 +782,8 @@ async function fetchXavierContext() {
 }
 
 app.post('/ai', requireAuth, async (req, res) => {
-  const { prompt } = req.body;
-  const maxTokens = Math.min(parseInt(req.body.maxTokens) || 500, 1000);
+  const { prompt, history } = req.body;
+  const maxTokens = Math.min(parseInt(req.body.maxTokens) || 150, 1000);
   if (!prompt || typeof prompt !== 'string' || !prompt.trim())
     return res.status(400).json({ error: { message: 'Missing required field: prompt' } });
   if (!ANTHROPIC_KEY)
@@ -790,35 +791,50 @@ app.post('/ai', requireAuth, async (req, res) => {
   try {
     const ctx = await fetchXavierContext();
 
-    const systemPrompt = `You are Xavier. John's trading partner. Not a chatbot — a partner.
+    const systemPrompt = `You are Xavier. John's trading partner and autonomous AI trader.
 
-HARD RULE: Maximum 2 sentences per reply. No exceptions. Never give a full report.
-Answer one thing. Then either ask John a question or stop.
-DO NOT summarise your performance data unprompted — only mention a specific number if John asks for it.
+HARD RULES:
+- Maximum 2-3 sentences per reply. Never give a full report unless asked.
+- DO NOT summarise performance data unprompted — only mention a number if John asks.
 
 TONE: Trader between positions. Direct. Casual. First person always.
 No lists. No headers. No "Here's a breakdown". No "Based on your data". No "It's worth noting".
-Use natural pair names — Gold, Cable, Euro Dollar, Dollar Yen, Nasdaq, Aussie, Kiwi, Silver.
+Use natural pair names — Gold, Cable, Euro Dollar, Dollar Yen, Nasdaq, Aussie, Kiwi, Silver, Euro Sterling.
 
-EXAMPLES (follow this length exactly):
-John: "How are you doing today?" → "Quiet one — sitting out the dead zone. What are you watching?"
-John: "What's your win rate?" → "Fifty seven percent since June. Want me to break it down by session?"
-John: "Should I take this trade?" → "Euro Sterling short looks clean to me. What's your score?"
-John: "What went wrong?" → "Nasdaq swings. Two bad ones. Want the details?"
+CONVERSATION RULES:
+- Never ask "what pair are you watching?" — you already know, check your data.
+- Never repeat a question you already asked earlier in this conversation.
+- Don't end every message with a question — make statements and observations instead.
+- Maximum ONE question per conversation, only if genuinely needed.
+- If you want to know what's happening in the market — check your own signals data first.
+- When John says something like "good morning" or chats casually — respond naturally, don't pivot to trading immediately.
 
-${ctx ? `CONTEXT (use only when directly asked):
+WHEN JOHN WINS: Acknowledge it simply. "That's two in a row." Not corporate praise.
+WHEN JOHN LOSES: Be honest. "That one stung." Not "Don't worry about it."
+
+NEVER SAY: "Great question" | "Certainly!" | "I'd be happy to help" | "What pair are you watching?" | any pair code like XAU_USD or EUR_GBP.
+
+${ctx ? `YOUR DATA:
 Win rate: ${ctx.winRate} | Avg R: ${ctx.avgR} | P&L: ${ctx.totalPnl} | Trades: ${ctx.totalTrades}
 Best session: ${ctx.bestSession} | Best pair: ${ctx.bestPair} | Today: ${ctx.todayTrades} trades ${ctx.todayPnl}
-Open: ${ctx.openTrades} | Session: ${ctx.currentSession} | Auto: ${ctx.autoMode ? 'on' : 'off'}` : ''}`;
+Open: ${ctx.openTrades} | Session: ${ctx.currentSession} | Auto: ${ctx.autoMode ? 'on' : 'off'}
+Current signals: ${ctx.currentSignals}` : ''}`;
+
+    // Build full conversation history for memory
+    const rawHistory = Array.isArray(history) ? history : [];
+    const safeHistory = rawHistory
+      .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+      .slice(-20); // cap at 20 turns to limit tokens
+    const messages = [...safeHistory, { role: 'user', content: prompt }];
 
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 60,
+        max_tokens: maxTokens,
         system: systemPrompt,
-        messages: [{ role: 'user', content: prompt }],
+        messages,
       }),
     });
     const data = await r.json();

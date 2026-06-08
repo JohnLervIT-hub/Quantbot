@@ -7866,7 +7866,8 @@ function GlobalXavierMic({ isMobile }) {
   const modeRef       = useRef('wake');
   const transcriptRef = useRef('');
   const wakeRecRef    = useRef(null);
-  const audioRef      = useRef(null);   // gap 4: hold audio so toggle can stop it
+  const audioRef      = useRef(null);
+  const historyRef    = useRef([]);     // conversation memory — persists within session
   const startConvRef  = useRef(null);
   const startWakeRef  = useRef(null);
 
@@ -7929,20 +7930,23 @@ function GlobalXavierMic({ isMobile }) {
     if (modeRef.current === 'off') return;
     setStatus('thinking');
     try {
-      // freeze fix 2: abort AI fetch after 25s
       const aiCtrl = new AbortController();
       const aiTimeout = setTimeout(() => aiCtrl.abort(), 25000);
       const r = await fetch(`${BRIDGE}/ai`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ prompt: text, maxTokens: 60 }),
+        body: JSON.stringify({ prompt: text, maxTokens: 150, history: historyRef.current.slice(-20) }),
         signal: aiCtrl.signal,
       });
       clearTimeout(aiTimeout);
       const data = await r.json();
       const result = data.content?.[0]?.text;
-      if (result) { setReply(formatForDisplay(result)); await speakReply(result); }
-      else returnToWake();
+      if (result) {
+        // append to conversation memory so Xavier remembers context
+        historyRef.current = [...historyRef.current, { role: 'user', content: text }, { role: 'assistant', content: result }].slice(-40);
+        setReply(formatForDisplay(result));
+        await speakReply(result);
+      } else returnToWake();
     } catch { returnToWake(); }
   };
 
