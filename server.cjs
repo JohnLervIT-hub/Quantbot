@@ -741,12 +741,22 @@ async function fetchXavierContext() {
     const bestPairEntry = Object.entries(pairStats)
       .sort((a, b) => b[1].pnl - a[1].pnl)[0];
 
-    // Open trades from OANDA
+    // Open trades from OANDA — full details for Xavier context
     let openTradesCount = 0;
+    let openTradeDetails = [];
     try {
       const openRes  = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades?state=OPEN`, { headers: H });
       const openData = await openRes.json();
-      openTradesCount = openData.trades?.length ?? 0;
+      const openTrades = openData.trades || [];
+      openTradesCount = openTrades.length;
+      openTradeDetails = openTrades.map(t => {
+        const direction    = parseInt(t.currentUnits) > 0 ? 'LONG' : 'SHORT';
+        const unrealizedPL = parseFloat(t.unrealizedPL || 0).toFixed(2);
+        const entry        = parseFloat(t.price).toFixed(4);
+        const sl           = t.stopLossOrder?.price   || 'none';
+        const tp           = t.takeProfitOrder?.price || 'none';
+        return { pair: t.instrument, direction, entry, unrealizedPL, sl, tp };
+      });
     } catch (_) { /* non-fatal */ }
 
     // Today's trades
@@ -769,6 +779,7 @@ async function fetchXavierContext() {
       bestPair:           bestPairEntry?.[0] || 'EUR_GBP',
       bestPairPnl:        bestPairEntry ? '$' + bestPairEntry[1].pnl.toFixed(2) : 'N/A',
       openTrades:         openTradesCount,
+      openTradeDetails,
       todayTrades:        todayTrades.length,
       todayPnl:           '$' + todayPnl.toFixed(2),
       currentSession:     getServerSession(),
@@ -820,7 +831,12 @@ ${ctx ? `YOUR DATA:
 Win rate: ${ctx.winRate} | Avg R: ${ctx.avgR} | P&L: ${ctx.totalPnl} | Trades: ${ctx.totalTrades}
 Best session: ${ctx.bestSession} | Best pair: ${ctx.bestPair} | Today: ${ctx.todayTrades} trades ${ctx.todayPnl}
 Open: ${ctx.openTrades} | Session: ${ctx.currentSession} | Auto: ${ctx.autoMode ? 'on' : 'off'}
-Current signals: ${ctx.currentSignals}` : ''}`;
+Current signals: ${ctx.currentSignals}
+
+OPEN TRADES RIGHT NOW:
+${ctx.openTradeDetails?.length > 0
+  ? ctx.openTradeDetails.map(t => `${t.pair} ${t.direction} entry ${t.entry} P&L $${t.unrealizedPL} SL ${t.sl} TP ${t.tp}`).join('\n')
+  : 'No open trades'}` : ''}`;
 
     // Build full conversation history for memory
     const rawHistory = Array.isArray(history) ? history : [];
