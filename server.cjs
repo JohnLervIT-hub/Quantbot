@@ -2812,6 +2812,14 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
 
 async function partialCloseTrade(tradeId, units) {
   try {
+    // Guard: skip if trade already closed — prevents 404 on delayed management ticks
+    const checkRes  = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}`, { headers: H });
+    const checkData = await checkRes.json();
+    if (checkData.trade?.state !== 'OPEN') {
+      console.log('[PARTIAL SKIP]', tradeId, 'trade already closed');
+      return null;
+    }
+
     const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/close`, {
       method: 'PUT', headers: H,
       body: JSON.stringify({ units: String(Math.abs(units)) }),
@@ -3225,7 +3233,7 @@ async function saveTradeToSupabase(trade) {
           outcome,
           pnl:           trade.pnl,
           close_time:    nowIso,
-          r_multiple:    trade.rMultiple,
+          r_multiple:    parseFloat(trade.rMultiple?.toFixed(4)) || null,
           exit_price:    trade.exitPrice,
           duration_mins: trade.durationMins,
           stop_loss:     trade.stopLoss,
@@ -3268,7 +3276,7 @@ async function saveTradeToSupabase(trade) {
         if (nullRecord) {
           ({ error } = await supabase.from('trades').update({
             outcome, pnl: trade.pnl, close_time: nowIso,
-            r_multiple: trade.rMultiple, exit_price: trade.exitPrice,
+            r_multiple: parseFloat(trade.rMultiple?.toFixed(4)) || null, exit_price: trade.exitPrice,
             duration_mins: trade.durationMins, stop_loss: trade.stopLoss,
             take_profit: trade.takeProfit,
             // created_at intentionally omitted — H6
@@ -3288,7 +3296,7 @@ async function saveTradeToSupabase(trade) {
         stop_loss:          trade.stopLoss,
         take_profit:        trade.takeProfit,
         pnl:                trade.pnl,
-        r_multiple:         trade.rMultiple,
+        r_multiple:         parseFloat(trade.rMultiple?.toFixed(4)) || null,
         score:              ctx.score              ?? null,
         consensus:          ctx.consensusVotes     ?? null,
         units:              trade.units,
@@ -6479,7 +6487,7 @@ async function backfillNullTrades() {
             pnl:           realizedPL,
             close_time:    closeTs,
             exit_price:    exitPrice,
-            r_multiple:    rMult,
+            r_multiple:    parseFloat(rMult?.toFixed(4)) || null,
             duration_mins: durMins,
           })
           .eq('id', nullTrade.id);
