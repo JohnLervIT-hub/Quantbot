@@ -2250,6 +2250,18 @@ app.post('/auto-mode', requireAuth, async (req, res) => {
   res.json({ autoMode: enabled });
 });
 
+// ─── ADMIN: MANUAL PHASE OVERRIDE ────────────────────────────────────────────
+app.post('/admin/phase', requireAuth, async (req, res) => {
+  const { pair, phase } = req.body;
+  if (!pair || (phase !== 1 && phase !== 2)) return res.status(400).json({ error: 'pair and phase (1 or 2) required' });
+  if (PAIR_PHASE[pair] === undefined) return res.status(400).json({ error: `${pair} not tracked in PAIR_PHASE` });
+  const prev = PAIR_PHASE[pair];
+  PAIR_PHASE[pair] = phase;
+  await savePairPhases();
+  console.log(`[PHASE OVERRIDE] ${pair} ${prev} → ${phase}`);
+  res.json({ pair, prev, phase });
+});
+
 // ─── RECOVERY STATUS ENDPOINT ────────────────────────────────────────────────
 app.get('/recovery-status', requireAuth, (_req, res) => {
   const drawdown = (peakBalance > 0 && currentBalance > 0) ? parseFloat((Math.max(0, (peakBalance - currentBalance) / peakBalance * 100)).toFixed(2)) : 0;
