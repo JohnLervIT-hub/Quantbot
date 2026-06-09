@@ -3013,11 +3013,31 @@ async function loadPendingKillShots() {
     const { data } = await supabase.from('system_state').select('value').eq('key', 'pending_kill_shots').single();
     if (data?.value) {
       const shots = JSON.parse(data.value);
-      Object.entries(shots).forEach(([pair, signal]) => {
-        if (signal.expiresAt && new Date(signal.expiresAt) > new Date()) {
-          pendingKillShots.set(pair, signal);
-          console.log('[KILL SHOT RESTORED]', pair, 'expires:', signal.expiresAt);
+      Object.entries(shots).forEach(([pair, shot]) => {
+        const msRemaining = shot.expiresAt ? new Date(shot.expiresAt) - new Date() : 0;
+
+        if (msRemaining <= 0) {
+          console.log('[KILL SHOT EXPIRED]', pair, 'expired while offline');
+          return; // skip — already past window
         }
+
+        // Restore to map
+        pendingKillShots.set(pair, shot);
+        console.log('[KILL SHOT RESTORED]', pair, 'expires in', Math.round(msRemaining / 60000), 'minutes');
+
+        // Re-register expiry timer for remaining window
+        setTimeout(async () => {
+          if (pendingKillShots.has(pair)) {
+            pendingKillShots.delete(pair);
+            await savePendingKillShots().catch(() => {});
+            console.log('[KILL SHOT EXPIRED]', pair, 'after restart restore');
+            await sendDiscordEmbed({
+              title: '⏰ Kill Shot Expired',
+              color: 0xffaa00,
+              fields: [{ name: pair, value: 'Approval window closed\nSignal no longer valid\nNext swing scan in 4h', inline: false }],
+            }).catch(() => {});
+          }
+        }, msRemaining);
       });
     }
   } catch (err) {
