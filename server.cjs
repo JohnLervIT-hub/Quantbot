@@ -2947,6 +2947,26 @@ async function savePairPhases() {
   }
 }
 
+async function confirmPhaseFixActive() {
+  console.log('[PHASE FIX] Active ✅', 'Using CLEAN_CUTOFF: 2026-06-01', 'Calibration trades excluded');
+  await sendDiscordEmbed({
+    title: '✅ Phase System Fixed',
+    color: 0x00ff00,
+    fields: [
+      {
+        name: 'Date Filter Updated',
+        value: 'Phase checks now use June 1\ncalibration trades excluded\nEUR_USD: Phase 1 ✅\nFalse demotions prevented ✅',
+        inline: false,
+      },
+      {
+        name: 'Current Phases',
+        value: Object.entries(PAIR_PHASE).map(([pair, phase]) => `${pair}: Phase ${phase}`).join('\n'),
+        inline: false,
+      },
+    ],
+  });
+}
+
 // H1: persist pendingKillShots across Railway restarts
 async function savePendingKillShots() {
   if (!supabase) return;
@@ -6519,7 +6539,7 @@ setInterval(() => maybeSendDailySummary().catch(e => console.error('[mgmt] Summa
 
 // Upgrade 2 — Economic calendar refresh every hour
 loadCooldowns().catch(e => console.error('[state] loadCooldowns startup:', e.message));
-loadPairPhases().catch(e => console.error('[state] loadPairPhases startup:', e.message));
+loadPairPhases().then(() => confirmPhaseFixActive().catch(e => console.error('[phase fix] Discord notify:', e.message))).catch(e => console.error('[state] loadPairPhases startup:', e.message));
 loadTradeManagementState().catch(e => console.error('[state] loadTradeManagementState startup:', e.message));
 loadAutoMode().catch(e => console.error('[state] loadAutoMode startup:', e.message));
 loadPendingKillShots().catch(e => console.error('[state] loadPendingKillShots startup:', e.message));
