@@ -2910,6 +2910,12 @@ async function loadPairPhases() {
     } else {
       console.log('[PHASES] no saved state — using defaults');
     }
+    // Correct false demotion caused by calibration trades before CLEAN_CUTOFF
+    if (PAIR_PHASE['EUR_USD'] !== 1) {
+      PAIR_PHASE['EUR_USD'] = 1;
+      await savePairPhases();
+      console.log('[PHASE RESTORED]', 'EUR_USD → Phase 1', 'false demotion corrected');
+    }
   } catch (err) {
     console.log('[PHASES] using defaults —', err.message);
   }
@@ -3285,16 +3291,21 @@ async function saveTradeToSupabase(trade) {
       try {
         const instrument = trade.pair;
         const currentPhase = PAIR_PHASE[instrument];
-        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+        // Only count post-launch clean trades
+        // Same filter as dashboard
+        // Prevents calibration data triggering false demotions
+        const CLEAN_CUTOFF = '2026-06-01T00:00:00Z';
         const { data: pairTrades } = await supabase
           .from('trades')
-          .select('r_multiple')
+          .select('r_multiple, outcome')
           .eq('pair', instrument)
-          .gte('created_at', thirtyDaysAgo)
+          .gte('close_time', CLEAN_CUTOFF)
           .not('r_multiple', 'is', null);
         const tradeCount = pairTrades?.length ?? 0;
         if (tradeCount >= 10) {
           const avgR = pairTrades.reduce((s, t) => s + (t.r_multiple || 0), 0) / tradeCount;
+          const wins = pairTrades.filter(t => t.outcome === 'WIN').length;
+          const winRate = wins / tradeCount;
           if (currentPhase === 2 && avgR > 0.3) {
             PAIR_PHASE[instrument] = 1;
             await savePairPhases();
@@ -3311,15 +3322,19 @@ async function saveTradeToSupabase(trade) {
             console.log('[DEMOTED]', instrument, '→ Phase 2 avgR:', avgR.toFixed(2));
             await sendDiscordEmbed({
               title: `⚠️ ${instrument} DEMOTED TO PHASE 2`,
-              description: `${instrument} demoted to Phase 2\nAverage R: ${avgR.toFixed(2)}R over ${tradeCount} trades\nReduced position size until edge recovers`,
               color: 0xd29922,
               timestamp: new Date().toISOString(),
+              fields: [{
+                name: 'Based on clean trades only',
+                value: `Trades since June 1: ${tradeCount}\nAvg R: ${avgR.toFixed(2)}R\nWin Rate: ${(winRate * 100).toFixed(0)}%\nSource: Post-launch data only`,
+                inline: false,
+              }],
             });
           } else {
             console.log(`[PHASE ${currentPhase}]`, instrument, 'avgR:', avgR.toFixed(2), `(${tradeCount} trades)`);
           }
         } else {
-          console.log(`[PHASE ${currentPhase}]`, instrument, 'earning validation —', tradeCount, 'trades in 30d (need 10)');
+          console.log(`[PHASE ${currentPhase}]`, instrument, 'earning validation —', tradeCount, 'clean trades since June 1 (need 10)');
         }
       } catch (promoteErr) {
         console.error('[PHASE CHECK ERROR]', promoteErr.message);
