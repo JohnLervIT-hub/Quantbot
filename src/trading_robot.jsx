@@ -7858,6 +7858,17 @@ const useSupabaseData = () => {
 // mode: 'off' (muted) | 'wake' (background listening) | 'convo' (active exchange)
 const XAVIER_WAKE_RE = /hell?o\s+(xavier|savior|javier|zavier)|hey\s+(xavier|savior|javier|zavier)/i;
 
+const XAVIER_TOGGLE_INTENTS = [
+  { pattern: /\b(turn on|enable|start|activate|switch on)\s+(m5|auto|auto.?mode|auto.?trad)/i,   action: 'm5_on'    },
+  { pattern: /\b(turn off|disable|stop|pause|deactivate|switch off)\s+(m5|auto|auto.?mode|auto.?trad)/i, action: 'm5_off' },
+  { pattern: /\b(turn on|enable|start|activate|switch on)\s+swing\b/i,                            action: 'swing_on' },
+  { pattern: /\b(turn off|disable|stop|pause|deactivate|switch off)\s+swing\b/i,                  action: 'swing_off'},
+];
+function detectXavierToggle(text) {
+  for (const { pattern, action } of XAVIER_TOGGLE_INTENTS) { if (pattern.test(text)) return action; }
+  return null;
+}
+
 function GlobalXavierMic({ isMobile }) {
   const [mode, setMode]     = useState('wake');  // start in wake mode
   const [status, setStatus] = useState('idle');  // 'idle' | 'listening' | 'thinking' | 'speaking'
@@ -7929,20 +7940,44 @@ function GlobalXavierMic({ isMobile }) {
   const ask = async (text) => {
     if (modeRef.current === 'off') return;
     setStatus('thinking');
+
+    // Detect M5 / swing toggle intents — execute action then give Xavier confirmation context
+    let promptText = text;
+    const intent = detectXavierToggle(text);
+    if (intent) {
+      let actionResult = '';
+      try {
+        if (intent === 'm5_on' || intent === 'm5_off') {
+          const enabled = intent === 'm5_on';
+          const r = await fetch(`${BRIDGE}/auto-mode`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ enabled }),
+          });
+          actionResult = r.ok ? `M5 auto trading is now ${enabled ? 'ON' : 'OFF'}.` : 'M5 toggle failed — server error.';
+        } else {
+          const enabled = intent === 'swing_on';
+          localStorage.setItem('swing_mode_enabled', String(enabled));
+          window.dispatchEvent(new CustomEvent('xavier_swing_toggle', { detail: { enabled } }));
+          actionResult = `Swing trading is now ${enabled ? 'ON' : 'OFF'}.`;
+        }
+      } catch { actionResult = 'Toggle failed — connection issue.'; }
+      promptText = `[Action completed: ${actionResult}] John asked: "${text}". Confirm in one natural sentence.`;
+    }
+
     try {
       const aiCtrl = new AbortController();
       const aiTimeout = setTimeout(() => aiCtrl.abort(), 25000);
       const r = await fetch(`${BRIDGE}/ai`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ prompt: text, maxTokens: 150, history: historyRef.current.slice(-20) }),
+        body: JSON.stringify({ prompt: promptText, maxTokens: 150, history: historyRef.current.slice(-20) }),
         signal: aiCtrl.signal,
       });
       clearTimeout(aiTimeout);
       const data = await r.json();
       const result = data.content?.[0]?.text;
       if (result) {
-        // append to conversation memory so Xavier remembers context
         historyRef.current = [...historyRef.current, { role: 'user', content: text }, { role: 'assistant', content: result }].slice(-40);
         setReply(formatForDisplay(result));
         await speakReply(result);
@@ -8586,6 +8621,18 @@ export default function TradingRobot() {
   const [pendingSwingSetups, setPendingSwingSetups] = useState({}); // { "XAU/USD": sig } — detected, waiting for window
   const swingEnabledRef = useRef(swingEnabled);
   swingEnabledRef.current = swingEnabled;
+
+  // Xavier voice toggle — GlobalXavierMic dispatches this when user says "enable/disable swing"
+  useEffect(() => {
+    const handler = (e) => {
+      const { enabled } = e.detail;
+      setSwingEnabled(enabled);
+      swingEnabledRef.current = enabled;
+      localStorage.setItem('swing_mode_enabled', String(enabled));
+    };
+    window.addEventListener('xavier_swing_toggle', handler);
+    return () => window.removeEventListener('xavier_swing_toggle', handler);
+  }, []);
 
   const onRejection = useCallback((entry) => {
     setRejectionLog(prev => {
