@@ -7954,7 +7954,12 @@ function GlobalXavierMic({ isMobile }) {
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ enabled }),
           });
-          actionResult = r.ok ? `M5 auto trading is now ${enabled ? 'ON' : 'OFF'}.` : 'M5 toggle failed — server error.';
+          if (r.ok) {
+            actionResult = `M5 auto trading is now ${enabled ? 'ON' : 'OFF'}.`;
+            window.dispatchEvent(new CustomEvent('xavier_m5_toggle', { detail: { enabled } }));
+          } else {
+            actionResult = 'M5 toggle failed — server error.';
+          }
         } else {
           const enabled = intent === 'swing_on';
           localStorage.setItem('swing_mode_enabled', String(enabled));
@@ -8632,6 +8637,17 @@ export default function TradingRobot() {
     };
     window.addEventListener('xavier_swing_toggle', handler);
     return () => window.removeEventListener('xavier_swing_toggle', handler);
+  }, []);
+
+  // Xavier voice toggle — GlobalXavierMic dispatches this when user says "enable/disable M5 auto"
+  useEffect(() => {
+    const handler = (e) => {
+      const { enabled } = e.detail;
+      setAutoMode(enabled);
+      localStorage.setItem('autoMode', String(enabled));
+    };
+    window.addEventListener('xavier_m5_toggle', handler);
+    return () => window.removeEventListener('xavier_m5_toggle', handler);
   }, []);
 
   const onRejection = useCallback((entry) => {
