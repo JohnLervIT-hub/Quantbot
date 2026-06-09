@@ -4950,6 +4950,16 @@ async function serverAutoTrade() {
 // NAS100_USD / AU200_AUD excluded — Phase 2 pairs, OANDA demo liquidity issues, manual Kill Shot only
 const KILL_SHOT_PAIRS = ['XAU_USD', 'GBP_USD', 'EUR_USD', 'USD_JPY'];
 
+// Per-pair session allowlist for swing/Kill Shot scanner — stricter than INSTRUMENT_HOME_SESSIONS
+// NAS100 SYDNEY removed 2026-06-09 after -$250 loss in 4 min during low-liquidity overnight session
+const KILL_SHOT_SESSION_RULES = {
+  XAU_USD:    ['LONDON', 'PRIME', 'NY'],
+  GBP_USD:    ['LONDON', 'PRIME', 'NY'],
+  EUR_USD:    ['LONDON', 'PRIME', 'NY'],
+  USD_JPY:    ['TOKYO',  'LONDON', 'PRIME'],
+  NAS100_USD: ['PRIME',  'NY'],   // SYDNEY removed — low liquidity, high slippage risk
+};
+
 // ─── OANDA CANDLE FETCHER (any granularity) ───────────────────────────────────
 async function fetchOandaCandles(instrument, granularity, count) {
   const r = await fetch(
@@ -5093,8 +5103,8 @@ function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
   }
 
   // ── Volatile pairs require big bar confirmation ───────────────────────────
-  // Bug 2 fix: NAS100/JP225 removed — not in KILL_SHOT_PAIRS, block was dead code
-  const REQUIRE_BIG_BAR = ['XAU_USD'];
+  // NAS100 added 2026-06-09 — high slippage in thin sessions without momentum confirmation
+  const REQUIRE_BIG_BAR = ['XAU_USD', 'NAS100_USD'];
   if (REQUIRE_BIG_BAR.includes(_instrument) && !isBigBar) {
     console.log('[BIG BAR REQUIRED]', _instrument, 'volatile pair requires big bar — signal skipped');
     return null;
@@ -5239,10 +5249,10 @@ async function serverSwingAutoTrade() {
   const session = getServerSession();
 
   for (const instrument of KILL_SHOT_PAIRS) {
-    // Session gate — block instruments that don't belong in this session
-    const allowedSessions = INSTRUMENT_HOME_SESSIONS[instrument];
+    // Session gate — use KILL_SHOT_SESSION_RULES (stricter), fall back to INSTRUMENT_HOME_SESSIONS
+    const allowedSessions = KILL_SHOT_SESSION_RULES[instrument] || INSTRUMENT_HOME_SESSIONS[instrument];
     if (allowedSessions && !allowedSessions.includes(session)) {
-      console.log(`[SESSION BLOCK] ${instrument} — not active in ${session}`);
+      console.log(`[SWING SESSION BLOCK] ${instrument} not allowed in ${session} — skipping`);
       continue;
     }
 
