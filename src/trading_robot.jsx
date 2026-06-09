@@ -7889,6 +7889,8 @@ function GlobalXavierMic({ isMobile }) {
     modeRef.current = 'wake';
     setStatus('idle');
     setTimeout(() => { if (modeRef.current === 'wake') startWakeRef.current?.(); }, 200);
+    // auto-clear stale reply after 15s so card doesn't linger
+    setTimeout(() => setReply(''), 15000);
   };
 
   const speakReply = async (text) => {
@@ -8097,8 +8099,11 @@ function GlobalXavierMic({ isMobile }) {
   return (
     <div style={{ position: 'fixed', bottom, right: 20, zIndex: 500, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, pointerEvents: 'none' }}>
       {mode !== 'off' && reply && (
-        <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 10, padding: '10px 14px', maxWidth: 240, fontSize: 12, color: '#e6edf3', lineHeight: 1.55, boxShadow: '0 4px 24px rgba(0,0,0,0.5)', pointerEvents: 'auto' }}>
-          <div style={{ fontSize: 9, color: '#58a6ff', fontWeight: 700, letterSpacing: '0.08em', marginBottom: 5 }}>XAVIER</div>
+        <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 10, padding: '10px 14px', maxWidth: 240, fontSize: 12, color: '#e6edf3', lineHeight: 1.55, boxShadow: '0 4px 24px rgba(0,0,0,0.5)', pointerEvents: 'auto', position: 'relative' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
+            <div style={{ fontSize: 9, color: '#58a6ff', fontWeight: 700, letterSpacing: '0.08em' }}>XAVIER</div>
+            <button onClick={() => setReply('')} title="Dismiss" style={{ background: 'none', border: 'none', color: '#484f58', cursor: 'pointer', fontSize: 13, lineHeight: 1, padding: '0 0 0 8px', fontFamily: 'inherit' }}>×</button>
+          </div>
           {reply}
         </div>
       )}
