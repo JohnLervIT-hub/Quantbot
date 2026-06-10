@@ -4779,7 +4779,6 @@ async function serverAutoTrade() {
     const atr       = tr.reduce((a, b) => a + b, 0) / tr.length || 0.00001;
     const pip       = PIP_SIZE[instrument] || 0.0001;
     const slMult    = ATR_SL_MULTIPLIER[instrument] ?? 1.5;
-    const tpMult    = ATR_TP_MULTIPLIER[instrument] ?? 3.0;
 
     // Minimum stop distance — prevents hair-trigger SL on low-ATR candles
     const MIN_STOP_PIPS = {
