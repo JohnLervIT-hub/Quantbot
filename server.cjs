@@ -4796,9 +4796,25 @@ async function serverAutoTrade() {
     const sl = signal.direction === 'LONG'
       ? price - actualSlDist - spreadBuffer
       : price + actualSlDist + spreadBuffer;
-    const tp = signal.direction === 'LONG' ? price + atr * tpMult : price - atr * tpMult;
 
+    // FIX 6 — TP based on ACTUAL SL distance to maintain true 2.0R
+    // When SL floor or spread buffer inflates risk, raw atr*tpMult understates real TP
+    const slFromEntry = Math.abs(price - sl);  // actual distance entry → SL (includes floor + buffer)
+    const tp = signal.direction === 'LONG'
+      ? price + slFromEntry * 2.0
+      : price - slFromEntry * 2.0;
+    const floorApplied = rawSlDist < actualSlDist || rawSlDist < (minStop + spreadBuffer);
     console.log(`[SL CHECK] ${instrument} dir:${signal.direction} entry:${formatPrice(price, instrument)} sl:${formatPrice(sl, instrument)} dist:${actualSlDist.toFixed(5)} spread:${spread.toFixed(5)} buf:${spreadBuffer.toFixed(5)} atr:${atr.toFixed(5)} mult:${slMult} minStop:${minStop} ${rawSlDist < minStop ? '⚠ MIN ENFORCED' : '✓ ATR'}`);
+    console.log(`[TP CALC] ${instrument} tp:${formatPrice(tp, instrument)} slDist:${slFromEntry.toFixed(5)} realRR:2.0 ${floorApplied ? '⚠ floor adjusted' : '✓ ATR-based'}`);
+
+    // FIX 5 — TP wrong-side guard (mirrors existing SL wrong-side check)
+    const tpWrongSide = signal.direction === 'SHORT' ? tp >= price : tp <= price;
+    if (tpWrongSide) {
+      console.error(`[TP WRONG SIDE] ${instrument} ${signal.direction} entry:${formatPrice(price, instrument)} tp:${formatPrice(tp, instrument)} — aborting`);
+      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'TP Side Error', actual: `${signal.direction} tp=${formatPrice(tp, instrument)} wrong side`, threshold: 'tp must be beyond entry in direction of trade' }] });
+      if (serverRejections.length > 50) serverRejections.pop();
+      continue;
+    }
 
     // Hard side check before anything else — wrong-side SL caught early
     if (signal.direction === 'LONG' && sl >= price) {
@@ -4895,9 +4911,9 @@ async function serverAutoTrade() {
         regime:         signal.regime || 'RANGING',
         momentum:       signal.momentum?.toFixed(4) || '0',
         heat,
-        rr:             (tpMult / slMult).toFixed(1),
-        slDistance:     (atr * slMult / pip).toFixed(1),
-        tpDistance:     (atr * tpMult / pip).toFixed(1),
+        rr:             '2.0',  // always 2.0 — TP computed from actual SL distance × 2
+        slDistance:     (slFromEntry / pip).toFixed(1),
+        tpDistance:     (Math.abs(tp - price) / pip).toFixed(1),
         rsi:            signal.rsi?.toFixed(1) || '50',
         closes:         liveHistory.slice(-5).map(v => v.toFixed(5)).join(', '),
         reason:         signal.reason.join(', '),
