@@ -1133,23 +1133,40 @@ const ATR_SL_MULTIPLIER = { XAG_USD: 3.0, BCO_USD: 2.5, WTICO_USD: 2.5 };
 const ATR_TP_MULTIPLIER = { XAG_USD: 6.0, BCO_USD: 5.0, WTICO_USD: 5.0 };
 
 // Minimum stop loss distance per instrument — prevents ATR compression from shrinking SL too tight
-// Used by swing signal generator and validateTrade() pre-trade guard
-const MIN_SL_FLOOR = {
-  XAU_USD:    25,      // min $25    — Gold ATR compresses in consolidation
-  XAG_USD:    0.50,    // min $0.50  — Silver
-  NAS100_USD: 50,      // min 50pts  — NAS100
-  JP225_USD:  100,     // min 100pts — JP225
-  AU200_AUD:  20,      // min 20pts  — AU200
-  UK100_GBP:  30,      // min 30pts  — UK100
-  SPX500_USD: 15,      // min 15pts  — SPX500
-  EUR_USD:    0.0030,  // min 30 pips
-  GBP_USD:    0.0035,  // min 35 pips
-  EUR_GBP:    0.0025,  // min 25 pips
-  USD_JPY:    0.30,    // min 30 pips
-  USD_CAD:    0.0030,  // min 30 pips
-  AUD_USD:    0.0030,  // min 30 pips
-  NZD_USD:    0.0025,  // min 25 pips
+// M5 SL floors — tighter (M5 candles have smaller ATR than H4 swing)
+const MIN_SL_FLOOR_M5 = {
+  XAU_USD:    8,       // M5: $8 min
+  XAG_USD:    0.20,    // M5: 20 cents
+  NAS100_USD: 25,      // M5: 25 points
+  JP225_USD:  50,      // M5: 50 points
+  AU200_AUD:  10,      // M5: 10 points
+  EUR_USD:    0.0010,  // M5: 10 pips
+  GBP_USD:    0.0012,  // M5: 12 pips
+  EUR_GBP:    0.0008,  // M5: 8 pips
+  USD_JPY:    0.10,    // M5: 10 pips
+  USD_CAD:    0.0010,  // M5: 10 pips
 };
+
+// Swing SL floors — wider (H4 candles, larger ATR)
+const MIN_SL_FLOOR_SWING = {
+  XAU_USD:    25,      // Swing: $25 min
+  XAG_USD:    0.50,    // Swing: 50 cents
+  NAS100_USD: 50,      // Swing: 50 points
+  JP225_USD:  100,     // Swing: 100 points
+  AU200_AUD:  20,      // Swing: 20 points
+  UK100_GBP:  30,      // Swing: 30 points
+  SPX500_USD: 15,      // Swing: 15 points
+  EUR_USD:    0.0030,  // Swing: 30 pips
+  GBP_USD:    0.0035,  // Swing: 35 pips
+  EUR_GBP:    0.0025,  // Swing: 25 pips
+  USD_JPY:    0.30,    // Swing: 30 pips
+  USD_CAD:    0.0030,  // Swing: 30 pips
+  AUD_USD:    0.0030,  // Swing: 30 pips
+  NZD_USD:    0.0025,  // Swing: 25 pips
+};
+
+// Backward-compat alias — swing floors used by swing generator, TP gate, and tests
+const MIN_SL_FLOOR = MIN_SL_FLOOR_SWING;
 
 // INDEX_HOME_SESSION, isHomeSession(), INSTRUMENT_HOME_SESSIONS removed 2026-06-09.
 // Session gating is now encoded in XAVIER_SESSION_RULES (pairs + killShot per session).
@@ -4344,7 +4361,7 @@ function scoreCommentary(text) {
 // Pre-trade validator — runs before every placeOrder() in M5 auto-trade
 // Catches session mismatches, SL floor violations, score failures, unapproved pairs
 // Returns { valid: boolean, errors: string[], warnings: string[] }
-async function validateTrade(instrument, session, signal, sl, entryPrice = 0) {
+async function validateTrade(instrument, session, signal, sl, entryPrice = 0, isSwing = false) {
   const errors   = [];
   const warnings = [];
 
@@ -4353,12 +4370,13 @@ async function validateTrade(instrument, session, signal, sl, entryPrice = 0) {
   if (!sessionPairs.includes(instrument))
     errors.push(`${instrument} not allowed in ${session}`);
 
-  // SL floor — compare distance (price units), not absolute price level
-  const minFloor = MIN_SL_FLOOR[instrument] || 0;
+  // SL floor — use M5 or swing floors depending on trade type
+  const floors   = isSwing ? MIN_SL_FLOOR_SWING : MIN_SL_FLOOR_M5;
+  const minFloor = floors[instrument] || 0;
   if (minFloor > 0 && entryPrice > 0) {
     const slDistance = Math.abs(entryPrice - sl);
     if (slDistance < minFloor)
-      errors.push(`SL distance ${slDistance.toFixed(4)} below floor ${minFloor}`);
+      errors.push(`SL distance ${slDistance.toFixed(4)} below ${isSwing ? 'swing' : 'M5'} floor ${minFloor}`);
   }
 
   // Signal score
@@ -4961,7 +4979,7 @@ async function serverAutoTrade() {
     // ── Pre-trade validation — must pass BEFORE Discord notification fires ────
     // (prevents notifying on a signal that will immediately be blocked)
     {
-      const preValidation = await validateTrade(instrument, session, signal, sl, price);
+      const preValidation = await validateTrade(instrument, session, signal, sl, price, false);
       if (!preValidation.valid) {
         console.log('[A+ BLOCKED]', instrument, 'failed pre-trade validation:', preValidation.errors.join(' | '));
         continue;
