@@ -2591,6 +2591,26 @@ async function updateTradeSL(tradeId, newSLPrice, instrument) {
   }
 }
 
+async function updateTradeTP(tradeId, newTPPrice, instrument) {
+  const price = formatPrice(newTPPrice, instrument);
+  try {
+    const r    = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/trades/${tradeId}/orders`, {
+      method: 'PUT', headers: H,
+      body: JSON.stringify({ takeProfit: { price, timeInForce: 'GTC' } }),
+    });
+    const data = await r.json();
+    if (data.takeProfitOrderTransaction || data.relatedTransactionIDs) {
+      console.log(`[mgmt] Trade ${tradeId} TP → ${price}`);
+      return true;
+    }
+    console.error('[mgmt] TP update unexpected response:', JSON.stringify(data).slice(0, 200));
+    return false;
+  } catch (e) {
+    console.error('[mgmt] updateTradeTP error:', e.message);
+    return false;
+  }
+}
+
 // Fresh OANDA check — used as a final duplicate guard before any order is placed
 function normalizeInstrument(inst) {
   if (!inst) {
@@ -2679,6 +2699,16 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
     if (direction === 'SHORT' && stopLoss <= entry) { console.log('[BLOCKED] SL wrong side —', pair); return { blocked: 'SL_SANITY' }; }
   }
 
+  // Gate 6b — Minimum TP distance (prevents TP inside spread or tighter than SL floor)
+  if (takeProfit && entry) {
+    const minTPDist = MIN_SL_FLOOR[pair] || 0.0010;
+    const tpDist    = Math.abs(takeProfit - entry);
+    if (tpDist < minTPDist) {
+      console.log(`[TP ADJUST] ${pair} TP distance ${tpDist.toFixed(5)} below minimum ${minTPDist} — adjusting to minimum`);
+      takeProfit = direction === 'LONG' ? entry + minTPDist : entry - minTPDist;
+    }
+  }
+
   // Gate 7 — Price precision
   const formattedEntry = formatPrice(entry,      pair);
   const formattedSL    = stopLoss   ? formatPrice(stopLoss,   pair) : null;
@@ -2720,6 +2750,11 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
       spreadCost: SPREAD_COSTS[instrument] ?? null,
       stopLoss:   stopLoss   ? parseFloat(stopLoss)   : null,
       takeProfit: takeProfit ? parseFloat(takeProfit) : null,
+      // FIX 2 — store direction, entry, tp2, tp3 for TP ladder management
+      direction:  direction  || null,
+      entry:      entry      ? parseFloat(entry) : null,
+      tp2:        context?.tp2 ? parseFloat(context.tp2) : null,
+      tp3:        context?.tp3 ? parseFloat(context.tp3) : null,
     };
     // Store under both possible keys to handle any OANDA ID variance
     openTradeContexts.set(contextKey.toString(), ctxToStore);
@@ -3727,7 +3762,7 @@ async function manageOpenTrades() {
 
     if (!tradeManagementState.has(tradeId)) {
       const savedPeakR = await loadPeakR(tradeId); // M7: restore peakR on restart
-      tradeManagementState.set(tradeId, { movedToBreakeven: false, partialClosed: false, peakR: savedPeakR, profitAtRiskAlerted: false });
+      tradeManagementState.set(tradeId, { movedToBreakeven: false, partialClosed: false, peakR: savedPeakR, profitAtRiskAlerted: false, tp1Closed: false, tp2Closed: false });
     }
     const state      = tradeManagementState.get(tradeId);
     const newPeakR   = Math.max(state.peakR, currentR);
@@ -3814,6 +3849,64 @@ async function manageOpenTrades() {
             `75% still running`
           );
         }
+      }
+    }
+
+    // ── TP ladder: TP1 hit → close 25%, advance to TP2 ──────────────────────────
+    // Only fires for trades with tp2/tp3 in context (swing/Kill Shot). M5 trades skip.
+    const ctx = openTradeContexts.get(tradeId.toString());
+    const ctxTp1 = ctx?.takeProfit;
+    const ctxTp2 = ctx?.tp2;
+    const ctxTp3 = ctx?.tp3;
+
+    if (ctxTp1 && ctxTp2 && !state.tp1Closed) {
+      const tp1Hit = dir === 'LONG' ? price >= ctxTp1 : price <= ctxTp1;
+      if (tp1Hit) {
+        state.tp1Closed = true;
+        saveTradeManagementState().catch(() => {});
+        const units25     = Math.floor(Math.abs(units) * 0.25);
+        const closeResult = units25 > 0 ? await partialCloseTrade(tradeId, units25) : null;
+        await updateTradeTP(tradeId, ctxTp2, instrument);
+        console.log('[TP1 HIT]', instrument, dir, '— 25% closed, TP → TP2', formatPrice(ctxTp2, instrument));
+        await sendDiscordEmbed({
+          title: '🎯 TP1 Hit — Running to TP2',
+          color: 0x00ff88,
+          fields: [
+            { name: 'Pair',    value: instrument.replace('_', '/'),                         inline: true },
+            { name: 'TP1',     value: formatPrice(ctxTp1, instrument),                      inline: true },
+            { name: 'Closed',  value: `25% (${units25} units)`,                             inline: true },
+            { name: 'Locked',  value: closeResult ? `$${closeResult.pnl.toFixed(2)}` : '—', inline: true },
+            { name: 'TP2 Set', value: formatPrice(ctxTp2, instrument),                      inline: true },
+            { name: 'Running', value: '75% targeting TP2',                                  inline: true },
+          ],
+          timestamp: new Date().toISOString(),
+        }).catch(() => {});
+      }
+    }
+
+    // ── TP2 hit → close another 25%, advance to TP3 ─────────────────────────────
+    if (ctxTp2 && ctxTp3 && state.tp1Closed && !state.tp2Closed) {
+      const tp2Hit = dir === 'LONG' ? price >= ctxTp2 : price <= ctxTp2;
+      if (tp2Hit) {
+        state.tp2Closed = true;
+        saveTradeManagementState().catch(() => {});
+        const units25     = Math.floor(Math.abs(units) * 0.25);
+        const closeResult = units25 > 0 ? await partialCloseTrade(tradeId, units25) : null;
+        await updateTradeTP(tradeId, ctxTp3, instrument);
+        console.log('[TP2 HIT]', instrument, dir, '— 25% closed, TP → TP3', formatPrice(ctxTp3, instrument));
+        await sendDiscordEmbed({
+          title: '🎯 TP2 Hit — Running to TP3',
+          color: 0x00cc44,
+          fields: [
+            { name: 'Pair',    value: instrument.replace('_', '/'),                         inline: true },
+            { name: 'TP2',     value: formatPrice(ctxTp2, instrument),                      inline: true },
+            { name: 'Closed',  value: `25% more (${units25} units)`,                        inline: true },
+            { name: 'Locked',  value: closeResult ? `$${closeResult.pnl.toFixed(2)}` : '—', inline: true },
+            { name: 'TP3 Set', value: formatPrice(ctxTp3, instrument),                      inline: true },
+            { name: 'Final',   value: '50% running to TP3 + EMA21 trail',                   inline: false },
+          ],
+          timestamp: new Date().toISOString(),
+        }).catch(() => {});
       }
     }
 
@@ -5385,8 +5478,8 @@ async function serverSwingAutoTrade() {
       }
       console.log(`[swing-auto] ${instrument} — H4 last: ${sig.entry} | live mid: ${livePrice}`);
 
-      // Rebuild SL/TP from live entry + H4 ATR (same risk distance)
-      const riskDist = sig.atr * 2.0;
+      // Rebuild SL/TP from live entry + H4 ATR — apply same floor as signal generator
+      const riskDist = Math.max(sig.atr * 2.0, MIN_SL_FLOOR[instrument] || 0);
       const liveEntry = livePrice;
       const liveSl    = sig.direction === 'LONG' ? liveEntry - riskDist : liveEntry + riskDist;
       const liveTp1   = sig.direction === 'LONG' ? liveEntry + riskDist * 1.5 : liveEntry - riskDist * 1.5;
@@ -5559,7 +5652,7 @@ async function executeKillShot(pending) {
 
   console.log('[ORDER SOURCE] executeKillShot', 'instrument:', instrument, 'direction:', direction, 'confirms:', confirms, 'approved: true');
 
-  // FIX 2 — Build context so placeOrder() writes to Supabase
+  // FIX 2 — Build context so placeOrder() writes to Supabase + tp2/tp3 for TP ladder
   const tradeContext = {
     score,
     tradeSource:    'KILL_SHOT',
@@ -5571,6 +5664,8 @@ async function executeKillShot(pending) {
     regimeAtEntry:  null,
     heatAtEntry:    null,
     recoveryMode:   false,
+    tp2:            liveTp2,
+    tp3:            liveTp3,
   };
 
   const ksPhase = PAIR_PHASE[instrument] || 1;
