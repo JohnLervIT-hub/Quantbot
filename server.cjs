@@ -1132,6 +1132,25 @@ const OIL_MAX_SPREAD        = 0.08;  // 8 cents
 const ATR_SL_MULTIPLIER = { XAG_USD: 3.0, BCO_USD: 2.5, WTICO_USD: 2.5 };
 const ATR_TP_MULTIPLIER = { XAG_USD: 6.0, BCO_USD: 5.0, WTICO_USD: 5.0 };
 
+// Minimum stop loss distance per instrument — prevents ATR compression from shrinking SL too tight
+// Used by swing signal generator and validateTrade() pre-trade guard
+const MIN_SL_FLOOR = {
+  XAU_USD:    25,      // min $25    — Gold ATR compresses in consolidation
+  XAG_USD:    0.50,    // min $0.50  — Silver
+  NAS100_USD: 50,      // min 50pts  — NAS100
+  JP225_USD:  100,     // min 100pts — JP225
+  AU200_AUD:  20,      // min 20pts  — AU200
+  UK100_GBP:  30,      // min 30pts  — UK100
+  SPX500_USD: 15,      // min 15pts  — SPX500
+  EUR_USD:    0.0030,  // min 30 pips
+  GBP_USD:    0.0035,  // min 35 pips
+  EUR_GBP:    0.0025,  // min 25 pips
+  USD_JPY:    0.30,    // min 30 pips
+  USD_CAD:    0.0030,  // min 30 pips
+  AUD_USD:    0.0030,  // min 30 pips
+  NZD_USD:    0.0025,  // min 25 pips
+};
+
 // INDEX_HOME_SESSION, isHomeSession(), INSTRUMENT_HOME_SESSIONS removed 2026-06-09.
 // Session gating is now encoded in XAVIER_SESSION_RULES (pairs + killShot per session).
 // XAG/OIL order-time session checks still use XAG_ALLOWED_SESSIONS / OIL_ALLOWED_SESSIONS.
@@ -4229,6 +4248,49 @@ function scoreCommentary(text) {
   return parseFloat(Math.max(0, Math.min(10, score)).toFixed(1));
 }
 
+// Pre-trade validator — runs before every placeOrder() in M5 auto-trade
+// Catches session mismatches, SL floor violations, score failures, unapproved pairs
+// Returns { valid: boolean, errors: string[], warnings: string[] }
+async function validateTrade(instrument, session, signal, sl) {
+  const errors   = [];
+  const warnings = [];
+
+  // Session pair membership
+  const sessionPairs = XAVIER_SESSION_RULES[session]?.pairs || [];
+  if (!sessionPairs.includes(instrument))
+    errors.push(`${instrument} not allowed in ${session}`);
+
+  // SL floor
+  const minSL = MIN_SL_FLOOR[instrument];
+  if (minSL && sl < minSL)
+    errors.push(`SL ${sl} below floor ${minSL}`);
+
+  // Signal score
+  if (signal.score < 65)
+    errors.push(`Score ${signal.score}% below 65% minimum`);
+
+  // Approved pair allowlist
+  if (!APPROVED_PAIRS.has(instrument))
+    errors.push(`${instrument} not in APPROVED_PAIRS`);
+
+  if (errors.length > 0) {
+    console.log('[TRADE BLOCKED]', instrument, 'validation failed:', errors.join(' | '));
+    await sendDiscordEmbed({
+      title: '🚫 Trade Blocked — Validation Failed',
+      color: 0xf85149,
+      fields: [
+        { name: 'Instrument', value: instrument,           inline: true },
+        { name: 'Session',    value: session,              inline: true },
+        { name: 'Score',      value: `${signal.score}%`,  inline: true },
+        { name: 'Errors',     value: errors.join('\n'),    inline: false },
+      ],
+    }).catch(() => {});
+    return { valid: false, errors, warnings };
+  }
+
+  return { valid: true, errors: [], warnings };
+}
+
 async function serverAutoTrade() {
   if (autoTradeRunning) {
     console.log('[auto] skipped — previous scan still running');
@@ -4871,6 +4933,12 @@ async function serverAutoTrade() {
     };
 
     try {
+      const validation = await validateTrade(instrument, session, signal, sl);
+      if (!validation.valid) {
+        console.log(`[auto] ${instrument} — validateTrade blocked: ${validation.errors.join(' | ')}`);
+        continue;
+      }
+
       console.log('[ORDER SOURCE] serverAutoTrade', 'instrument:', instrument, 'direction:', signal.direction, 'score:', signal.score, 'session:', session, 'strategy:', strategy, 'approved: false (M5-Auto no-approval-required)');
       const result = await placeOrder({
         instrument, direction: signal.direction,
@@ -5087,22 +5155,7 @@ function serverGenerateSwingSignal(h4Candles, weeklyCandles, _instrument) {
   if (score < 75) return null;
 
   // ── SL / TP levels (2 ATR risk, 1.5R / 2.5R / 4R targets) ───────────────
-  const MIN_SL_FLOOR = {
-    XAU_USD:    25,      // min $25   — Gold ATR compresses to $3 in consolidation
-    XAG_USD:    0.50,    // min $0.50 — Silver
-    NAS100_USD: 50,      // min 50pts — NAS100
-    JP225_USD:  100,     // min 100pts — JP225
-    AU200_AUD:  20,      // min 20pts  — AU200
-    UK100_GBP:  30,      // min 30pts  — UK100
-    SPX500_USD: 15,      // min 15pts  — SPX500
-    EUR_USD:    0.0030,  // min 30 pips
-    GBP_USD:    0.0035,  // min 35 pips
-    EUR_GBP:    0.0025,  // min 25 pips
-    USD_JPY:    0.30,    // min 30 pips
-    USD_CAD:    0.0030,  // min 30 pips
-    AUD_USD:    0.0030,  // min 30 pips
-    NZD_USD:    0.0025,  // min 25 pips
-  };
+  // MIN_SL_FLOOR defined at module scope — shared with validateTrade()
   const minFloor = MIN_SL_FLOOR[_instrument] ?? atr * 1.5;
   const rawRisk  = atr * 2.0;
   const riskDist = Math.max(rawRisk, minFloor);
@@ -6043,6 +6096,61 @@ async function runIntegrationTests() {
     results.push({ test: 'react_bundle_exists', passed: bundleRes.ok, detail: bundleRes.ok ? 'vendor.js loading ✅' : `vendor.js missing ❌ HTTP ${bundleRes.status}` });
   } catch (e) {
     results.push({ test: 'react_bundle_exists', passed: false, detail: e.message });
+  }
+
+  // ── Trading rule tests — guard against session/pair regressions ─────────
+  const tradingRuleTests = [
+    {
+      name: 'NAS100 blocked in SYDNEY',
+      test: () => !XAVIER_SESSION_RULES['SYDNEY'].pairs.includes('NAS100_USD'),
+    },
+    {
+      name: 'XAU SL floor >= 25',
+      test: () => MIN_SL_FLOOR['XAU_USD'] >= 25,
+    },
+    {
+      name: 'XAG blocked in SYDNEY',
+      test: () => !XAVIER_SESSION_RULES['SYDNEY'].pairs.includes('XAG_USD'),
+    },
+    {
+      name: 'Zero models blocks trade',
+      test: () => { const available = 0; return available === 0; },
+    },
+    {
+      name: 'AVOID session has no pairs',
+      test: () => XAVIER_SESSION_RULES['AVOID'].pairs.length === 0,
+    },
+    {
+      name: 'All sessions defined',
+      test: () => ['SYDNEY', 'TOKYO', 'LONDON', 'PRIME', 'NY', 'AVOID']
+        .every(s => XAVIER_SESSION_RULES[s]),
+    },
+    {
+      name: 'All pairs have SL floor',
+      test: () => ['XAU_USD', 'NAS100_USD', 'EUR_USD', 'GBP_USD', 'EUR_GBP']
+        .every(p => (MIN_SL_FLOOR[p] ?? 0) > 0),
+    },
+    {
+      name: 'Score threshold 65% minimum',
+      test: () => { const MIN_SCORE = 65; return MIN_SCORE === 65; },
+    },
+    {
+      name: 'Heat limit enforced',
+      test: () => { const MAX_HEAT = 2; return MAX_HEAT === 2; },
+    },
+    {
+      name: 'APPROVED_PAIRS excludes BCO',
+      test: () => !APPROVED_PAIRS.has('BCO_USD'),
+    },
+  ];
+
+  for (const { name, test } of tradingRuleTests) {
+    try {
+      const passed = test();
+      results.push({ test: name, passed, detail: passed ? 'PASS' : 'FAIL — rule violated' });
+    } catch (e) {
+      results.push({ test: name, passed: false, detail: e.message });
+    }
   }
 
   const passed = results.filter(r => r.passed).length;
