@@ -4618,22 +4618,24 @@ async function serverAutoTrade() {
     const _fd = signalFirstDetected.get(instrument);
     if (_fd && patternAnalysis && !_fd.pattern) _fd.pattern = patternAnalysis;
 
-    // Step 3 — spread-aware dynamic score threshold
-    // Base: 75 in recovery or for high-volatility pairs, 65 otherwise
-    // Penalty: live spread as fraction of 5-bar ATR — wide spreads require stronger signals
+    // Step 3 — spread-aware score adjustment
+    // Base threshold: 75 in recovery or for high-volatility pairs, 65 otherwise
+    // Penalty deducted FROM score (not added to threshold) — a 75% signal with a
+    // 10-point penalty becomes 65% adjusted, which still meets the 65% base threshold.
+    // Adding penalty to threshold was wrong: 65+10=75 blocked valid 75% signals.
     const baseThreshold = recoveryMode ? 75 : (HIGH_THRESHOLD_PAIRS.has(instrument) ? 75 : 65);
     const th_prices = liveHistory.slice(-6);
     const th_atr = th_prices.length >= 2
       ? th_prices.slice(1).map((p, i) => Math.abs(p - th_prices[i])).reduce((a, b) => a + b, 0) / (th_prices.length - 1)
       : 0;
     const spreadPenalty = th_atr > 0 ? Math.min(10, Math.floor((spread / th_atr) * 15)) : 0;
-    const scoreThresholdEffective = Math.min(85, baseThreshold + spreadPenalty);
-    if (signal.score < scoreThresholdEffective) {
-      console.log(`[SCORE] ${instrument} ${signal.score}% below ${scoreThresholdEffective}% threshold (base:${baseThreshold} spread:${spread.toFixed(5)} atr:${th_atr.toFixed(5)} penalty:+${spreadPenalty})`);
+    const adjustedScore = signal.score - spreadPenalty;
+    if (adjustedScore < baseThreshold) {
+      console.log(`[SCORE] ${instrument} ${signal.score}% raw - ${spreadPenalty} spread = ${adjustedScore}% adjusted below ${baseThreshold}% — blocked`);
       diagCounters.blockedScore++;
       continue;
     }
-    console.log(`[THRESHOLD] ${instrument} base:${baseThreshold} spread:${spread.toFixed(5)} atr:${th_atr.toFixed(5)} penalty:+${spreadPenalty} → threshold:${scoreThresholdEffective}% score:${signal.score}%`);
+    console.log(`[SCORE PASS] ${instrument} ${signal.score}% raw - ${spreadPenalty} spread = ${adjustedScore}% adjusted ≥ ${baseThreshold}% — firing ✅`);
 
     console.log(`[auto] ${instrument} ${signal.direction} ${signal.score}% — ${strategy} — gatekeeping`);
 
