@@ -1014,14 +1014,23 @@ const TRAIL_SETTINGS = {
 // XAG_USD / BCO_USD / WTICO_USD = manual trading only, never auto
 // M5 backtest-validated combinations — updated 2026-05-27
 // M5 backtest-validated — 180d spread-adjusted, updated 2026-05-30
-const XAVIER_RULES = {
-  TOKYO:  { strategy: 'Momentum',    pairs: ['EUR_GBP', 'USD_JPY', 'GBP_USD'],   minScore: 65 },
-  LONDON: { strategy: 'Momentum',    pairs: ['EUR_GBP', 'GBP_USD', 'EUR_USD', 'AU200_AUD'], minScore: 65 },
-  PRIME:  { strategy: 'Breakout',    pairs: ['EUR_GBP', 'XAU_USD', 'EUR_USD'],   minScore: 65 },
-  NY:     { strategy: 'Mean Revert', pairs: ['AU200_AUD', 'EUR_USD', 'XAG_USD'], minScore: 65 },
-  SYDNEY: { strategy: 'Momentum',    pairs: ['XAU_USD', 'NAS100_USD', 'XAG_USD'], minScore: 65 },
-  AVOID:  { strategy: null,          pairs: [],                                    minScore: 999 },
+// Single source of truth for all session/pair logic — replaces XAVIER_RULES,
+// INSTRUMENT_HOME_SESSIONS, KILL_SHOT_SESSION_RULES, and INDEX_HOME_SESSION.
+// pairs    → M5 auto-trade candidates (filtered by SERVER_PAIRS at runtime)
+// killShot → swing scanner candidates for this session
+// minScore → signal threshold (65 baseline; HIGH_THRESHOLD_PAIRS override to 75)
+// Updated 2026-06-09: NAS100 SYDNEY removed (−$250 loss); XAG SYDNEY removed (log noise);
+//                     SPX500 removed (dead code — no edge data); NAS100 added PRIME + NY.
+const XAVIER_SESSION_RULES = {
+  SYDNEY: { strategy: 'Momentum',    pairs: ['XAU_USD', 'AU200_AUD'],                         killShot: [],                                minScore: 65 },
+  TOKYO:  { strategy: 'Momentum',    pairs: ['EUR_GBP', 'USD_JPY', 'GBP_USD'],                killShot: ['USD_JPY', 'GBP_USD'],            minScore: 65 },
+  LONDON: { strategy: 'Momentum',    pairs: ['EUR_GBP', 'GBP_USD', 'EUR_USD', 'AU200_AUD'],   killShot: ['GBP_USD', 'EUR_USD'],            minScore: 65 },
+  PRIME:  { strategy: 'Breakout',    pairs: ['EUR_GBP', 'XAU_USD', 'EUR_USD', 'NAS100_USD'],  killShot: ['XAU_USD', 'EUR_USD', 'EUR_GBP'], minScore: 65 },
+  NY:     { strategy: 'Mean Revert', pairs: ['AU200_AUD', 'EUR_USD', 'XAG_USD', 'NAS100_USD'], killShot: ['EUR_USD', 'XAG_USD'],            minScore: 65 },
+  AVOID:  { strategy: null,          pairs: [],                                                 killShot: [],                                minScore: 999 },
 };
+// Backward-compat alias — some status/logging paths still reference XAVIER_RULES
+const XAVIER_RULES = XAVIER_SESSION_RULES;
 
 // M5 auto-execution allowlist — 180d spread-adjusted backtest validated 2026-05-30
 // SWING_ONLY (M15 validated, not M5): AUD_USD, USD_CAD, NZD_USD
@@ -1057,14 +1066,10 @@ const APPROVED_PAIRS = new Set([
   'XAU_USD', 'XAG_USD', 'NAS100_USD', 'JP225_USD', 'AU200_AUD', 'UK100_GBP', 'SPX500_USD',
 ]);
 
-// Index pairs — home session only, 75%+ score required (tighter spreads, higher conviction)
-// UK100_GBP removed from M5 auto — Kill Shot manual only (DD too high for M5)
-const INDEX_PAIRS = new Set([
-  'SPX500_USD', 'NAS100_USD',  // NY only
-  // JP225_USD — swing only (DD too high for M5), Kill Shot manual only
-  // UK100_GBP — Kill Shot manual only (removed from M5 auto 2026-06-02)
-  'AU200_AUD',                  // Sydney only
-]);
+// INDEX_PAIRS removed 2026-06-09 — session/pair logic now in XAVIER_SESSION_RULES.pairs
+// JP225_USD — swing only (DD too high for M5), Kill Shot manual only
+// UK100_GBP — Kill Shot manual only (removed from M5 auto 2026-06-02)
+// SPX500_USD — removed (no live edge data, dead code)
 
 // Margin rates by asset class — used for pre-order margin check
 const MARGIN_RATE = {
@@ -1127,28 +1132,9 @@ const OIL_MAX_SPREAD        = 0.08;  // 8 cents
 const ATR_SL_MULTIPLIER = { XAG_USD: 3.0, BCO_USD: 2.5, WTICO_USD: 2.5 };
 const ATR_TP_MULTIPLIER = { XAG_USD: 6.0, BCO_USD: 5.0, WTICO_USD: 5.0 };
 
-const INDEX_HOME_SESSION = {
-  JP225_USD:  'TOKYO',
-  UK100_GBP:  'LONDON',
-  AU200_AUD:  'SYDNEY',
-};
-
-function isHomeSession(pair, session) {
-  return INDEX_HOME_SESSION[pair] === session;
-}
-
-// Allowed sessions per instrument — prevents cross-session misfires (e.g. NAS100 in London)
-const INSTRUMENT_HOME_SESSIONS = {
-  NAS100_USD: ['NY', 'SYDNEY'],
-  JP225_USD:  ['TOKYO'],
-  UK100_GBP:  ['LONDON', 'PRIME'],
-  AU200_AUD:  ['SYDNEY', 'TOKYO', 'NY', 'LONDON'],
-  SPX500_USD: ['NY'],
-  XAG_USD:    ['LONDON', 'PRIME', 'NY'],
-  BCO_USD:    ['LONDON', 'PRIME', 'NY'],
-  WTICO_USD:  ['NY', 'PRIME'],
-  XAU_USD:    ['LONDON', 'PRIME', 'SYDNEY'],
-};
+// INDEX_HOME_SESSION, isHomeSession(), INSTRUMENT_HOME_SESSIONS removed 2026-06-09.
+// Session gating is now encoded in XAVIER_SESSION_RULES (pairs + killShot per session).
+// XAG/OIL order-time session checks still use XAG_ALLOWED_SESSIONS / OIL_ALLOWED_SESSIONS.
 
 // Authoritative pip/point size per instrument — used everywhere in server
 const PIP_SIZE = {
@@ -4262,9 +4248,7 @@ async function serverAutoTrade() {
   }
 
   const { strategy } = rule;
-  const forexPairs = rule.pairs.filter(p => SERVER_PAIRS.has(p));
-  const indexPairs = [...INDEX_PAIRS].filter(p => isHomeSession(p, session));
-  const pairs      = [...forexPairs, ...indexPairs];
+  const pairs = rule.pairs.filter(p => SERVER_PAIRS.has(p));
   if (pairs.length === 0) return;
   const ts = new Date().toISOString();
 
@@ -4946,19 +4930,8 @@ async function serverAutoTrade() {
 }
 
 // ─── KILL SHOT PAIRS ─────────────────────────────────────────────────────────
-// BCO_USD removed 2026-05-28 — manual trading only
-// NAS100_USD / AU200_AUD excluded — Phase 2 pairs, OANDA demo liquidity issues, manual Kill Shot only
-const KILL_SHOT_PAIRS = ['XAU_USD', 'GBP_USD', 'EUR_USD', 'USD_JPY'];
-
-// Per-pair session allowlist for swing/Kill Shot scanner — stricter than INSTRUMENT_HOME_SESSIONS
-// NAS100 SYDNEY removed 2026-06-09 after -$250 loss in 4 min during low-liquidity overnight session
-const KILL_SHOT_SESSION_RULES = {
-  XAU_USD:    ['LONDON', 'PRIME', 'NY'],
-  GBP_USD:    ['LONDON', 'PRIME', 'NY'],
-  EUR_USD:    ['LONDON', 'PRIME', 'NY'],
-  USD_JPY:    ['TOKYO',  'LONDON', 'PRIME'],
-  NAS100_USD: ['PRIME',  'NY'],   // SYDNEY removed — low liquidity, high slippage risk
-};
+// KILL_SHOT_PAIRS and KILL_SHOT_SESSION_RULES removed 2026-06-09.
+// Swing scanner now iterates XAVIER_SESSION_RULES[session].killShot — single source of truth.
 
 // ─── OANDA CANDLE FETCHER (any granularity) ───────────────────────────────────
 async function fetchOandaCandles(instrument, granularity, count) {
@@ -5247,14 +5220,14 @@ async function serverSwingAutoTrade() {
   }
 
   const session = getServerSession();
+  const sessionKillShots = (XAVIER_SESSION_RULES[session] || {}).killShot || [];
+  if (sessionKillShots.length === 0) {
+    console.log(`[swing-auto] ${session} — no kill shot pairs defined, skipping`);
+    return;
+  }
 
-  for (const instrument of KILL_SHOT_PAIRS) {
-    // Session gate — use KILL_SHOT_SESSION_RULES (stricter), fall back to INSTRUMENT_HOME_SESSIONS
-    const allowedSessions = KILL_SHOT_SESSION_RULES[instrument] || INSTRUMENT_HOME_SESSIONS[instrument];
-    if (allowedSessions && !allowedSessions.includes(session)) {
-      console.log(`[SWING SESSION BLOCK] ${instrument} not allowed in ${session} — skipping`);
-      continue;
-    }
+  for (const instrument of sessionKillShots) {
+    // Session already gated by XAVIER_SESSION_RULES[session].killShot — no extra check needed
 
     // 4-hour cooldown per pair (stamp before consensus to prevent parallel double-fire)
     if (Date.now() - (lastSwingConsensus.get(instrument) || 0) < 4 * 60 * 60_000) continue;

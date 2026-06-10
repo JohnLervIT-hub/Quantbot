@@ -25,16 +25,17 @@ These functions/sections are battle-tested and must never be modified:
 ## XAVIER'S STRICT RULEBOOK (active — do not soften or override)
 
 ### Rule 1 — Session/Strategy Map
-USER EXPLICIT OVERRIDE applied 2026-05-30 — 180d spread-adjusted backtest validated.
+Single source of truth: XAVIER_SESSION_RULES in server.cjs (updated 2026-06-09).
+Replaces: XAVIER_RULES, INSTRUMENT_HOME_SESSIONS, KILL_SHOT_SESSION_RULES, INDEX_HOME_SESSION.
 ```
-// M5 backtest-validated — 180d spread-adjusted, updated 2026-05-30
-XAVIER_RULES = {
-  TOKYO:  { strategy: "Momentum",    pairs: ["EUR_GBP","USD_JPY","GBP_USD"],   minScore: 65 },
-  LONDON: { strategy: "Momentum",    pairs: ["AU200_AUD","GBP_USD","EUR_USD"], minScore: 65 },
-  PRIME:  { strategy: "Breakout",    pairs: ["EUR_GBP","XAU_USD","EUR_USD"],   minScore: 65 },
-  NY:     { strategy: "Mean Revert", pairs: ["AU200_AUD","EUR_USD","XAG_USD"], minScore: 65 },
-  SYDNEY: { strategy: "Momentum",    pairs: ["XAU_USD","NAS100_USD","XAG_USD"], minScore: 65 },
-  AVOID:  { strategy: null,          pairs: [],                                 minScore: 999 },
+// M5 pairs (filtered by SERVER_PAIRS) + swing killShot pairs per session
+XAVIER_SESSION_RULES = {
+  SYDNEY: { strategy: "Momentum",    pairs: ["XAU_USD","AU200_AUD"],                          killShot: []                                },
+  TOKYO:  { strategy: "Momentum",    pairs: ["EUR_GBP","USD_JPY","GBP_USD"],                  killShot: ["USD_JPY","GBP_USD"]             },
+  LONDON: { strategy: "Momentum",    pairs: ["EUR_GBP","GBP_USD","EUR_USD","AU200_AUD"],       killShot: ["GBP_USD","EUR_USD"]             },
+  PRIME:  { strategy: "Breakout",    pairs: ["EUR_GBP","XAU_USD","EUR_USD","NAS100_USD"],      killShot: ["XAU_USD","EUR_USD","EUR_GBP"]   },
+  NY:     { strategy: "Mean Revert", pairs: ["AU200_AUD","EUR_USD","XAG_USD","NAS100_USD"],    killShot: ["EUR_USD","XAG_USD"]             },
+  AVOID:  { strategy: null,          pairs: [],                                                 killShot: []                                },
 }
 ```
 
@@ -45,7 +46,8 @@ XAU_USD (+0.56R), XAG_USD (+0.78R), NAS100_USD (+0.47R), AU200_AUD
 SWING_ONLY pairs (not in SERVER_PAIRS — M15 validated only):
 AUD_USD, USD_CAD, NZD_USD — M15 swing/Kill Shot only
 BCO_USD, WTICO_USD — Kill Shot manual only
-UK100_GBP, JP225_USD, SPX500_USD — swing only (DD too high for M5)
+UK100_GBP, JP225_USD — swing only (DD too high for M5)
+SPX500_USD — removed (no live edge data)
 
 HIGH_THRESHOLD_PAIRS (75% signal score required):
 XAG_USD, NAS100_USD, AU200_AUD, XAU_USD
