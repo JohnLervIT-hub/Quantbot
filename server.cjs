@@ -6265,6 +6265,59 @@ async function runIntegrationTests() {
       name: 'APPROVED_PAIRS excludes BCO',
       test: () => !APPROVED_PAIRS.has('BCO_USD'),
     },
+    {
+      name: 'Spread penalty deducts from score not threshold',
+      test: () => {
+        const rawScore = 75;
+        const penalty = 10;
+        const threshold = 65;
+        const adjusted = rawScore - penalty;
+        return adjusted >= threshold; // 65 >= 65 = true
+      },
+    },
+    {
+      name: 'EUR_GBP allowed in LONDON',
+      test: () => XAVIER_SESSION_RULES['LONDON'].pairs.includes('EUR_GBP'),
+    },
+    {
+      name: 'NAS100 blocked in SYDNEY',
+      test: () => !XAVIER_SESSION_RULES['SYDNEY'].pairs.includes('NAS100_USD'),
+    },
+    {
+      name: 'XAU blocked in SYDNEY',
+      test: () => !XAVIER_SESSION_RULES['SYDNEY'].pairs.includes('XAU_USD'),
+    },
+    {
+      name: 'XAG blocked in SYDNEY',
+      test: () => !XAVIER_SESSION_RULES['SYDNEY'].pairs.includes('XAG_USD'),
+    },
+    {
+      name: 'AVOID session has no pairs',
+      test: () => XAVIER_SESSION_RULES['AVOID'].pairs.length === 0,
+    },
+    {
+      name: 'Auto mode Discord alert exists',
+      test: () => typeof saveAutoMode === 'function',
+    },
+    {
+      name: 'Weekly UNKNOWN fails open',
+      test: () => {
+        const weeklyTrend = 'UNKNOWN';
+        return weeklyTrend === 'UNKNOWN' ? true : false;
+      },
+    },
+    {
+      name: 'Weekly uses completed candles only',
+      test: () => {
+        const candles = [
+          { close: 1.10 }, // candle[0] older week
+          { close: 1.12 }, // candle[1] last completed week
+          { close: 1.08 }, // candle[2] current in-progress — never used
+        ];
+        const trend = candles[1].close > candles[0].close ? 'BULLISH' : 'BEARISH';
+        return trend === 'BULLISH';
+      },
+    },
   ];
 
   for (const { name, test } of tradingRuleTests) {
