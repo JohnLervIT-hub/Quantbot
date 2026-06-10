@@ -2796,6 +2796,7 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
     if (tradeId && txId && tradeId !== txId) {
       openTradeContexts.set(txId.toString(), ctxToStore);
     }
+    console.log('[CONTEXT STORED]', pair, 'tradeId:', tradeId, 'txId:', txId);
 
     // Persist open-time context to Supabase so it survives server restarts
     // Use real OANDA tradeId for the row ID (matches what trade close will query by)
@@ -3664,27 +3665,38 @@ async function manageOpenTrades() {
           }
         }
 
-        const isManual = !tradeManagementState.has(id);
+        // FIX 2+3 — never label closes from manageOpenTrades() as MANUAL.
+        // manageOpenTrades() only sees SL hits / TP hits / auto closes.
+        // MANUAL CLOSE only fires from POST /close/:tradeId.
+        // No context = server restart wiped state → still AUTO_SL, not manual.
+        const _ctxForClose  = openTradeContexts.get(id.toString());
+        const contextFound  = !!_ctxForClose;
+        const exitType      = contextFound ? (_ctxForClose?.tradeSource || 'AUTO') : 'AUTO_SL';
+        const isServerManaged = tradeManagementState.has(id);
+        console.log('[CLOSE TYPE]', instr, contextFound
+          ? 'context found: ' + exitType
+          : 'no context — assuming AUTO_SL');
+
         const emoji = won ? '✅' : '❌';
         const closeMsg =
-          `${emoji} <b>TRADE CLOSED${isManual ? ' (manual)' : ''}</b>\n` +
+          `${emoji} <b>TRADE CLOSED</b>\n` +
           `Pair: ${instr.replace('_', '/')} ${dir}\n` +
           `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n` +
-          (isManual ? `⚠️ Manual close — cooldown set` : `Today: ${dailyStats.winners}W/${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`);
+          (isServerManaged
+            ? `Today: ${dailyStats.winners}W/${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`
+            : `Exit: ${exitType} — cooldown set`);
 
         // Discord notification — isolated so failures never block Supabase save
         try {
           await sendNotification(closeMsg, {
             color: won ? 0x3fb950 : 0xf85149,
-            title: `${emoji} Trade Closed${isManual ? ' (Manual)' : ''}`,
+            title: `${emoji} Trade Closed`,
             fields: [
-              { name: 'Pair',      value: instr.replace('_', '/'), inline: true },
-              { name: 'Direction', value: dir,                      inline: true },
-              { name: 'P&L',       value: `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`, inline: true },
-              ...(isManual
-                ? [{ name: 'Note', value: '⚠️ Manual close — cooldown set', inline: false }]
-                : [{ name: 'Today', value: `${dailyStats.winners}W / ${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`, inline: false }]
-              ),
+              { name: 'Pair',      value: instr.replace('_', '/'),                       inline: true },
+              { name: 'Direction', value: dir,                                            inline: true },
+              { name: 'P&L',       value: `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`,  inline: true },
+              { name: 'Exit Type', value: exitType,                                       inline: true },
+              { name: 'Today',     value: `${dailyStats.winners}W / ${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`, inline: false },
             ],
             timestamp: new Date().toISOString(),
           });
@@ -3729,7 +3741,14 @@ async function manageOpenTrades() {
         } catch (saveErr) {
           console.error('[SUPABASE SAVE]', instr, 'FAILED ❌', saveErr.message);
         }
-        openTradeContexts.delete(id.toString());
+        // FIX 4 — sweep ALL context keys that belong to this instrument
+        // (covers both tradeId and txId stored as separate keys)
+        openTradeContexts.forEach((ctx, key) => {
+          if (ctx.instrument === instr) {
+            openTradeContexts.delete(key);
+            console.log('[CONTEXT CLEANED]', instr, 'key:', key);
+          }
+        });
       }
       tradeManagementState.delete(id);
       lastKnownTradeIds.delete(id);
