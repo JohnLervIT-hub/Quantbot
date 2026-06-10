@@ -4544,30 +4544,34 @@ async function serverAutoTrade() {
 
     // ── Weekly trend alignment filter ────────────────────────────────────────
     // Block signals that trade against the weekly candle direction.
-    // Prevents shorting in RISK-ON (bullish weekly) regimes and vice versa.
+    // Uses only COMPLETED candles [0] and [1] — candle[2] is the in-progress week
+    // and causes false BEARISH reads on Tuesday morning pullbacks.
     let weeklyTrend = 'UNKNOWN';
     try {
       const weeklyCandles = await getCandles(instrument, 'W', 3);
-      if (weeklyCandles.length >= 3) {
-        weeklyTrend = weeklyCandles[2].close > weeklyCandles[0].close ? 'BULLISH' : 'BEARISH';
+      // BUG FIX: use candle[1] (last completed week) vs candle[0] (week before that)
+      // candle[2] is the current in-progress week — never use for trend determination
+      if (!weeklyCandles[0]?.close || !weeklyCandles[1]?.close) {
+        console.log('[WEEKLY]', instrument, 'insufficient completed candle data — skipping trend filter');
+      } else {
+        weeklyTrend = weeklyCandles[1].close > weeklyCandles[0].close ? 'BULLISH' : 'BEARISH';
       }
     } catch (wErr) {
       console.error('[WEEKLY CANDLES ERROR]', instrument, wErr.message);
     }
 
-    // UNKNOWN = candle fetch failed — block, never pass through
+    // BUG FIX: fail open on UNKNOWN — log warning but allow trade
+    // Hard-blocking on UNKNOWN caused all LONDON pairs to silently fail when
+    // weekly candle fetch returned empty (network error, rate limit, etc.)
     if (weeklyTrend === 'UNKNOWN') {
-      console.log('[WEEKLY BLOCK]', instrument, 'weekly trend unknown — candle fetch failed — blocking');
-      serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy,
-        rejections: [{ condition: 'Weekly Trend Alignment', actual: 'UNKNOWN weekly — candle fetch failed', threshold: 'Signal must align with weekly candle direction' }] });
-      if (serverRejections.length > 50) serverRejections.pop();
-      diagCounters.blockedMacro++;
-      continue;
+      console.log('[WEEKLY UNKNOWN]', instrument, 'candle fetch failed — allowing trade with warning');
     }
 
-    const weeklyAllowed =
-      (signal.direction === 'LONG'  && weeklyTrend === 'BULLISH') ||
-      (signal.direction === 'SHORT' && weeklyTrend === 'BEARISH');
+    // Skip trend alignment check when weekly trend is UNKNOWN (fail open)
+    const weeklyAllowed = weeklyTrend === 'UNKNOWN'
+      ? true
+      : (signal.direction === 'LONG'  && weeklyTrend === 'BULLISH') ||
+        (signal.direction === 'SHORT' && weeklyTrend === 'BEARISH');
 
     console.log('[REGIME]', instrument,
       'weekly:', weeklyTrend,
