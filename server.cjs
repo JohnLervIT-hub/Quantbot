@@ -4251,7 +4251,7 @@ function scoreCommentary(text) {
 // Pre-trade validator — runs before every placeOrder() in M5 auto-trade
 // Catches session mismatches, SL floor violations, score failures, unapproved pairs
 // Returns { valid: boolean, errors: string[], warnings: string[] }
-async function validateTrade(instrument, session, signal, sl) {
+async function validateTrade(instrument, session, signal, sl, entryPrice = 0) {
   const errors   = [];
   const warnings = [];
 
@@ -4260,10 +4260,13 @@ async function validateTrade(instrument, session, signal, sl) {
   if (!sessionPairs.includes(instrument))
     errors.push(`${instrument} not allowed in ${session}`);
 
-  // SL floor
-  const minSL = MIN_SL_FLOOR[instrument];
-  if (minSL && sl < minSL)
-    errors.push(`SL ${sl} below floor ${minSL}`);
+  // SL floor — compare distance (price units), not absolute price level
+  const minFloor = MIN_SL_FLOOR[instrument] || 0;
+  if (minFloor > 0 && entryPrice > 0) {
+    const slDistance = Math.abs(entryPrice - sl);
+    if (slDistance < minFloor)
+      errors.push(`SL distance ${slDistance.toFixed(4)} below floor ${minFloor}`);
+  }
 
   // Signal score
   if (signal.score < 65)
@@ -4841,6 +4844,16 @@ async function serverAutoTrade() {
     console.log('[COUNCIL PASSED]', instrument, 'proceeding to execute');
     if (isHighConviction) diagCounters.aplusCount++; else diagCounters.standardCount++;
 
+    // ── Pre-trade validation — must pass BEFORE Discord notification fires ────
+    // (prevents notifying on a signal that will immediately be blocked)
+    {
+      const preValidation = await validateTrade(instrument, session, signal, sl, price);
+      if (!preValidation.valid) {
+        console.log('[A+ BLOCKED]', instrument, 'failed pre-trade validation:', preValidation.errors.join(' | '));
+        continue;
+      }
+    }
+
     // ── HIGH CONVICTION ⭐ Discord alert ──────────────────────────────────────
     if (isHighConviction) {
       const modelLines = consensus.models.map(m => {
@@ -4848,8 +4861,8 @@ async function serverAutoTrade() {
         return { name: m.name, value: `${icon} ${m.verdict}`, inline: true };
       });
       await sendDiscordEmbed({
-        content: '@everyone ⭐ A+ SIGNAL — 4/4 COUNCIL',
-        title: '⭐ HIGH CONVICTION KILL SHOT',
+        content: '@everyone ⭐ A+ SIGNAL — AUTO EXECUTING',
+        title: '⚡ HIGH CONVICTION — AUTO EXECUTING',
         color: 0xFFD700,
         fields: [
           { name: 'Pair',       value: `${instrument.replace('_', '/')} ${signal.direction}`, inline: true },
@@ -4861,7 +4874,7 @@ async function serverAutoTrade() {
           { name: 'Signal Age', value: `${Math.round(signalAgeMs / 60000)} minutes ✅`,       inline: true },
           { name: 'Council',    value: '4/4 required',                                        inline: true },
           ...modelLines,
-          { name: 'Verdict',    value: `${consensus.votes.confirm}/4 CONFIRM → HIGHEST CONVICTION\n!execute ${instrument}`, inline: false },
+          { name: 'Verdict',    value: `${consensus.votes.confirm}/4 CONFIRM → HIGHEST CONVICTION\n⚡ Executing automatically — no approval needed`, inline: false },
         ],
         timestamp: new Date().toISOString(),
       });
@@ -4933,12 +4946,6 @@ async function serverAutoTrade() {
     };
 
     try {
-      const validation = await validateTrade(instrument, session, signal, sl);
-      if (!validation.valid) {
-        console.log(`[auto] ${instrument} — validateTrade blocked: ${validation.errors.join(' | ')}`);
-        continue;
-      }
-
       console.log('[ORDER SOURCE] serverAutoTrade', 'instrument:', instrument, 'direction:', signal.direction, 'score:', signal.score, 'session:', session, 'strategy:', strategy, 'approved: false (M5-Auto no-approval-required)');
       const result = await placeOrder({
         instrument, direction: signal.direction,
