@@ -1034,7 +1034,7 @@ const TRAIL_SETTINGS = {
 // INSTRUMENT_HOME_SESSIONS, KILL_SHOT_SESSION_RULES, and INDEX_HOME_SESSION.
 // pairs    → M5 auto-trade candidates (filtered by SERVER_PAIRS at runtime)
 // killShot → swing scanner candidates for this session
-// minScore → signal threshold (65 baseline; HIGH_THRESHOLD_PAIRS override to 75)
+// minScore → signal threshold (65 baseline; HIGH_THRESHOLD_PAIRS per-pair overrides)
 // Updated 2026-06-09: NAS100 SYDNEY removed (−$250 loss); XAG SYDNEY removed (log noise);
 //                     SPX500 removed (dead code — no edge data); NAS100 added PRIME + NY.
 const XAVIER_SESSION_RULES = {
@@ -1126,12 +1126,19 @@ async function checkMargin(instrument, units, price) {
   return { sufficient, required: parseFloat(required.toFixed(2)), available: parseFloat(available.toFixed(2)) };
 }
 
-// High-threshold pairs — 75% signal score required (volatile, wider spreads, needs higher conviction)
-const HIGH_THRESHOLD_PAIRS = new Set([
-  'XAG_USD', 'NAS100_USD', 'AU200_AUD', 'XAU_USD', // 180d backtest: high DD, needs tighter filter
-  'BCO_USD', 'WTICO_USD',                            // Commodities — Kill Shot manual only
-  'JP225_USD', 'UK100_GBP', 'SPX500_USD',            // Swing only — DD too high for M5
-]);
+// High-threshold pairs — per-pair M5 signal score minimums (volatile / wider spreads)
+// Previously all set to 75 — was blocking valid 65-74% signals on active M5 pairs
+const HIGH_THRESHOLD_PAIRS = {
+  XAU_USD:    70,  // was 75 — gold M5 active, 70 captures more valid setups
+  XAG_USD:    70,  // was 75 — silver M5 active
+  NAS100_USD: 72,  // was 75 — index, slightly higher bar than forex
+  AU200_AUD:  68,  // was 75 — least volatile of the group
+  BCO_USD:    75,  // manual Kill Shot only — keep strict
+  WTICO_USD:  75,  // manual Kill Shot only — keep strict
+  JP225_USD:  75,  // swing only — keep strict
+  UK100_GBP:  75,  // swing only — keep strict
+  SPX500_USD: 75,  // no live edge — keep strict
+};
 
 // USD-sensitive pairs — price below EMA50 signals USD strength → LONGs blocked
 // Update this set if the USD macro regime shifts (currently: strong USD)
@@ -4653,16 +4660,22 @@ async function serverAutoTrade() {
     signal.regime      = weeklyTrend === 'BULLISH' ? 'RISK_ON' : weeklyTrend === 'BEARISH' ? 'RISK_OFF' : 'UNKNOWN';
 
     // Step 1 — fetch candles and analyze patterns
+    let patternPenalty = 0;
     let patternAnalysis = null;
     const recentCandles = await getCandles(instrument, 'M5', 3);
     const rawPatternAnalysis = analyzeCandlePatterns(recentCandles);
     if (rawPatternAnalysis && rawPatternAnalysis.patterns.length > 0) {
       const { patterns, scoreAdjustment, directionBias } = rawPatternAnalysis;
 
-      // Step 2 — apply pattern adjustment to score BEFORE threshold check
+      // Positive boosts applied immediately; negative adjustments deferred to Step 3 cap
       const baseScore = signal.score;
-      signal.score = Math.min(100, Math.max(0, signal.score + scoreAdjustment));
-      console.log(`[SCORE BOOST] ${instrument} base:${baseScore}% pattern:${patterns[0]} adjustment:${scoreAdjustment > 0 ? '+' : ''}${scoreAdjustment} final:${signal.score}%`);
+      if (scoreAdjustment > 0) {
+        signal.score = Math.min(100, signal.score + scoreAdjustment);
+        console.log(`[SCORE BOOST] ${instrument} base:${baseScore}% pattern:${patterns[0]} adjustment:+${scoreAdjustment} final:${signal.score}%`);
+      } else if (scoreAdjustment < 0) {
+        patternPenalty = Math.min(10, Math.abs(scoreAdjustment));
+        console.log(`[SCORE PENALTY] ${instrument} base:${baseScore}% pattern:${patterns[0]} penalty:${patternPenalty} (deferred to Step 3 cap)`);
+      }
 
       // Contradiction — strong pattern opposes signal direction → hard block
       const strongPatterns = ['BULLISH_ENGULFING', 'BEARISH_ENGULFING', 'THREE_SOLDIERS', 'THREE_CROWS'];
@@ -4672,7 +4685,6 @@ async function serverAutoTrade() {
         continue;
       }
 
-      // DOJI (-15 adjustment already applied above) — threshold check below handles the block
       patternAnalysis = { patterns, scoreAdjustment, directionBias, confirms: directionBias === signal.direction || directionBias === 'NEUTRAL' };
     }
 
@@ -4680,24 +4692,28 @@ async function serverAutoTrade() {
     const _fd = signalFirstDetected.get(instrument);
     if (_fd && patternAnalysis && !_fd.pattern) _fd.pattern = patternAnalysis;
 
-    // Step 3 — spread-aware score adjustment
-    // Base threshold: 75 in recovery or for high-volatility pairs, 65 otherwise
-    // Penalty deducted FROM score (not added to threshold) — a 75% signal with a
-    // 10-point penalty becomes 65% adjusted, which still meets the 65% base threshold.
-    // Adding penalty to threshold was wrong: 65+10=75 blocked valid 75% signals.
-    const baseThreshold = recoveryMode ? 75 : (HIGH_THRESHOLD_PAIRS.has(instrument) ? 75 : 65);
+    // Step 3 — combined penalty (spread + pattern) capped at 10, compared against base threshold
+    // FIX 1: HIGH_THRESHOLD_PAIRS is now per-pair object — XAU 70, XAG 70, NAS100 72, AU200 68
+    // FIX 2: total penalty capped at 10 — spread + pattern can no longer stack to -18+
+    // FIX 4: recovery raises threshold +5 only for the specific pair with recent losses
+    const pairThreshold  = HIGH_THRESHOLD_PAIRS[instrument] ?? 65;
+    const pairLosses     = consecutiveLosses.get(instrument) || 0;
+    const baseThreshold  = recoveryMode && pairLosses >= 1 ? pairThreshold + 5 : pairThreshold;
+
     const th_prices = liveHistory.slice(-6);
     const th_atr = th_prices.length >= 2
       ? th_prices.slice(1).map((p, i) => Math.abs(p - th_prices[i])).reduce((a, b) => a + b, 0) / (th_prices.length - 1)
       : 0;
-    const spreadPenalty = th_atr > 0 ? Math.min(10, Math.floor((spread / th_atr) * 15)) : 0;
-    const adjustedScore = signal.score - spreadPenalty;
+    const spreadPenalty  = th_atr > 0 ? Math.min(10, Math.floor((spread / th_atr) * 15)) : 0;
+    // patternPenalty is the negative adjustment stored during Step 1 (0 if no pattern or boost)
+    const totalPenalty   = Math.min(10, spreadPenalty + patternPenalty);
+    const adjustedScore  = signal.score - totalPenalty;
     if (adjustedScore < baseThreshold) {
-      console.log(`[SCORE] ${instrument} ${signal.score}% raw - ${spreadPenalty} spread = ${adjustedScore}% adjusted below ${baseThreshold}% — blocked`);
+      console.log(`[SCORE] ${instrument} ${signal.score}% - ${totalPenalty} penalty (spread:${spreadPenalty} pattern:${patternPenalty} → capped:${totalPenalty}) = ${adjustedScore}% below ${baseThreshold}% — blocked`);
       diagCounters.blockedScore++;
       continue;
     }
-    console.log(`[SCORE PASS] ${instrument} ${signal.score}% raw - ${spreadPenalty} spread = ${adjustedScore}% adjusted ≥ ${baseThreshold}% — firing ✅`);
+    console.log(`[SCORE PASS] ${instrument} ${signal.score}% - ${totalPenalty} = ${adjustedScore}% ≥ ${baseThreshold}% — firing ✅`);
 
     console.log(`[auto] ${instrument} ${signal.direction} ${signal.score}% — ${strategy} — gatekeeping`);
 
@@ -5534,8 +5550,12 @@ async function serverSwingAutoTrade() {
           continue;
         }
         if (patterns.includes('DOJI')) {
-          console.log('[PATTERN SKIP SWING]', instrument, '— DOJI detected, skipping');
-          continue;
+          sig.score = Math.max(0, sig.score - 15);
+          console.log('[DOJI SWING]', instrument, '— score reduced to', sig.score, '% (soft block — fires only if ≥ 75%)');
+          if (sig.score < 75) {
+            console.log('[DOJI BLOCK SWING]', instrument, '— score below 75% after DOJI penalty — skipping');
+            continue;
+          }
         }
         swingPatternAnalysis = { patterns, scoreAdjustment, directionBias, confirms: directionBias === sig.direction || directionBias === 'NEUTRAL' };
       }
