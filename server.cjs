@@ -500,6 +500,22 @@ app.post('/close/:tradeId', requireAuth, async (req, res) => {
         openTime:     tradeDetails.openTime,
       });
       console.log('[MANUAL CLOSE] Supabase save ✅', instr, `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+
+      // FIX 1 — Discord notification on manual close
+      await sendDiscordEmbed({
+        title: '🖐 Manual Close',
+        color: pnl >= 0 ? 0x00ff00 : 0xff4444,
+        fields: [{
+          name:   instr.replace('_', '/'),
+          value:  `Manually closed\nP&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\nSession: ${sess}\nSource: MANUAL`,
+          inline: false,
+        }],
+      }).catch(() => {});
+
+      // FIX 2 — Clean context map after manual close
+      openTradeContexts.delete(tradeId);
+      openTradeContexts.delete(fill?.id?.toString());
+      console.log('[CONTEXT CLEANED]', instr, tradeId, 'remaining contexts:', openTradeContexts.size);
     } catch (saveErr) {
       console.error('[MANUAL CLOSE] Supabase save failed:', saveErr.message);
     }
@@ -2772,6 +2788,8 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
       entry:      entry      ? parseFloat(entry) : null,
       tp2:        context?.tp2 ? parseFloat(context.tp2) : null,
       tp3:        context?.tp3 ? parseFloat(context.tp3) : null,
+      // FIX 3 — store instrument so mismatch guard can detect wrong-pair context
+      instrument: pair       || null,
     };
     // Store under both possible keys to handle any OANDA ID variance
     openTradeContexts.set(contextKey.toString(), ctxToStore);
@@ -3871,7 +3889,14 @@ async function manageOpenTrades() {
 
     // ── TP ladder: TP1 hit → close 25%, advance to TP2 ──────────────────────────
     // Only fires for trades with tp2/tp3 in context (swing/Kill Shot). M5 trades skip.
-    const ctx = openTradeContexts.get(tradeId.toString());
+    let ctx = openTradeContexts.get(tradeId.toString());
+    // FIX 3 — Context ID mismatch guard: if stored context belongs to a different
+    // instrument, discard it and skip TP ladder (prevents wrong-pair TP management)
+    if (ctx?.instrument && ctx.instrument !== instrument) {
+      console.warn('[CONTEXT MISMATCH]', instrument, 'tradeId:', tradeId,
+        '— context belongs to:', ctx.instrument, '— using fallback (no TP ladder)');
+      ctx = null;
+    }
     const ctxTp1 = ctx?.takeProfit;
     const ctxTp2 = ctx?.tp2;
     const ctxTp3 = ctx?.tp3;
