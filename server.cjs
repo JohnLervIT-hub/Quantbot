@@ -5560,6 +5560,12 @@ async function serverSwingAutoTrade() {
         swingPatternAnalysis = { patterns, scoreAdjustment, directionBias, confirms: directionBias === sig.direction || directionBias === 'NEUTRAL' };
       }
 
+      // Score gate — swing minimum 75%; silent continue saves consensus API calls
+      if (sig.score < 75) {
+        console.log('[SWING SCORE BLOCK]', instrument, `${sig.score}% — below 75% minimum — skipping`);
+        continue;
+      }
+
       // Cross-system pair lock — block if OANDA already has ANY open trade on this instrument
       if (openTrades.some(t => normalizeInstrument(t.instrument) === normalizeInstrument(instrument))) {
         console.log(`[SWING PAIR LOCK] ${instrument} already open in another timeframe — skipping swing`);
@@ -5588,6 +5594,10 @@ async function serverSwingAutoTrade() {
       const liveTp1   = sig.direction === 'LONG' ? liveEntry + riskDist * 1.5 : liveEntry - riskDist * 1.5;
       const liveTp2   = sig.direction === 'LONG' ? liveEntry + riskDist * 2.5 : liveEntry - riskDist * 2.5;
       const liveTp3   = sig.direction === 'LONG' ? liveEntry + riskDist * 4.0 : liveEntry - riskDist * 4.0;
+
+      // validateTrade — SL floor + session + score sanity BEFORE consensus API calls or Discord
+      const swingVetting = await validateTrade(instrument, session, sig, liveSl, liveEntry, true);
+      if (!swingVetting.valid) continue;
 
       const ts    = now.toISOString();
       const swingIntelAgeMins = lastXavierIntel.ts ? Math.round((Date.now() - lastXavierIntel.ts) / 60_000) : null;
