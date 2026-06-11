@@ -6027,10 +6027,17 @@ async function requestKillShotApproval(signal) {
           { name: 'Pair',    value: instrument.replace('_', '/'), inline: true },
           { name: 'Score',   value: `${signal.score}%`,           inline: true },
           { name: 'Expires', value: `In ${minsLeft} min`,         inline: true },
-          { name: 'Action',  value: `\`!execute ${instrument}\` or \`!skip ${instrument}\``, inline: false },
         ],
         timestamp: new Date().toISOString(),
-      });
+      }, [
+        {
+          type: 1,
+          components: [
+            { type: 2, style: 3, label: '✅ Execute Kill Shot', custom_id: `execute_${instrument}` },
+            { type: 2, style: 4, label: '❌ Skip',              custom_id: `skip_${instrument}` },
+          ],
+        },
+      ]);
       console.log(`[KILL SHOT REMINDER] ${instrument} — ${minsLeft} min remaining`);
     }
   }, expiryMs / 2);
@@ -6061,10 +6068,18 @@ async function requestKillShotApproval(signal) {
           ? `${signal.weeklyTrend}${signal.counterTrend ? ' ⚠️ COUNTER-TREND' : ' ✅ WITH TREND'}`
           : '—',                                                                        inline: true },
       { name: '⏰ Expires',   value: `${expiryTime} Calgary`,                          inline: true },
-      { name: 'Action',       value: `\`!execute ${signal.instrument}\` or \`!skip ${signal.instrument}\``, inline: false },
     ],
     timestamp: new Date().toISOString(),
-  });
+  }, [
+    {
+      type: 1,
+      components: [
+        { type: 2, style: 3, label: '✅ Execute Kill Shot', custom_id: `execute_${instrument}` },
+        { type: 2, style: 4, label: '❌ Skip',              custom_id: `skip_${instrument}` },
+        { type: 2, style: 2, label: '⏳ Wait 1h',           custom_id: `wait_${instrument}` },
+      ],
+    },
+  ]);
 
   console.log(`[KILL SHOT PENDING] ${signal.instrument} ${signal.direction} — awaiting Discord approval`);
 }
@@ -6201,13 +6216,29 @@ app.post('/discord/interaction', async (req, res) => {
       const instrument = customId.replace('execute_', '');
       const pending    = pendingKillShots.get(instrument);
       if (!pending) return res.json({ type: 4, data: { content: `⚠️ ${instrument.replace('_', '/')} — setup expired or already handled.`, flags: 64 } });
+
+      // Deferred response — executeKillShot makes 4 OANDA calls, easily > 3s Discord timeout
+      const interactionToken = req.body.token;
+      const appId = process.env.DISCORD_APP_ID;
+      res.json({ type: 5 }); // ACK immediately → Discord shows "Xavier is thinking…"
+
       pendingKillShots.delete(instrument);
       savePendingKillShots().catch(() => {});
       const result = await executeKillShot(pending);
-      return res.json({ type: 4, data: { content: result.ok
+
+      const content = result.ok
         ? `✅ **Kill Shot executing** — ${instrument.replace('_', '/')} @ ${result.fill}`
-        : `❌ **Execution failed** — ${result.reason}`,
-      } });
+        : `❌ **Execution failed** — ${result.reason}`;
+
+      // Edit the deferred "thinking" message with the real result
+      if (appId && interactionToken) {
+        await fetch(`https://discord.com/api/v10/webhooks/${appId}/${interactionToken}/messages/@original`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content }),
+        }).catch(e => console.error('[DISCORD] Deferred edit failed:', e.message));
+      }
+      return;
     }
 
     if (customId.startsWith('skip_')) {
@@ -7123,9 +7154,9 @@ setInterval(() => refreshEconomicCalendar().catch(e => console.error('[calendar]
 // Check upcoming events every 5 min so the 28–30 min window is never missed between hourly refreshes
 setInterval(() => checkUpcomingEvents().catch(e => console.error('[calendar] Upcoming check:', e.message)), 5 * 60_000);
 
-// Discord two-way command polling — every 30s (requires DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID)
+// Discord two-way command polling — every 10s (requires DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID)
 setTimeout(() => pollDiscordCommands().catch(e => console.error('[discord-poll] Startup:', e.message)), 8_000);
-setInterval(() => pollDiscordCommands().catch(e => console.error('[discord-poll] Loop:', e.message)), 30_000);
+setInterval(() => pollDiscordCommands().catch(e => console.error('[discord-poll] Loop:', e.message)), 10_000);
 
 // Register Discord slash commands (idempotent — safe to run on every startup)
 registerDiscordCommands().catch(e => console.error('[discord] Command registration failed:', e.message));
