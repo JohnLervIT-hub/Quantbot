@@ -2923,6 +2923,7 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
         open_time:          ctxToStore.openTime,
         created_at:         ctxToStore.openTime,
         session:            ctxToStore.session,
+        session_name:       ctxToStore.session,
         strategy:           ctxToStore.strategy,
         score:              ctxToStore.score              ?? null,
         consensus:          ctxToStore.consensusVotes     ?? null,
@@ -3505,6 +3506,17 @@ async function saveTradeToSupabase(trade) {
     // Path 1: Direct ID update — idempotent guard prevents double-write on duplicate close calls
     let error;
     if (trade.id) {
+      // Diagnostic: confirm open record exists before attempting update
+      const { data: findData, error: findErr } = await supabase
+        .from('trades').select('id').eq('id', trade.id).maybeSingle();
+      if (findErr) {
+        console.error('[SUPABASE FIND]', instrument, findErr.message);
+      } else if (!findData) {
+        console.log('[SUPABASE FIND]', instrument, 'id:', trade.id, 'NO RECORD FOUND ❌ — will fall through to pair search');
+      } else {
+        console.log('[SUPABASE FIND]', instrument, 'found id:', findData.id, '✅');
+      }
+
       const { data: directHit, error: directErr } = await supabase
         .from('trades')
         .update({
@@ -3516,6 +3528,7 @@ async function saveTradeToSupabase(trade) {
           duration_mins: trade.durationMins,
           stop_loss:     trade.stopLoss,
           take_profit:   trade.takeProfit,
+          session_name:  ctx.session || getServerSession(),
           ...(trade.exitType ? { exit_type: trade.exitType } : {}),
           // created_at intentionally omitted — H6: never overwrite open time on close
         })
@@ -3528,7 +3541,7 @@ async function saveTradeToSupabase(trade) {
         console.error('[SUPABASE CLOSE ERROR]', instrument, directErr.message, directErr.details, directErr.hint);
       }
       if (directHit?.length > 0) {
-        console.log('[SUPABASE CLOSE]', instrument, 'updated successfully ✅', 'outcome:', outcome, 'pnl:', trade.pnl);
+        console.log('[SUPABASE UPDATE]', instrument, 'id:', trade.id, 'outcome:', outcome, 'pnl:', trade.pnl, 'session:', ctx.session || getServerSession());
       } else if (!directErr) {
         // No open record found for this ID — check if already closed (duplicate call)
         const { data: check } = await supabase.from('trades').select('close_time').eq('id', trade.id).maybeSingle();
@@ -3556,16 +3569,18 @@ async function saveTradeToSupabase(trade) {
           .limit(1)
           .maybeSingle();
         if (nullRecord) {
+          console.log('[SUPABASE FIND]', instrument, 'pair fallback found id:', nullRecord.id, '✅');
           ({ error } = await supabase.from('trades').update({
             outcome, pnl: trade.pnl, close_time: nowIso,
             r_multiple: parseFloat(trade.rMultiple?.toFixed(4)) || null, exit_price: trade.exitPrice,
             duration_mins: trade.durationMins, stop_loss: trade.stopLoss,
             take_profit: trade.takeProfit,
+            session_name: ctx.session || getServerSession(),
             ...(trade.exitType ? { exit_type: trade.exitType } : {}),
             // created_at intentionally omitted — H6
           }).eq('id', nullRecord.id));
           if (error) console.error('[SUPABASE CLOSE ERROR]', instrument, error.message, error.details, error.hint);
-          else console.log('[SUPABASE CLOSE]', instrument, 'updated successfully ✅', 'outcome:', outcome, 'pnl:', trade.pnl);
+          else console.log('[SUPABASE UPDATE]', instrument, 'id:', nullRecord.id, 'outcome:', outcome, 'pnl:', trade.pnl, 'session:', ctx.session || getServerSession());
         } else {
           // No null record either — full upsert
           ({ error } = await supabase.from('trades').upsert({
@@ -3573,6 +3588,7 @@ async function saveTradeToSupabase(trade) {
         pair:               trade.pair,
         direction:          trade.direction,
         session:            ctx.session    || trade.session || null,
+        session_name:       ctx.session    || trade.session || getServerSession() || null,
         strategy:           ctx.strategy   || trade.strategy || null,
         entry:              trade.entry,
         exit_price:         trade.exitPrice,
