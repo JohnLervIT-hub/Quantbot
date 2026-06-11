@@ -2532,20 +2532,47 @@ async function sendTelegram(message) {
 }
 
 async function sendDiscordEmbed(embed, components) {
-  if (!process.env.DISCORD_WEBHOOK_URL) {
-    console.warn('[DISCORD EMBED] DISCORD_WEBHOOK_URL not set — skipping');
+  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+  const botToken   = process.env.DISCORD_BOT_TOKEN;
+  const channelId  = process.env.DISCORD_CHANNEL_ID;
+
+  if (!webhookUrl && !botToken) {
+    console.warn('[DISCORD EMBED] No DISCORD_WEBHOOK_URL or DISCORD_BOT_TOKEN — skipping');
     return;
   }
+
+  const { content, ...embedData } = embed;
+
+  // Buttons require the Bot API — webhooks silently drop components
+  if (components?.length && botToken && channelId) {
+    try {
+      const payload = { embeds: [embedData], components };
+      if (content) payload.content = content;
+      const dr = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bot ${botToken}` },
+        body: JSON.stringify(payload),
+      });
+      if (!dr.ok) {
+        const body = await dr.text();
+        console.error(`[DISCORD BOT ERROR] HTTP ${dr.status} — ${body.slice(0, 300)}`);
+      } else {
+        console.log('[DISCORD BOT] Embed with buttons sent ✅');
+      }
+    } catch (err) { console.error('[DISCORD BOT ERROR]', err.message); }
+    return;
+  }
+
+  // No buttons — use webhook (simpler, no bot token required)
+  if (!webhookUrl) return;
   try {
-    const { content, ...embedData } = embed; // hoist content to payload level for @mentions
     const payload = {
       username: 'Xavier | QuantBot Pro',
       avatar_url: 'https://i.imgur.com/4M34hi2.png',
       embeds: [embedData],
     };
     if (content) payload.content = content;
-    if (components) payload.components = components;
-    const dr = await fetch(process.env.DISCORD_WEBHOOK_URL, {
+    const dr = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
