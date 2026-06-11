@@ -5979,19 +5979,31 @@ function PaperTradesPanel({ trades, isMobile }) {
   );
 }
 
-function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile, mgmtRef, nav }) {
+function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile, mgmtRef, nav, lastSync, syncError, onRefresh }) {
+  const syncAgo = lastSync ? Math.round((Date.now() - lastSync) / 1000) : null;
+  const syncLabel = syncError
+    ? `sync error — ${syncError}`
+    : syncAgo === null ? 'syncing…'
+    : syncAgo < 60 ? `synced ${syncAgo}s ago`
+    : `synced ${Math.round(syncAgo / 60)}m ago`;
+  const syncColor = syncError ? '#f85149' : '#484f58';
+
   return (
     <div style={isMobile ? { background: "#0d1117", borderRadius: 0, padding: "12px", margin: "0" } : { background: "#161b22", border: "1px solid #21262d", borderRadius: 10, padding: "12px 14px", margin: "0 16px" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: openTrades.length > 0 ? 8 : 4 }}>
         <span style={{ fontSize: 12, fontWeight: 600, color: "#8b949e", textTransform: "uppercase", letterSpacing: "0.5px" }}>Open positions</span>
-        <span style={{ fontSize: 11, background: "#21262d", color: "#8b949e", padding: "2px 8px", borderRadius: 10 }}>
-          {openTrades.length}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 10, color: syncColor, fontFamily: "'JetBrains Mono',monospace" }}>{syncLabel}</span>
+          <button onClick={onRefresh} title="Refresh open positions" style={{ background: 'none', border: 'none', color: '#484f58', cursor: 'pointer', padding: '0 2px', fontSize: 13, lineHeight: 1 }}>↺</button>
+          <span style={{ fontSize: 11, background: "#21262d", color: "#8b949e", padding: "2px 8px", borderRadius: 10 }}>
+            {openTrades.length}
+          </span>
+        </div>
       </div>
 
       {openTrades.length === 0 ? (
         <div style={isMobile ? { background: "#161b22", border: "1px solid #21262d", borderRadius: 10, padding: 16, textAlign: "center", fontSize: 12, color: "#8b949e", marginTop: 8 } : { fontSize: 12, color: "var(--color-text-tertiary)", padding: "4px 0" }}>
-          No open positions · signals are being monitored
+          {syncError ? `⚠ Sync error — ${syncError}` : 'No open positions · signals are being monitored'}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -8243,6 +8255,9 @@ export default function TradingRobot() {
     return () => clearInterval(id);
   }, []);
   const [openTrades, setOpenTrades] = useState([]);
+  const [openTradesLastSync, setOpenTradesLastSync] = useState(null);
+  const [openTradesSyncError, setOpenTradesSyncError] = useState(null);
+  const refreshOpenTradesRef = useRef(null);
   const [oandaNav, setOandaNav] = useState(null);
   const [oandaUnrealizedPL, setOandaUnrealizedPL] = useState(null);
   const [paperTrades, setPaperTrades] = useState([]);
@@ -8283,7 +8298,7 @@ export default function TradingRobot() {
   useEffect(() => {
     (async () => {
       try {
-        const data = await fetch(`${BRIDGE}/trades`).then(r => r.json()).catch(() => ({}));
+        const data = await fetch(`${BRIDGE}/trades`, { headers: getAuthHeaders() }).then(r => r.json()).catch(() => ({}));
         const oandaIds = (Array.isArray(data.trades) ? data.trades : [])
           .map(t => t.id?.toString()).filter(Boolean);
         const swingTrades = JSON.parse(localStorage.getItem("swing_trades") || "[]");
@@ -8323,12 +8338,19 @@ export default function TradingRobot() {
       if (!isMounted) return;
       try {
         const r = await fetch(`${BRIDGE}/trades`, { headers: getAuthHeaders() });
+        if (!r.ok) {
+          console.warn('[trades] poller HTTP', r.status, '— open positions may be stale');
+          if (isMounted) setOpenTradesSyncError(`HTTP ${r.status}`);
+          return;
+        }
         const data = await r.json();
         if (!isMounted) return;
         if (Array.isArray(data.trades)) {
           setOpenTrades(prev =>
             openTradesFingerprint(prev) === openTradesFingerprint(data.trades) ? prev : data.trades
           );
+          setOpenTradesLastSync(Date.now());
+          setOpenTradesSyncError(null);
           // Reconcile: auto-add any OANDA trade not yet in swingTrades (server-fired Kill Shots)
           setSwingTrades(prev => {
             const trackedIds = new Set(prev.map(t => t.oandaId).filter(Boolean));
@@ -8351,9 +8373,16 @@ export default function TradingRobot() {
             localStorage.setItem('swing_trades', JSON.stringify(next));
             return next;
           });
+        } else {
+          console.warn('[trades] poller — unexpected response shape:', JSON.stringify(data).slice(0, 100));
+          if (isMounted) setOpenTradesSyncError('Bad response');
         }
-      } catch {}
+      } catch(e) {
+        console.warn('[trades] poller fetch failed:', e.message);
+        if (isMounted) setOpenTradesSyncError(e.message);
+      }
     };
+    refreshOpenTradesRef.current = fetchOpenTrades;
     fetchOpenTrades();
     const id = setInterval(fetchOpenTrades, 15000);
     return () => { isMounted = false; clearInterval(id); };
@@ -8365,13 +8394,23 @@ export default function TradingRobot() {
     const syncPositions = async () => {
       try {
         const r = await fetch(`${BRIDGE}/trades`, { headers: getAuthHeaders() });
+        if (!r.ok) {
+          console.warn('[trades] sync HTTP', r.status);
+          return;
+        }
         const data = await r.json();
         if (Array.isArray(data.trades)) {
           setOpenTrades(prev =>
             openTradesFingerprint(prev) === openTradesFingerprint(data.trades) ? prev : data.trades
           );
+          setOpenTradesLastSync(Date.now());
+          setOpenTradesSyncError(null);
+        } else {
+          console.warn('[trades] sync — unexpected response:', JSON.stringify(data).slice(0, 100));
         }
-      } catch {}
+      } catch(e) {
+        console.warn('[trades] sync failed:', e.message);
+      }
     };
     syncPositions();
     const id = setInterval(syncPositions, 30_000);
@@ -9445,7 +9484,7 @@ export default function TradingRobot() {
             </>
           )}
           <div>
-            <OpenPositionsPanel openTrades={openTrades} livePrices={livePrices} onClose={closeTrade} isMobile={isMobile} mgmtRef={tradeMgmtRef} nav={displayNav} />
+            <OpenPositionsPanel openTrades={openTrades} livePrices={livePrices} onClose={closeTrade} isMobile={isMobile} mgmtRef={tradeMgmtRef} nav={displayNav} lastSync={openTradesLastSync} syncError={openTradesSyncError} onRefresh={() => refreshOpenTradesRef.current?.()} />
             <ClosedTradesPanel trades={supabaseData.trades} isMobile={isMobile} loading={supabaseData.loading} lastUpdated={supabaseData.lastUpdated} />
             <PaperTradesPanel trades={paperTrades} isMobile={isMobile} />
             <TradeLog trades={trades} isMobile={isMobile} />
