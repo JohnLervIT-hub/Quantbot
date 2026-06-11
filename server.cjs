@@ -952,6 +952,8 @@ const serverTradeLog = [];          // newest-first, capped at 500
 const tradeManagementState = new Map(); // tradeId → { movedToBreakeven, partialClosed, peakR, profitAtRiskAlerted }
 let   autoTradeRunning = false; // C5: concurrency lock — prevents overlapping serverAutoTrade calls
 const lastKnownTradeIds        = new Set(); // for closed trade detection (management loop)
+const lastKnownTradeUnits      = new Map(); // tradeId → last known unit count (abs) — split close tracking
+const splitClosePnl            = new Map(); // tradeId → accumulated realizedPL at last partial close
 const serverAutoTradeOpenInstr = new Set(); // last-seen open instruments (auto-trade loop, for race-free cooldown detection)
 const signalFirstDetected      = new Map(); // instrument → ms timestamp when qualifying signal was first seen (for 5-min age gate)
 
@@ -3511,6 +3513,7 @@ async function saveTradeToSupabase(trade) {
           duration_mins: trade.durationMins,
           stop_loss:     trade.stopLoss,
           take_profit:   trade.takeProfit,
+          ...(trade.exitType ? { exit_type: trade.exitType } : {}),
           // created_at intentionally omitted — H6: never overwrite open time on close
         })
         .eq('id', trade.id)
@@ -3555,6 +3558,7 @@ async function saveTradeToSupabase(trade) {
             r_multiple: parseFloat(trade.rMultiple?.toFixed(4)) || null, exit_price: trade.exitPrice,
             duration_mins: trade.durationMins, stop_loss: trade.stopLoss,
             take_profit: trade.takeProfit,
+            ...(trade.exitType ? { exit_type: trade.exitType } : {}),
             // created_at intentionally omitted — H6
           }).eq('id', nullRecord.id));
           if (error) console.error('[SUPABASE CLOSE ERROR]', instrument, error.message, error.details, error.hint);
@@ -3601,6 +3605,7 @@ async function saveTradeToSupabase(trade) {
         recovery_mode:      ctx.recoveryMode       ?? null,
         atr_at_entry:       ctx.atrAtEntry         ?? null,
         trade_source:       ctx.tradeSource        ?? null,
+        exit_type:          trade.exitType         ?? null,
         spread_cost:        ctx.spreadCost         ?? null,
         commentary_warren:  ctx.warrenCommentary      ?? null,
         commentary_george:  ctx.georgeCommentary      ?? null,
@@ -3793,7 +3798,8 @@ async function manageOpenTrades() {
         const dir   = parseFloat(trade.initialUnits || 1) >= 0 ? 'LONG' : 'SHORT';
         const won   = pnl > 0;
 
-        console.log('[TRADE CLOSE DETECTED]', instr, id, 'realizedPL:', pnl, 'context exists:', !!openTradeContexts.get(id.toString()));
+        const isSplitClose = splitClosePnl.has(id);
+        console.log('[TRADE CLOSE DETECTED]', instr, id, 'realizedPL:', pnl, isSplitClose ? '(SPLIT CLOSE)' : '', 'context exists:', !!openTradeContexts.get(id.toString()));
 
         // Post-close cooldown — always set on any close, including manual
         postCloseCooldown.set(instr, Date.now());
@@ -3852,33 +3858,40 @@ async function manageOpenTrades() {
         // No context = server restart wiped state → still AUTO_SL, not manual.
         const _ctxForClose  = openTradeContexts.get(id.toString());
         const contextFound  = !!_ctxForClose;
-        const exitType      = contextFound ? (_ctxForClose?.tradeSource || 'AUTO') : 'AUTO_SL';
-        const isServerManaged = tradeManagementState.has(id);
+        const exitType      = isSplitClose
+          ? 'SPLIT_CLOSE'
+          : contextFound ? (_ctxForClose?.tradeSource || 'AUTO') : 'AUTO_SL';
         console.log('[CLOSE TYPE]', instr, contextFound
           ? 'context found: ' + exitType
-          : 'no context — assuming AUTO_SL');
+          : 'no context — assuming ' + exitType);
 
-        const emoji = won ? '✅' : '❌';
-        const closeMsg =
-          `${emoji} <b>TRADE CLOSED</b>\n` +
-          `Pair: ${instr.replace('_', '/')} ${dir}\n` +
-          `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n` +
-          (isServerManaged
-            ? `Today: ${dailyStats.winners}W/${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`
-            : `Exit: ${exitType} — cooldown set`);
+        // Pre-compute R-multiple for Discord (reuse the same logic as Supabase save below)
+        const _closeEntry    = parseFloat(trade.price || 0);
+        const _closeCtx      = openTradeContexts.get(id.toString());
+        const _closeSl       = trade.stopLossOrder?.price
+          ? parseFloat(trade.stopLossOrder.price)
+          : (_closeCtx?.stopLoss ?? null);
+        const _closeUnits    = parseFloat(trade.initialUnits || 0);
+        const _closeRisk     = _closeSl ? Math.abs(_closeEntry - _closeSl) * Math.abs(_closeUnits) * (instr.startsWith('USD_') && _closeEntry > 0 ? 1 / _closeEntry : 1) : 0;
+        const _closeRMult    = _closeRisk > 0 ? parseFloat(Math.max(-5, Math.min(10, pnl / _closeRisk)).toFixed(2)) : null;
+        const _closeDurMins  = trade.openTime ? Math.round((Date.now() - new Date(trade.openTime).getTime()) / 60000) : null;
+        const _closeSessDisc = getServerSession();
 
         // Discord notification — isolated so failures never block Supabase save
         try {
-          await sendNotification(closeMsg, {
-            color: won ? 0x3fb950 : 0xf85149,
-            title: `${emoji} Trade Closed`,
-            fields: [
-              { name: 'Pair',      value: instr.replace('_', '/'),                       inline: true },
-              { name: 'Direction', value: dir,                                            inline: true },
-              { name: 'P&L',       value: `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`,  inline: true },
-              { name: 'Exit Type', value: exitType,                                       inline: true },
-              { name: 'Today',     value: `${dailyStats.winners}W / ${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`, inline: false },
-            ],
+          const closeTitle = won ? '✅ Trade Closed WIN' : '❌ Trade Closed LOSS';
+          const closeColor = won ? 0x00ff88 : 0xff4444;
+          const closeValue =
+            `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n` +
+            (_closeRMult !== null ? `R: ${_closeRMult}R\n` : '') +
+            `Session: ${_closeSessDisc}\n` +
+            (_closeDurMins !== null ? `Duration: ${_closeDurMins}min\n` : '') +
+            (isSplitClose ? `Type: Split Close\n` : '') +
+            `Today: ${dailyStats.winners}W / ${dailyStats.losers}L · Net $${dailyStats.totalPnl.toFixed(2)}`;
+          await sendDiscordEmbed({
+            title: closeTitle,
+            color: closeColor,
+            fields: [{ name: `${instr.replace('_', '/')} ${dir}`, value: closeValue, inline: false }],
             timestamp: new Date().toISOString(),
           });
         } catch (discordErr) {
@@ -3886,42 +3899,36 @@ async function manageOpenTrades() {
         }
 
         // Supabase save — always runs, independent of Discord
-        const _entry      = parseFloat(trade.price || 0);
-        const _ctx        = openTradeContexts.get(id.toString());
-        const _sl         = trade.stopLossOrder?.price
-          ? parseFloat(trade.stopLossOrder.price)
-          : (_ctx?.stopLoss ?? null);
+        // Reuse pre-computed values from Discord block (_closeEntry, _closeSl, etc.)
         const _tp         = trade.takeProfitOrder?.price ? parseFloat(trade.takeProfitOrder.price) : null;
         const _exitPrice  = parseFloat(trade.averageClosePrice || 0);
-        const _units      = parseFloat(trade.initialUnits || 0);
-        const _riskPerUnit = _sl ? Math.abs(_entry - _sl) : 0;
-        const _isUsdBase   = instr.startsWith('USD_');
-        const _pipValue    = _isUsdBase && _entry > 0 ? 1 / _entry : 1;
-        const _riskTotal   = _riskPerUnit * Math.abs(_units) * _pipValue;
-        const _rMult       = _riskTotal > 0 ? parseFloat(Math.max(-5, Math.min(10, pnl / _riskTotal)).toFixed(2)) : null;
-        const _durMins     = trade.openTime ? Math.round((Date.now() - new Date(trade.openTime).getTime()) / 60000) : null;
-        const _closeSess   = getServerSession();
         try {
           await saveTradeToSupabase({
             id:           trade.id,
             pair:         instr,
             direction:    dir,
-            session:      _closeSess,
-            strategy:     (XAVIER_RULES[_closeSess] || {}).strategy || null,
-            entry:        _entry,
+            session:      _closeSessDisc,
+            strategy:     (XAVIER_RULES[_closeSessDisc] || {}).strategy || null,
+            entry:        _closeEntry,
             exitPrice:    _exitPrice,
-            stopLoss:     _sl,
+            stopLoss:     _closeSl,
             takeProfit:   _tp,
             pnl,
-            rMultiple:    _rMult,
-            units:        _units,
-            durationMins: _durMins,
+            rMultiple:    _closeRMult,
+            units:        _closeUnits,
+            durationMins: _closeDurMins,
             openTime:     trade.openTime,
+            exitType,
           });
-          console.log('[SUPABASE SAVE]', instr, 'SUCCESS ✅');
+          console.log('[SUPABASE SAVE]', instr, exitType, 'SUCCESS ✅');
         } catch (saveErr) {
           console.error('[SUPABASE SAVE]', instr, 'FAILED ❌', saveErr.message);
         }
+
+        // Clean up split-close tracking for this trade
+        splitClosePnl.delete(id);
+        lastKnownTradeUnits.delete(id);
+
         // FIX 4 — sweep ALL context keys that belong to this instrument
         // (covers both tradeId and txId stored as separate keys)
         openTradeContexts.forEach((ctx, key) => {
@@ -3937,6 +3944,41 @@ async function manageOpenTrades() {
   }
   // Update known IDs with current open trades
   for (const t of openTrades) lastKnownTradeIds.add(t.id);
+
+  // ── Detect partial closes (units decreased but trade still open) ─────────────
+  for (const trade of openTrades) {
+    const lastUnits    = lastKnownTradeUnits.get(trade.id);
+    const currentUnits = Math.abs(parseFloat(trade.currentUnits));
+    if (lastUnits !== undefined && currentUnits < lastUnits) {
+      const totalRealizedPnl = parseFloat(trade.realizedPL || 0);
+      const prevAccumPnl     = splitClosePnl.get(trade.id) || 0;
+      const partialPnl       = totalRealizedPnl - prevAccumPnl;
+      splitClosePnl.set(trade.id, totalRealizedPnl);
+      const pInstr = trade.instrument;
+      const pDir   = parseFloat(trade.initialUnits || 1) >= 0 ? 'LONG' : 'SHORT';
+      const closed  = lastUnits - currentUnits;
+      console.log(`[PARTIAL CLOSE] ${pInstr} ${trade.id} units: ${lastUnits} → ${currentUnits} (closed ${closed}) | partial PnL: ${partialPnl >= 0 ? '+' : ''}$${partialPnl.toFixed(2)}`);
+      try {
+        await sendDiscordEmbed({
+          title: '📉 Partial Close',
+          color: partialPnl >= 0 ? 0x00ff88 : 0xff4444,
+          fields: [{
+            name: `${pInstr.replace('_', '/')} ${pDir}`,
+            value:
+              `Units closed: ${closed}\n` +
+              `Remaining: ${currentUnits}\n` +
+              `Partial P&L: ${partialPnl >= 0 ? '+' : ''}$${partialPnl.toFixed(2)}\n` +
+              `Total realized so far: ${totalRealizedPnl >= 0 ? '+' : ''}$${totalRealizedPnl.toFixed(2)}`,
+            inline: false,
+          }],
+          timestamp: new Date().toISOString(),
+        });
+      } catch (e) {
+        console.error('[mgmt] Partial close Discord failed:', e.message);
+      }
+    }
+    lastKnownTradeUnits.set(trade.id, currentUnits);
+  }
 
   // ── Manage each open trade ──────────────────────────────────────────────────
   for (const trade of openTrades) {
