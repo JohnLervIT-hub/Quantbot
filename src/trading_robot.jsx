@@ -25,7 +25,10 @@ const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 const BRIDGE = import.meta.env.VITE_OANDA_BRIDGE || (import.meta.env.DEV ? "/bridge" : API_BASE);
 
 function priceDecimals(pair) {
-  return pair.includes("JPY") ? 3 : pair.includes("XAU") || pair.includes("SPX") ? 2 : 5;
+  if (pair.includes("JPY")) return 3;
+  if (pair.includes("XAU") || pair.includes("SPX")) return 2;
+  if (pair.includes("NAS100") || pair.includes("JP225") || pair.includes("AU200") || pair.includes("UK100")) return 2;
+  return 5;
 }
 
 function oandaToSlash(instrument) {
@@ -8342,9 +8345,9 @@ export default function TradingRobot() {
     const fetchOpenTrades = async () => {
       if (!isMounted) return;
       try {
-        const r = await fetch(`${BRIDGE}/auto-trades`, { headers: getAuthHeaders() });
+        const r = await fetch(`${BRIDGE}/trades`, { headers: getAuthHeaders() });
         if (!r.ok) {
-          console.warn('[auto-trades] poller HTTP', r.status, '— open positions may be stale');
+          console.warn('[trades] poller HTTP', r.status, '— open positions may be stale');
           if (isMounted) setOpenTradesSyncError(`HTTP ${r.status}`);
           return;
         }
@@ -8386,11 +8389,11 @@ export default function TradingRobot() {
             return next;
           });
         } else {
-          console.warn('[auto-trades] poller — unexpected response shape:', JSON.stringify(data).slice(0, 100));
+          console.warn('[trades] poller — unexpected response shape:', JSON.stringify(data).slice(0, 100));
           if (isMounted) setOpenTradesSyncError('Bad response');
         }
       } catch(e) {
-        console.warn('[auto-trades] poller fetch failed:', e.message);
+        console.warn('[trades] poller fetch failed:', e.message);
         if (isMounted) setOpenTradesSyncError(e.message);
       }
     };
