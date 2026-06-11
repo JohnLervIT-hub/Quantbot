@@ -715,6 +715,12 @@ app.get('/health', (_req, res) => {
     totalModels: 4,
     gemini: 'replaced by OpenRouter ✅',
     rayStatus: lastRayStatus,
+    discord: {
+      webhook:   !!process.env.DISCORD_WEBHOOK_URL,
+      botToken:  !!process.env.DISCORD_BOT_TOKEN,
+      channelId: !!process.env.DISCORD_CHANNEL_ID,
+      appId:     !!process.env.DISCORD_APP_ID,
+    },
   });
 });
 
