@@ -993,6 +993,7 @@ const POST_CLOSE_COOLDOWN_MS  = 15 * 60 * 1000; // 15 minutes
 
 // Pending Kill Shot approvals — awaiting Discord EXECUTE/SKIP/WAIT
 const pendingKillShots = new Map(); // instrument → pending signal data
+const killShotTimers   = new Map(); // instrument → { expiryTimer, reminderTimer }
 
 // Trade context — entry metadata stored at fill, looked up at close for journaling
 const openTradeContexts = new Map(); // tradeId (string) → context object
@@ -5986,19 +5987,20 @@ async function executeKillShot(pending) {
 }
 
 // ─── KILL SHOT APPROVAL REQUEST ────────────────────────────────────────────────
-async function requestKillShotApproval(signal) {
-  const instrument = signal.instrument;
-  const utcHour = new Date().getUTCHours();
-  const isOvernightHour = utcHour >= 22 || utcHour < 6; // Sydney/Tokyo quiet hours
-  const expiryMs = isOvernightHour ? 4 * 60 * 60 * 1000 : 2 * 60 * 60 * 1000;
-  signal.expiresAt = new Date(Date.now() + expiryMs).toISOString(); // H1: persist TTL
-  pendingKillShots.set(instrument, signal);
-  savePendingKillShots().catch(() => {});
+// Schedule (or re-schedule) the expiry timer for a pending Kill Shot.
+// Called on first approval request and again when the Wait button is pressed.
+function scheduleKillShotExpiry(instrument, signal, expiryMs) {
+  // Cancel any existing timers for this instrument
+  const existing = killShotTimers.get(instrument);
+  if (existing) {
+    clearTimeout(existing.expiryTimer);
+    clearTimeout(existing.reminderTimer);
+  }
 
-  // Auto-expire
-  setTimeout(async () => {
+  const expiryTimer = setTimeout(async () => {
     if (pendingKillShots.get(instrument) === signal) {
       pendingKillShots.delete(instrument);
+      killShotTimers.delete(instrument);
       savePendingKillShots().catch(() => {});
       console.log(`[KILL SHOT EXPIRED] ${instrument} — approval timeout`);
       try {
@@ -6007,7 +6009,7 @@ async function requestKillShotApproval(signal) {
           color: 0xffaa00,
           fields: [{
             name: 'Signal Expired',
-            value: `${instrument.replace('_', '/')} Kill Shot window closed\nSignal no longer valid\nNext scan in 4 hours`,
+            value: `${instrument.replace('_', '/')} Kill Shot window closed\nSignal no longer valid\nNext scan in ~1 hour`,
             inline: false,
           }],
           timestamp: new Date().toISOString(),
@@ -6016,8 +6018,7 @@ async function requestKillShotApproval(signal) {
     }
   }, expiryMs);
 
-  // Reminder at 50% of expiry window
-  setTimeout(async () => {
+  const reminderTimer = setTimeout(async () => {
     if (pendingKillShots.has(instrument)) {
       const minsLeft = Math.round(expiryMs / 2 / 60000);
       await sendDiscordEmbed({
@@ -6041,6 +6042,19 @@ async function requestKillShotApproval(signal) {
       console.log(`[KILL SHOT REMINDER] ${instrument} — ${minsLeft} min remaining`);
     }
   }, expiryMs / 2);
+
+  killShotTimers.set(instrument, { expiryTimer, reminderTimer });
+}
+
+async function requestKillShotApproval(signal) {
+  const instrument = signal.instrument;
+  const utcHour = new Date().getUTCHours();
+  const isOvernightHour = utcHour >= 22 || utcHour < 6; // Sydney/Tokyo quiet hours
+  const expiryMs = isOvernightHour ? 4 * 60 * 60 * 1000 : 2 * 60 * 60 * 1000;
+  signal.expiresAt = new Date(Date.now() + expiryMs).toISOString(); // H1: persist TTL
+  pendingKillShots.set(instrument, signal);
+  savePendingKillShots().catch(() => {});
+  scheduleKillShotExpiry(instrument, signal, expiryMs);
 
   const expiryTime = new Date(Date.now() + expiryMs)
     .toLocaleTimeString('en-CA', { timeZone: 'America/Edmonton', hour: '2-digit', minute: '2-digit' });
@@ -6223,6 +6237,7 @@ app.post('/discord/interaction', async (req, res) => {
       res.json({ type: 5 }); // ACK immediately → Discord shows "Xavier is thinking…"
 
       pendingKillShots.delete(instrument);
+      killShotTimers.delete(instrument);
       savePendingKillShots().catch(() => {});
       const result = await executeKillShot(pending);
 
@@ -6243,6 +6258,9 @@ app.post('/discord/interaction', async (req, res) => {
 
     if (customId.startsWith('skip_')) {
       const instrument = customId.replace('skip_', '');
+      const existing = killShotTimers.get(instrument);
+      if (existing) { clearTimeout(existing.expiryTimer); clearTimeout(existing.reminderTimer); }
+      killShotTimers.delete(instrument);
       pendingKillShots.delete(instrument);
       savePendingKillShots().catch(() => {});
       console.log(`[KILL SHOT SKIPPED] ${instrument}`);
@@ -6251,8 +6269,15 @@ app.post('/discord/interaction', async (req, res) => {
 
     if (customId.startsWith('wait_')) {
       const instrument = customId.replace('wait_', '');
-      console.log(`[KILL SHOT WAIT] ${instrument} — held for up to 1h`);
-      return res.json({ type: 4, data: { content: `⏳ **Waiting 1 hour** — ${instrument.replace('_', '/')} setup held.`, flags: 64 } });
+      const pending = pendingKillShots.get(instrument);
+      if (!pending) return res.json({ type: 4, data: { content: `⚠️ ${instrument.replace('_', '/')} — setup expired or already handled.`, flags: 64 } });
+      const extendMs = 60 * 60 * 1000;
+      pending.expiresAt = new Date(Date.now() + extendMs).toISOString();
+      savePendingKillShots().catch(() => {});
+      scheduleKillShotExpiry(instrument, pending, extendMs);
+      const newExpiry = new Date(Date.now() + extendMs).toLocaleTimeString('en-CA', { timeZone: 'America/Edmonton', hour: '2-digit', minute: '2-digit' });
+      console.log(`[KILL SHOT WAIT] ${instrument} — expiry extended 1h to ${newExpiry} Calgary`);
+      return res.json({ type: 4, data: { content: `⏳ **Expiry extended 1 hour** — ${instrument.replace('_', '/')} setup now expires at ${newExpiry} Calgary.`, flags: 64 } });
     }
   }
 
