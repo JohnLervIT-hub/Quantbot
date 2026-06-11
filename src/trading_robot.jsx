@@ -8322,7 +8322,7 @@ export default function TradingRobot() {
     const fetchOpenTrades = async () => {
       if (!isMounted) return;
       try {
-        const r = await fetch(`${BRIDGE}/trades`);
+        const r = await fetch(`${BRIDGE}/trades`, { headers: getAuthHeaders() });
         const data = await r.json();
         if (!isMounted) return;
         if (Array.isArray(data.trades)) {
@@ -8364,7 +8364,7 @@ export default function TradingRobot() {
   useEffect(() => {
     const syncPositions = async () => {
       try {
-        const r = await fetch(`${BRIDGE}/trades`);
+        const r = await fetch(`${BRIDGE}/trades`, { headers: getAuthHeaders() });
         const data = await r.json();
         if (Array.isArray(data.trades)) {
           setOpenTrades(prev =>
