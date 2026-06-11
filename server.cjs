@@ -6489,15 +6489,17 @@ app.post('/test-killshot', requireAuth, async (_req, res) => {
   const floor     = MIN_SL_FLOOR[fakePair] || 0.0010;
   const slDist    = Math.max(floor, floor * 1.2);
   const entry     = livePrice || 3300;
+  const dir       = _req.body?.direction || 'LONG';
   const fakeSignal = {
     instrument: fakePair,
-    direction:  _req.body?.direction || 'LONG',
+    direction:  dir,
     score:      87,
+    units:      NORMAL_UNITS[fakePair] ?? NORMAL_UNITS.default,
     liveEntry:  entry,
-    liveSl:     entry - slDist,
-    liveTp1:    entry + slDist * 1.5,
-    liveTp2:    entry + slDist * 2.5,
-    liveTp3:    entry + slDist * 4.0,
+    liveSl:     dir === 'LONG' ? entry - slDist : entry + slDist,
+    liveTp1:    dir === 'LONG' ? entry + slDist * 1.5 : entry - slDist * 1.5,
+    liveTp2:    dir === 'LONG' ? entry + slDist * 2.5 : entry - slDist * 2.5,
+    liveTp3:    dir === 'LONG' ? entry + slDist * 4.0 : entry - slDist * 4.0,
     confirms:   3,
     session:    getServerSession(),
   };
