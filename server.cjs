@@ -6452,18 +6452,24 @@ app.post('/test-killshot', requireAuth, async (_req, res) => {
   if (!APPROVED_PAIRS.has(fakePair)) {
     return res.status(400).json({ error: `${fakePair} not in approved pairs list` });
   }
+  const livePrice = await fetchLivePrice(fakePair);
+  const floor     = MIN_SL_FLOOR[fakePair] || 0.0010;
+  const slDist    = Math.max(floor, floor * 1.2);
+  const entry     = livePrice || 3300;
   const fakeSignal = {
     instrument: fakePair,
-    direction:  'LONG',
+    direction:  _req.body?.direction || 'LONG',
     score:      87,
-    liveEntry:  3320.50,
-    liveSl:     3310.00,
-    liveTp1:    3340.00,
+    liveEntry:  entry,
+    liveSl:     entry - slDist,
+    liveTp1:    entry + slDist * 1.5,
+    liveTp2:    entry + slDist * 2.5,
+    liveTp3:    entry + slDist * 4.0,
     confirms:   3,
     session:    getServerSession(),
   };
   await requestKillShotApproval(fakeSignal);
-  res.json({ ok: true, message: `Kill Shot notification sent for ${fakePair}`, signal: fakeSignal });
+  res.json({ ok: true, message: `Kill Shot notification sent for ${fakePair} @ ${entry}`, signal: fakeSignal });
 });
 
 // ─── SUPABASE API ENDPOINTS ──────────────────────────────────────────────────
