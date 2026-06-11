@@ -5927,7 +5927,28 @@ async function executeKillShot(pending) {
 
   console.log('[ORDER SOURCE] executeKillShot', 'instrument:', instrument, 'direction:', direction, 'confirms:', confirms, 'approved: true');
 
-  // FIX 2 — Build context so placeOrder() writes to Supabase + tp2/tp3 for TP ladder
+  // Reanchor SL/TP to current live price — stored levels can be hours stale and OANDA
+  // will cancel the order immediately (STOP_LOSS_ON_FILL_LOSS / TAKE_PROFIT_ON_FILL_LOSS)
+  const currentPrice = await fetchLivePrice(instrument);
+  if (!currentPrice) {
+    console.error(`[KILL SHOT] ${instrument} — live price fetch failed, aborting`);
+    return { ok: false, reason: 'PRICE_FETCH_FAILED' };
+  }
+  const storedSlDist = Math.abs(liveEntry - liveSl);
+  const storedTp1Dist = Math.abs(liveEntry - liveTp1);
+  const storedTp2Dist = liveTp2 ? Math.abs(liveEntry - liveTp2) : null;
+  const storedTp3Dist = liveTp3 ? Math.abs(liveEntry - liveTp3) : null;
+  const minRiskDist = MIN_SL_FLOOR[instrument] || storedSlDist;
+  const riskDist  = Math.max(storedSlDist, minRiskDist);
+  const tp1Dist   = Math.max(storedTp1Dist, riskDist * 1.5);
+  const execEntry = currentPrice;
+  const execSl    = direction === 'LONG' ? execEntry - riskDist  : execEntry + riskDist;
+  const execTp1   = direction === 'LONG' ? execEntry + tp1Dist   : execEntry - tp1Dist;
+  const execTp2   = storedTp2Dist ? (direction === 'LONG' ? execEntry + storedTp2Dist : execEntry - storedTp2Dist) : null;
+  const execTp3   = storedTp3Dist ? (direction === 'LONG' ? execEntry + storedTp3Dist : execEntry - storedTp3Dist) : null;
+  console.log(`[KILL SHOT] ${instrument} price reanchored: stored ${liveEntry} → live ${currentPrice} | SL dist: ${riskDist.toFixed(4)}`);
+
+  // Build context so placeOrder() writes to Supabase + tp2/tp3 for TP ladder
   const tradeContext = {
     score,
     tradeSource:    'KILL_SHOT',
@@ -5939,8 +5960,8 @@ async function executeKillShot(pending) {
     regimeAtEntry:  null,
     heatAtEntry:    null,
     recoveryMode:   false,
-    tp2:            liveTp2,
-    tp3:            liveTp3,
+    tp2:            execTp2,
+    tp3:            execTp3,
   };
 
   const ksPhase = PAIR_PHASE[instrument] || 1;
@@ -5950,7 +5971,7 @@ async function executeKillShot(pending) {
   const result = await placeOrder({
     instrument, direction,
     units: ksUnits,
-    entry: liveEntry, stopLoss: liveSl, takeProfit: liveTp1,
+    entry: execEntry, stopLoss: execSl, takeProfit: execTp1,
     source: 'Kill-Shot-Auto', score, session, strategy: 'Kill Shot',
     approved: true,
     context: tradeContext,
