@@ -1012,8 +1012,21 @@ const RECOVERY_UNITS = {
   SPX500_USD: 5,
 };
 
-// Adaptive principle weights — updated by frontend when consecutive streak events fire
-let xavierWeights = { scoreThreshold: 65, newsWindowMins: 120, capitalPreservation: 1.0, informationFiltering: 1.0, patience: 1.0 };
+// Adaptive principle weights — updated by frontend; persisted to Supabase via saveRuntimeState
+let xavierWeights = {
+  scoreThreshold:         65,
+  newsWindowMins:         120,
+  capitalPreservation:    1.0,
+  informationFiltering:   1.0,
+  patience:               1.0,
+  weeklyTrendEnabled:     true,
+  m5TrendEnabled:         true,
+  optionsPCREnabled:      true,
+  historicalEdgeEnabled:  true,
+  postCloseCooldownMins:  15,
+  maxOpenTrades:          2,
+  heatLimit:              4,
+};
 
 // Xavier intel cache — populated when frontend calls /consensus with xavier data; used by server-side auto-trade
 let lastXavierIntel = { sentiment: null, keyRisk: null, brief: null, bestPair: null, freshNews: null, ts: 0 };
@@ -2175,13 +2188,23 @@ app.get('/economic-calendar', async (_req, res) => {
 // ─── XAVIER PRINCIPLE WEIGHTS ─────────────────────────────────────────────────
 app.get('/xavier-weights', requireAuth, (_req, res) => res.json(xavierWeights));
 app.post('/xavier-weights', requireAuth, (req, res) => {
-  const { scoreThreshold, newsWindowMins, capitalPreservation, informationFiltering, patience } = req.body;
-  if (typeof scoreThreshold       === 'number') xavierWeights.scoreThreshold       = Math.max(50, Math.min(95, scoreThreshold));
-  if (typeof newsWindowMins       === 'number') xavierWeights.newsWindowMins       = Math.max(60, Math.min(240, newsWindowMins));
-  if (typeof capitalPreservation  === 'number') xavierWeights.capitalPreservation  = capitalPreservation;
-  if (typeof informationFiltering === 'number') xavierWeights.informationFiltering  = informationFiltering;
-  if (typeof patience             === 'number') xavierWeights.patience             = patience;
+  const { scoreThreshold, newsWindowMins, capitalPreservation, informationFiltering, patience,
+          weeklyTrendEnabled, m5TrendEnabled, optionsPCREnabled, historicalEdgeEnabled,
+          postCloseCooldownMins, maxOpenTrades, heatLimit } = req.body;
+  if (typeof scoreThreshold        === 'number')  xavierWeights.scoreThreshold        = Math.max(50, Math.min(95, scoreThreshold));
+  if (typeof newsWindowMins        === 'number')  xavierWeights.newsWindowMins        = Math.max(60, Math.min(240, newsWindowMins));
+  if (typeof capitalPreservation   === 'number')  xavierWeights.capitalPreservation   = capitalPreservation;
+  if (typeof informationFiltering  === 'number')  xavierWeights.informationFiltering  = informationFiltering;
+  if (typeof patience              === 'number')  xavierWeights.patience              = patience;
+  if (typeof weeklyTrendEnabled    === 'boolean') xavierWeights.weeklyTrendEnabled    = weeklyTrendEnabled;
+  if (typeof m5TrendEnabled        === 'boolean') xavierWeights.m5TrendEnabled        = m5TrendEnabled;
+  if (typeof optionsPCREnabled     === 'boolean') xavierWeights.optionsPCREnabled     = optionsPCREnabled;
+  if (typeof historicalEdgeEnabled === 'boolean') xavierWeights.historicalEdgeEnabled = historicalEdgeEnabled;
+  if (typeof postCloseCooldownMins === 'number')  xavierWeights.postCloseCooldownMins = Math.max(5, Math.min(240, postCloseCooldownMins));
+  if (typeof maxOpenTrades         === 'number')  xavierWeights.maxOpenTrades         = Math.max(1, Math.min(5, maxOpenTrades));
+  if (typeof heatLimit             === 'number')  xavierWeights.heatLimit             = Math.max(1.5, Math.min(9, heatLimit));
   console.log('[xavier-weights] Updated:', xavierWeights);
+  saveRuntimeState().catch(e => console.error('[xavier-weights] save failed:', e.message));
   res.json({ ok: true, weights: xavierWeights });
 });
 
@@ -3134,6 +3157,54 @@ async function loadPendingKillShots() {
   }
 }
 
+// ─── RUNTIME STATE PERSISTENCE ─────────────────────────────────────────────────
+// Persists: consecutiveLosses, recoveryMode, peakBalance, xavierWeights
+async function saveRuntimeState() {
+  if (!supabase) return;
+  try {
+    await supabase.from('system_state').upsert({
+      key:        'runtime_state',
+      value:      JSON.stringify({
+        consecutiveLosses: Object.fromEntries(consecutiveLosses),
+        recoveryMode,
+        peakBalance,
+        xavierWeights,
+      }),
+      updated_at: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error('[RUNTIME STATE] save failed:', e.message);
+  }
+}
+
+async function loadRuntimeState() {
+  if (!supabase) return;
+  try {
+    const { data } = await supabase
+      .from('system_state')
+      .select('value')
+      .eq('key', 'runtime_state')
+      .single();
+
+    if (data?.value) {
+      const state = JSON.parse(data.value);
+      if (state.consecutiveLosses) {
+        Object.entries(state.consecutiveLosses).forEach(([pair, count]) => {
+          consecutiveLosses.set(pair, count);
+        });
+      }
+      if (state.recoveryMode !== undefined) recoveryMode = state.recoveryMode;
+      if (state.peakBalance)               peakBalance   = state.peakBalance;
+      if (state.xavierWeights)             Object.assign(xavierWeights, state.xavierWeights);
+      console.log(`[RUNTIME STATE] restored ✅ recovery:${recoveryMode} peak:$${peakBalance.toFixed(2)} losses:${consecutiveLosses.size} pairs`);
+    } else {
+      console.log('[RUNTIME STATE] fresh start');
+    }
+  } catch (e) {
+    console.log('[RUNTIME STATE] fresh start —', e.message);
+  }
+}
+
 // H3: persist swingAutoTrades across Railway restarts
 async function saveSwingTrades() {
   if (!supabase) return;
@@ -3662,6 +3733,7 @@ async function manageOpenTrades() {
             }
           }
         }
+        saveRuntimeState().catch(e => console.error('[mgmt] saveRuntimeState failed:', e.message));
 
         // Update daily stats (only for Xavier-managed closes)
         if (tradeManagementState.has(id)) {
@@ -4128,6 +4200,7 @@ async function monitorDrawdown() {
     currentBalance = balance;
     if (balance > peakBalance) {
       peakBalance = balance;
+      saveRuntimeState().catch(e => console.error('[drawdown] saveRuntimeState failed:', e.message));
     }
     if (peakBalance === 0) return;
 
@@ -4136,6 +4209,7 @@ async function monitorDrawdown() {
     if (!recoveryMode && drawdown >= DRAWDOWN_TRIGGER) {
       recoveryMode = true;
       console.log(`[RECOVERY MODE] ACTIVATED — drawdown: ${(drawdown * 100).toFixed(2)}%`);
+      saveRuntimeState().catch(e => console.error('[drawdown] saveRuntimeState failed:', e.message));
       await sendDiscordEmbed({
         title: '⚠️ RECOVERY MODE ACTIVATED',
         color: 0xff4444,
@@ -4154,6 +4228,7 @@ async function monitorDrawdown() {
     if (recoveryMode && drawdown <= RECOVERY_EXIT) {
       recoveryMode = false;
       console.log('[RECOVERY MODE] DEACTIVATED — account recovered');
+      saveRuntimeState().catch(e => console.error('[drawdown] saveRuntimeState failed:', e.message));
       await sendDiscordEmbed({
         title: '✅ RECOVERY MODE DEACTIVATED',
         color: 0x00ff88,
@@ -4377,12 +4452,14 @@ function serverRunGatekeepers(history, signal, openTrades, _instrument, strategy
   if (signal.score < scoreThreshold) {
     rejections.push({ condition: 'Opportunity Selection (Principle 38)', actual: `${signal.score}%`, threshold: `${scoreThreshold}%`, reason: 'Below confidence threshold — waiting for next setup.' });
   }
-  if (openTrades.length >= 2) {
-    rejections.push({ condition: 'Position limit', actual: `${openTrades.length} open`, threshold: 'Max 2' });
+  const maxTrades = xavierWeights.maxOpenTrades || 2;
+  if (openTrades.length >= maxTrades) {
+    rejections.push({ condition: 'Position limit', actual: `${openTrades.length} open`, threshold: `Max ${maxTrades}` });
   }
-  const heat = openTrades.length * 1.5;
-  if (heat >= 4) {
-    rejections.push({ condition: 'Drawdown Control (Principle 8)', actual: `${heat.toFixed(1)}R`, threshold: '4R max', reason: 'Capital Preservation first.' });
+  const heat    = openTrades.length * 1.5;
+  const heatMax = xavierWeights.heatLimit || 4;
+  if (heat >= heatMax) {
+    rejections.push({ condition: 'Drawdown Control (Principle 8)', actual: `${heat.toFixed(1)}R`, threshold: `${heatMax}R max`, reason: 'Capital Preservation first.' });
   }
   if (history.length >= 21) {
     const bars  = history.slice(-21);
@@ -4442,8 +4519,9 @@ async function validateTrade(instrument, session, signal, sl, entryPrice = 0, is
   }
 
   // Signal score
-  if (signal.score < 65)
-    errors.push(`Score ${signal.score}% below 65% minimum`);
+  const threshold = xavierWeights?.scoreThreshold || 65;
+  if (signal.score < threshold)
+    errors.push(`Score ${signal.score}% below threshold ${threshold}%`);
 
   // Approved pair allowlist
   if (!APPROVED_PAIRS.has(instrument))
@@ -4505,7 +4583,7 @@ async function serverAutoTrade() {
     diagCounters = { resetAt: Date.now(), loopRuns: 0, pairsAttempted: 0, noSignal: 0, signalCounter: 0, gatekeeperPass: 0, newsGuardPass: 0, macroPass: 0, reachedConsensus: 0, aplusCount: 0, standardCount: 0, executedCount: 0, blockedScore: 0, blockedNews: 0, blockedWeeklyTrend: 0, blockedM5Trend: 0, blockedLongMacro: 0, blockedOptions: 0, blockedHistory: 0, blockedConsensus: 0, blockedConsensusCooldown: 0, blockedPostClose: 0, blockedPairLock: 0, blockedValidation: 0, blockedPlaceOrder: 0, blockedHeat: 0, swingCounter: 0, swingConsensusPass: 0, swingQueued: 0, swingExecutedCount: 0 };
   }
 
-  if (openTrades.length >= 2) {
+  if (openTrades.length >= (xavierWeights.maxOpenTrades || 2)) {
     console.log(`[auto] ${session} — ${openTrades.length} open trades, skipping scan`);
     diagCounters.blockedHeat++;
     return;
@@ -4536,11 +4614,12 @@ async function serverAutoTrade() {
     // Consensus cooldown — 15 minutes between signal attempts per pair
     if (Date.now() - (lastConsensus.get(instrument) || 0) < 15 * 60_000) { diagCounters.blockedConsensusCooldown++; continue; }
 
-    // Post-close cooldown — 15 minutes after any close on this instrument
-    const lastClose = postCloseCooldown.get(instrument);
-    const cooldownMinsLeft = lastClose ? Math.ceil((POST_CLOSE_COOLDOWN_MS - (Date.now() - lastClose)) / 60000) : 0;
+    // Post-close cooldown — duration controlled by xavierWeights.postCloseCooldownMins (default 15)
+    const lastClose    = postCloseCooldown.get(instrument);
+    const cooldownMs   = (xavierWeights.postCloseCooldownMins || 15) * 60 * 1000;
+    const cooldownMinsLeft = lastClose ? Math.ceil((cooldownMs - (Date.now() - lastClose)) / 60000) : 0;
     console.log(`[COOLDOWN CHECK] ${instrument} — ${lastClose ? `last close ${Math.round((Date.now() - lastClose) / 60000)} min ago, ${cooldownMinsLeft > 0 ? cooldownMinsLeft + ' min remaining' : 'CLEAR'}` : 'no recent close'}`);
-    if (lastClose && Date.now() - lastClose < POST_CLOSE_COOLDOWN_MS) {
+    if (lastClose && Date.now() - lastClose < cooldownMs) {
       console.log(`[COOLDOWN HARD BLOCK] ${instrument} — ${cooldownMinsLeft} min remaining — ABORTING`);
       diagCounters.blockedPostClose++;
       continue;
@@ -4658,7 +4737,7 @@ async function serverAutoTrade() {
       'signal:', signal.direction,
       'allowed:', weeklyAllowed ? '✅' : '❌ BLOCKED');
 
-    if (!weeklyAllowed) {
+    if (xavierWeights.weeklyTrendEnabled && !weeklyAllowed) {
       console.log('[WEEKLY BLOCK]', instrument, signal.direction, 'blocked — weekly trend', weeklyTrend);
       serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy,
         rejections: [{ condition: 'Weekly Trend Alignment', actual: `${signal.direction} vs ${weeklyTrend} weekly`, threshold: 'Signal must align with weekly candle direction' }] });
@@ -4782,7 +4861,7 @@ async function serverAutoTrade() {
         signal.direction,
         instrument,
       );
-      if (!trendOk) {
+      if (xavierWeights.m5TrendEnabled && !trendOk) {
         const threshold = INDEX_INSTRUMENTS.has(instrument) ? '1/3' : '2/3';
         console.log(`[TREND WAIT] ${instrument} — signal ${signal.score}% detected but trend not confirmed yet. Waiting for momentum to develop.`);
         serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Trend Not Confirmed', actual: `< ${threshold} checks (last3 candles, price moving, EMA separating)`, threshold: `${threshold} required` }] });
@@ -4854,7 +4933,7 @@ async function serverAutoTrade() {
       const insight = await getPatternInsight(instrument, session, strategy);
       if (insight) {
         console.log(`[SUPABASE INSIGHT] ${instrument} historical: ${insight.attempts} trades win rate: ${insight.winRate.toFixed(1)}% avg R: ${insight.avgR.toFixed(3)}`);
-        if (insight.attempts >= 10 && insight.avgR < -0.1) {
+        if (xavierWeights.historicalEdgeEnabled && insight.attempts >= 10 && insight.avgR < -0.1) {
           console.log(`[SUPABASE BLOCK] ${instrument} — negative historical edge, skipping`);
           serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Historical Edge', actual: `avg R: ${insight.avgR.toFixed(3)} over ${insight.attempts} trades`, threshold: 'avg R >= -0.1 required' }] });
           if (serverRejections.length > 50) serverRejections.pop();
@@ -4936,14 +5015,14 @@ async function serverAutoTrade() {
       console.log(`[OPTIONS] ${instrument} PCR: ${optionsData.putCallRatio} IV: ${optionsData.avgIV} Bias: ${optionsData.institutionalBias}`);
 
       // Hard block: extreme PCR contradicts signal direction
-      if (parseFloat(optionsData.putCallRatio) > 3.0 && signal.direction === 'LONG') {
+      if (xavierWeights.optionsPCREnabled && parseFloat(optionsData.putCallRatio) > 3.0 && signal.direction === 'LONG') {
         console.log(`[OPTIONS BLOCK] ${instrument} — PCR ${optionsData.putCallRatio} strongly bearish — blocking LONG`);
         serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Options PCR Block', actual: `PCR ${optionsData.putCallRatio} > 3.0`, threshold: 'Strongly bearish positioning — LONG blocked' }] });
         if (serverRejections.length > 50) serverRejections.pop();
         diagCounters.blockedOptions++;
         continue;
       }
-      if (parseFloat(optionsData.putCallRatio) < 0.5 && signal.direction === 'SHORT') {
+      if (xavierWeights.optionsPCREnabled && parseFloat(optionsData.putCallRatio) < 0.5 && signal.direction === 'SHORT') {
         console.log(`[OPTIONS BLOCK] ${instrument} — PCR ${optionsData.putCallRatio} strongly bullish — blocking SHORT`);
         serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy, rejections: [{ condition: 'Options PCR Block', actual: `PCR ${optionsData.putCallRatio} < 0.5`, threshold: 'Strongly bullish positioning — SHORT blocked' }] });
         if (serverRejections.length > 50) serverRejections.pop();
@@ -6959,6 +7038,7 @@ setInterval(() => manageOpenTrades().catch(e => console.error('[mgmt] Loop:', e.
 setInterval(() => maybeSendDailySummary().catch(e => console.error('[mgmt] Summary:', e.message)), 60_000);
 
 // Upgrade 2 — Economic calendar refresh every hour
+loadRuntimeState().catch(e => console.error('[state] loadRuntimeState startup:', e.message));
 loadCooldowns().catch(e => console.error('[state] loadCooldowns startup:', e.message));
 loadPairPhases().then(() => confirmPhaseFixActive().catch(e => console.error('[phase fix] Discord notify:', e.message))).catch(e => console.error('[state] loadPairPhases startup:', e.message));
 loadTradeManagementState().catch(e => console.error('[state] loadTradeManagementState startup:', e.message));
