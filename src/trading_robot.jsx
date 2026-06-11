@@ -29,7 +29,7 @@ function priceDecimals(pair) {
 }
 
 function oandaToSlash(instrument) {
-  return instrument.replace("_", "/");
+  return (instrument || "").replace(/^I:?/, "").replace("_", "/");
 }
 
 function tradeDuration(openTime) {
@@ -6009,18 +6009,20 @@ function OpenPositionsPanel({ openTrades, livePrices, onClose, isMobile, mgmtRef
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {openTrades.map(trade => {
             const pair = oandaToSlash(trade.instrument);
-            const units = parseFloat(trade.currentUnits);
+            const units = parseFloat(trade.currentUnits ?? trade.units ?? 0);
             const isLong = units > 0;
-            const pnl = parseFloat(trade.unrealizedPL);
-            const entry = parseFloat(trade.price);
+            const pnl = parseFloat(trade.unrealizedPL ?? 0);
+            const entry = parseFloat(trade.price || 0);
             const dec = priceDecimals(pair);
             const current = livePrices[pair];
-            const dur = tradeDuration(trade.openTime);
-            const pnlStr = `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
+            const openTimeVal = trade.openTime || trade.timestamp || null;
+            const dur = openTimeVal ? tradeDuration(openTimeVal) : "—";
+            const pnlSafe = isNaN(pnl) ? 0 : pnl;
+            const pnlStr = `${pnlSafe >= 0 ? "+" : ""}$${pnlSafe.toFixed(2)}`;
             const oneR = (nav || 100) * 0.015;
-            const rMultiple = oneR > 0 ? pnl / oneR : 0;
-            const rStr = `${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(1)}R`;
-            const rColor = rMultiple >= 2 ? "#3fb950" : rMultiple >= 1 ? "#d29922" : rMultiple >= 0 ? "#8b949e" : "#f85149";
+            const rMultiple = oneR > 0 && !isNaN(pnlSafe) ? pnlSafe / oneR : null;
+            const rStr = rMultiple !== null ? `${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(1)}R` : "—";
+            const rColor = rMultiple === null ? "#484f58" : rMultiple >= 2 ? "#3fb950" : rMultiple >= 1 ? "#d29922" : rMultiple >= 0 ? "#8b949e" : "#f85149";
             const mgmt = mgmtRef?.current?.[trade.id] || {};
             const isBE    = mgmt.breakevenDone;
             const isTrail = mgmt.trailingActive;
@@ -7869,7 +7871,6 @@ const useSupabaseData = () => {
     winRate: 0, avgR: 0, totalPnl: 0,
     loading: true, lastUpdated: null,
   });
-  const [openPositions, setOpenPositions] = useState([]);
   const isMountedRef = useRef(true);
 
   const fetchSupa = useCallback(async () => {
@@ -7918,39 +7919,17 @@ const useSupabaseData = () => {
     }
   }, []);
 
-  const fetchOandaOpenTrades = useCallback(async () => {
-    try {
-      const token = localStorage.getItem('auth_token');
-      const res = await fetch(`${BRIDGE}/auto-trades`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
-      });
-      const data = await res.json();
-      return data.trades || [];
-    } catch (err) {
-      console.error('[OPEN TRADES]', err.message);
-      return [];
-    }
-  }, []);
-
   useEffect(() => {
     isMountedRef.current = true;
     fetchSupa();
     const supaInterval = setInterval(fetchSupa, 10000);
-
-    fetchOandaOpenTrades().then(trades => { if (isMountedRef.current) setOpenPositions(trades); });
-    const openInterval = setInterval(async () => {
-      const trades = await fetchOandaOpenTrades();
-      if (isMountedRef.current) setOpenPositions(trades);
-    }, 10000);
-
     return () => {
       isMountedRef.current = false;
       clearInterval(supaInterval);
-      clearInterval(openInterval);
     };
-  }, [fetchSupa, fetchOandaOpenTrades]);
+  }, [fetchSupa]);
 
-  return { ...supaData, refresh: fetchSupa, openPositions };
+  return { ...supaData, refresh: fetchSupa };
 };
 
 // ─── GLOBAL XAVIER FLOATING MIC (always-on wake word) ────────────────────────
@@ -8301,16 +8280,6 @@ export default function TradingRobot() {
     prevTradeCountRef.current = openTrades.length;
   }, [openTrades.length]);
 
-  // Sync open positions from useSupabaseData hook into openTrades
-  useEffect(() => {
-    if (!supabaseData.openPositions?.length) return;
-    setOpenTrades(prev =>
-      openTradesFingerprint(prev) === openTradesFingerprint(supabaseData.openPositions)
-        ? prev : supabaseData.openPositions
-    );
-  }, [supabaseData.openPositions]);
-
-
   // One-time seed: XAG/USD LONDON loss (2026-05-27) — occurred before xavier_memory existed
   useEffect(() => {
     if (localStorage.getItem('xavier_memory_seeded_v1')) return;
@@ -8367,23 +8336,31 @@ export default function TradingRobot() {
 
   const signalCount = Object.values(signalMap).filter(Boolean).length;
 
+  const openTradesIdsRef = useRef('');
   useEffect(() => {
     let isMounted = true;
     const fetchOpenTrades = async () => {
       if (!isMounted) return;
       try {
-        const r = await fetch(`${BRIDGE}/trades`, { headers: getAuthHeaders() });
+        const r = await fetch(`${BRIDGE}/auto-trades`, { headers: getAuthHeaders() });
         if (!r.ok) {
-          console.warn('[trades] poller HTTP', r.status, '— open positions may be stale');
+          console.warn('[auto-trades] poller HTTP', r.status, '— open positions may be stale');
           if (isMounted) setOpenTradesSyncError(`HTTP ${r.status}`);
           return;
         }
         const data = await r.json();
         if (!isMounted) return;
         if (Array.isArray(data.trades)) {
-          setOpenTrades(prev =>
-            openTradesFingerprint(prev) === openTradesFingerprint(data.trades) ? prev : data.trades
-          );
+          const newIds = data.trades.map(t => t.id).sort().join(',');
+          if (newIds !== openTradesIdsRef.current) {
+            openTradesIdsRef.current = newIds;
+            setOpenTrades(data.trades);
+          } else {
+            // Same trade set — still update P&L via fingerprint
+            setOpenTrades(prev =>
+              openTradesFingerprint(prev) === openTradesFingerprint(data.trades) ? prev : data.trades
+            );
+          }
           setOpenTradesLastSync(Date.now());
           setOpenTradesSyncError(null);
           // Reconcile: auto-add any OANDA trade not yet in swingTrades (server-fired Kill Shots)
@@ -8409,11 +8386,11 @@ export default function TradingRobot() {
             return next;
           });
         } else {
-          console.warn('[trades] poller — unexpected response shape:', JSON.stringify(data).slice(0, 100));
+          console.warn('[auto-trades] poller — unexpected response shape:', JSON.stringify(data).slice(0, 100));
           if (isMounted) setOpenTradesSyncError('Bad response');
         }
       } catch(e) {
-        console.warn('[trades] poller fetch failed:', e.message);
+        console.warn('[auto-trades] poller fetch failed:', e.message);
         if (isMounted) setOpenTradesSyncError(e.message);
       }
     };
@@ -8421,35 +8398,6 @@ export default function TradingRobot() {
     fetchOpenTrades();
     const id = setInterval(fetchOpenTrades, 15000);
     return () => { isMounted = false; clearInterval(id); };
-  }, []);
-
-  // Authoritative OANDA position sync — ensures Risk tab, heat, and circuit breaker
-  // reflect positions opened outside this session (direct OANDA, server auto-trades, etc.)
-  useEffect(() => {
-    const syncPositions = async () => {
-      try {
-        const r = await fetch(`${BRIDGE}/trades`, { headers: getAuthHeaders() });
-        if (!r.ok) {
-          console.warn('[trades] sync HTTP', r.status);
-          return;
-        }
-        const data = await r.json();
-        if (Array.isArray(data.trades)) {
-          setOpenTrades(prev =>
-            openTradesFingerprint(prev) === openTradesFingerprint(data.trades) ? prev : data.trades
-          );
-          setOpenTradesLastSync(Date.now());
-          setOpenTradesSyncError(null);
-        } else {
-          console.warn('[trades] sync — unexpected response:', JSON.stringify(data).slice(0, 100));
-        }
-      } catch(e) {
-        console.warn('[trades] sync failed:', e.message);
-      }
-    };
-    syncPositions();
-    const id = setInterval(syncPositions, 30_000);
-    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
