@@ -2944,7 +2944,10 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
         atr_at_entry:       ctxToStore.atrAtEntry         ?? null,
         trade_source:       ctxToStore.tradeSource        ?? null,
         spread_cost:        ctxToStore.spreadCost         ?? null,
-      }).then(() => {}).catch(e => console.warn('[SUPABASE] open context save failed:', e.message));
+      }).then(({ error: openErr }) => {
+        if (openErr) console.error('[SUPABASE OPEN ERROR]', pair, openErr.message, openErr.details, openErr.hint);
+        else console.log('[SUPABASE SAVE]', pair, 'open trade saved ✅', 'tradeId:', tradeId, 'session:', ctxToStore.session);
+      }).catch(e => console.error('[SUPABASE OPEN ERROR]', pair, e.message));
 
       // Also persist to dedicated trade_contexts table — survives Railway restarts
       try {
@@ -3920,9 +3923,9 @@ async function manageOpenTrades() {
             openTime:     trade.openTime,
             exitType,
           });
-          console.log('[SUPABASE SAVE]', instr, exitType, 'SUCCESS ✅');
+          console.log('[SUPABASE SAVE]', instr, 'SUCCESS ✅', 'outcome:', pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'BREAKEVEN', 'pnl:', pnl, 'session:', _closeSessDisc, 'exit:', exitType);
         } catch (saveErr) {
-          console.error('[SUPABASE SAVE]', instr, 'FAILED ❌', saveErr.message);
+          console.error('[SUPABASE SAVE ERROR]', instr, saveErr.message, saveErr.details, saveErr.hint);
         }
 
         // Clean up split-close tracking for this trade
