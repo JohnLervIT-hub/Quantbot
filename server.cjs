@@ -2836,10 +2836,19 @@ async function placeOrder({ instrument, direction, units, entry, stopLoss, takeP
     return { blocked: 'MARKET_HALTED', raw: result };
   }
 
-  if (result.orderRejectTransaction) {
-    const reason = result.orderRejectTransaction.rejectReason;
-    console.error('[ORDER REJECTED]', pair, reason);
-    return { blocked: 'OANDA_REJECT', reason };
+  if (result.orderCancelTransaction || result.orderRejectTransaction) {
+    const reason =
+      result.orderRejectTransaction?.rejectReason ||
+      result.orderCancelTransaction?.reason ||
+      'UNKNOWN';
+    console.log('[ORDER CANCELLED]', pair, 'reason:', reason, '— setting 30min cooldown');
+    postCloseCooldown.set(pair, Date.now());
+    await sendDiscordEmbed({
+      title: '❌ Order Cancelled',
+      color: 0xff4444,
+      fields: [{ name: pair, value: `OANDA cancelled order\nReason: ${reason}\nCooldown: 30 minutes` }],
+    });
+    return { blocked: 'OANDA_CANCEL', reason };
   }
 
   if (!result.orderFillTransaction) {
@@ -3486,8 +3495,11 @@ async function saveTradeToSupabase(trade) {
         .select('id');
       error = directErr;
 
+      if (directErr) {
+        console.error('[SUPABASE CLOSE ERROR]', instrument, directErr.message, directErr.details, directErr.hint);
+      }
       if (directHit?.length > 0) {
-        console.log('[SUPABASE UPDATE] direct ID ✅', instrument);
+        console.log('[SUPABASE CLOSE]', instrument, 'updated successfully ✅', 'outcome:', outcome, 'pnl:', trade.pnl);
       } else if (!directErr) {
         // No open record found for this ID — check if already closed (duplicate call)
         const { data: check } = await supabase.from('trades').select('close_time').eq('id', trade.id).maybeSingle();
@@ -3522,8 +3534,8 @@ async function saveTradeToSupabase(trade) {
             take_profit: trade.takeProfit,
             // created_at intentionally omitted — H6
           }).eq('id', nullRecord.id));
-          if (error) console.error('[SUPABASE UPDATE ERROR]', error.message);
-          else console.log('[SUPABASE UPDATE] pair-fallback ✅', instrument);
+          if (error) console.error('[SUPABASE CLOSE ERROR]', instrument, error.message, error.details, error.hint);
+          else console.log('[SUPABASE CLOSE]', instrument, 'updated successfully ✅', 'outcome:', outcome, 'pnl:', trade.pnl);
         } else {
           // No null record either — full upsert
           ({ error } = await supabase.from('trades').upsert({
@@ -3577,8 +3589,8 @@ async function saveTradeToSupabase(trade) {
         confidence_ray:     ctx.confidenceRay         ?? null,
         conviction_divergence: ctx.convictionDivergence ?? null,
           }));
-          if (error) console.error('[SUPABASE ERROR]', error.message);
-          else console.log('[SUPABASE] trade saved:', trade.pair, trade.pnl);
+          if (error) console.error('[SUPABASE CLOSE ERROR]', instrument, error.message, error.details, error.hint);
+          else console.log('[SUPABASE CLOSE]', instrument, 'upserted successfully ✅', 'outcome:', outcome, 'pnl:', trade.pnl);
         }  // end else (no null record — full upsert)
       }  // end else if (!directErr)
     }  // end if (trade.id)

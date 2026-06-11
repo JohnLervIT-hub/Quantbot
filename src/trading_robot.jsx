@@ -7869,6 +7869,7 @@ const useSupabaseData = () => {
     winRate: 0, avgR: 0, totalPnl: 0,
     loading: true, lastUpdated: null,
   });
+  const [openPositions, setOpenPositions] = useState([]);
   const isMountedRef = useRef(true);
 
   const fetchSupa = useCallback(async () => {
@@ -7917,14 +7918,39 @@ const useSupabaseData = () => {
     }
   }, []);
 
+  const fetchOandaOpenTrades = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      const res = await fetch(`${BRIDGE}/auto-trades`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      });
+      const data = await res.json();
+      return data.trades || [];
+    } catch (err) {
+      console.error('[OPEN TRADES]', err.message);
+      return [];
+    }
+  }, []);
+
   useEffect(() => {
     isMountedRef.current = true;
     fetchSupa();
-    const interval = setInterval(fetchSupa, 10000);
-    return () => { isMountedRef.current = false; clearInterval(interval); };
-  }, [fetchSupa]);
+    const supaInterval = setInterval(fetchSupa, 10000);
 
-  return { ...supaData, refresh: fetchSupa };
+    fetchOandaOpenTrades().then(trades => { if (isMountedRef.current) setOpenPositions(trades); });
+    const openInterval = setInterval(async () => {
+      const trades = await fetchOandaOpenTrades();
+      if (isMountedRef.current) setOpenPositions(trades);
+    }, 10000);
+
+    return () => {
+      isMountedRef.current = false;
+      clearInterval(supaInterval);
+      clearInterval(openInterval);
+    };
+  }, [fetchSupa, fetchOandaOpenTrades]);
+
+  return { ...supaData, refresh: fetchSupa, openPositions };
 };
 
 // ─── GLOBAL XAVIER FLOATING MIC (always-on wake word) ────────────────────────
@@ -8274,6 +8300,15 @@ export default function TradingRobot() {
     }
     prevTradeCountRef.current = openTrades.length;
   }, [openTrades.length]);
+
+  // Sync open positions from useSupabaseData hook into openTrades
+  useEffect(() => {
+    if (!supabaseData.openPositions?.length) return;
+    setOpenTrades(prev =>
+      openTradesFingerprint(prev) === openTradesFingerprint(supabaseData.openPositions)
+        ? prev : supabaseData.openPositions
+    );
+  }, [supabaseData.openPositions]);
 
 
   // One-time seed: XAG/USD LONDON loss (2026-05-27) — occurred before xavier_memory existed
