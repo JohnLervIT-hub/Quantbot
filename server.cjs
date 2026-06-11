@@ -5599,19 +5599,16 @@ async function serverSwingAutoTrade() {
     return;
   }
 
+  let pairsScanned = 0, weeklyBlocked = 0, scoreBlocked = 0, killShotsQueued = 0;
+
   for (const instrument of sessionKillShots) {
     // Session already gated by XAVIER_SESSION_RULES[session].killShot — no extra check needed
 
-    // 4-hour cooldown per pair (stamp before consensus to prevent parallel double-fire)
+    // 4-hour cooldown per pair — stamped only on consensus PASS (see below)
     if (Date.now() - (lastSwingConsensus.get(instrument) || 0) < 4 * 60 * 60_000) continue;
 
-    // Post-close cooldown — skip if instrument closed within last 15 minutes
-    const lastClose = postCloseCooldown.get(instrument);
-    if (lastClose && Date.now() - lastClose < POST_CLOSE_COOLDOWN_MS) {
-      const minsLeft = Math.ceil((POST_CLOSE_COOLDOWN_MS - (Date.now() - lastClose)) / 60000);
-      console.log(`[COOLDOWN HARD BLOCK] ${instrument} swing — ${minsLeft} min remaining — ABORTING`);
-      continue;
-    }
+    // Post-close cooldown intentionally bypassed for swing scanner:
+    // M5 closures shouldn't block Kill Shot scans — swing has its own 4h cooldown above.
 
     try {
       // Fetch H4 (100 bars) + weekly (10 bars) in parallel
@@ -5619,6 +5616,17 @@ async function serverSwingAutoTrade() {
         fetchOandaCandles(instrument, 'H4', 100),
         fetchOandaCandles(instrument, 'W',   10),
       ]);
+
+      // FIX 7: Invalidate swing consensus cache when a new H4 candle has formed since cache was set
+      if (h4Candles.length > 0) {
+        const latestH4Ms = new Date(h4Candles[h4Candles.length - 1].time).getTime();
+        for (const [key, entry] of swingConsensusCache.entries()) {
+          if (key.startsWith(instrument + '_') && latestH4Ms > entry.ts) {
+            swingConsensusCache.delete(key);
+            console.log('[SWING CACHE CLEARED]', instrument, `— new H4 candle formed after cache (${h4Candles[h4Candles.length - 1].time})`);
+          }
+        }
+      }
 
       if (h4Candles.length < 50) {
         console.log(`[SWING SKIP] ${instrument} — insufficient H4 candles: ${h4Candles.length} (need 50)`);
@@ -5631,6 +5639,7 @@ async function serverSwingAutoTrade() {
         continue;
       }
       diagCounters.swingCounter++;
+      pairsScanned++;
 
       // Weekly trend alignment block — prevents counter-trend swing trades
       const swingWeeklyCandles = await getCandles(instrument, 'W', 3);
@@ -5641,8 +5650,7 @@ async function serverSwingAutoTrade() {
         : 'UNKNOWN';
 
       if (swingWeeklyTrend === 'UNKNOWN') {
-        console.log('[SWING WEEKLY BLOCK]', instrument, 'weekly trend unknown — candle fetch failed — blocking');
-        continue;
+        console.log('[SWING WEEKLY UNKNOWN]', instrument, '— weekly candle fetch failed, proceeding without trend filter');
       }
 
       const isCounterTrend =
@@ -5653,6 +5661,7 @@ async function serverSwingAutoTrade() {
         console.log('[COUNTER-TREND]', instrument, sig.direction, 'vs weekly', swingWeeklyTrend, '— raising threshold to 85%');
         if (sig.score < 85) {
           console.log('[COUNTER-TREND BLOCK]', instrument, 'score', sig.score, 'below 85% counter-trend minimum');
+          weeklyBlocked++;
           continue;
         }
         sig.counterTrend      = true;
@@ -5690,6 +5699,7 @@ async function serverSwingAutoTrade() {
       // Score gate — swing minimum 75%; silent continue saves consensus API calls
       if (sig.score < 75) {
         console.log('[SWING SCORE BLOCK]', instrument, `${sig.score}% — below 75% minimum — skipping`);
+        scoreBlocked++;
         continue;
       }
 
@@ -5837,6 +5847,7 @@ async function serverSwingAutoTrade() {
       lastValidSwingSignal = { instrument, direction: sig.direction, score: sig.score, session, timestamp: ts };
       swingStatus = { status: 'LIVE', message: `Kill Shot queued: ${instrument} ${sig.direction}`, lastSignal: lastValidSwingSignal, nextScan: null };
       diagCounters.swingQueued++;
+      killShotsQueued++;
       await requestKillShotApproval({
         instrument, direction: sig.direction, units,
         liveEntry, liveSl, liveTp1, liveTp2, liveTp3,
@@ -5853,6 +5864,19 @@ async function serverSwingAutoTrade() {
       console.error(`[swing-auto] ${instrument} — error: ${err.message}`);
     }
   }
+
+  // Scan complete — no Kill Shot queued this run
+  console.log(`[SWING SCAN COMPLETE] ${session} | scanned:${pairsScanned} queued:${killShotsQueued} weeklyBlock:${weeklyBlocked} scoreBlock:${scoreBlocked}`);
+  await sendDiscordEmbed({
+    title: '🔍 Swing Scan Complete',
+    color: 0x0088ff,
+    fields: [{
+      name: `Session: ${session}`,
+      value: `Pairs scanned: ${pairsScanned}\nKill Shots queued: ${killShotsQueued}\nBlocked by weekly/counter-trend: ${weeklyBlocked}\nBlocked by score (<75%): ${scoreBlocked}\nNext scan: ~1 hour`,
+      inline: false,
+    }],
+    timestamp: now.toISOString(),
+  });
 }
 
 // ─── DISCORD SIGNATURE VERIFICATION (Ed25519) ────────────────────────────────
