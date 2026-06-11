@@ -5733,7 +5733,25 @@ function NewsTab({ isMobile }) {
 }
 
 // ─── OPEN POSITIONS PANEL ─────────────────────────────────────────────────────
-function AutoModeSettingsModal({ settings, onSave, onCancel, onResetOnboarding }) {
+function FilterToggle({ label, value, onChange }) {
+  const on = value ?? true;
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 0', borderBottom: '1px solid #21262d' }}>
+      <span style={{ fontSize: 12, color: '#8b949e' }}>{label}</span>
+      <button onClick={onChange} style={{
+        background: on ? 'rgba(63,185,80,0.12)' : 'rgba(248,81,73,0.10)',
+        border: `1px solid ${on ? '#238636' : '#6e3636'}`,
+        borderRadius: 5, padding: '3px 12px',
+        color: on ? '#3fb950' : '#f85149',
+        cursor: 'pointer', fontWeight: 700, fontSize: 11, fontFamily: 'inherit', minWidth: 44,
+      }}>
+        {on ? 'ON' : 'OFF'}
+      </button>
+    </div>
+  );
+}
+
+function AutoModeSettingsModal({ settings, onSave, onCancel, onResetOnboarding, serverWeights, onUpdateServerWeight }) {
   const [s, setS] = useState(settings);
   const set = (k, v) => setS(prev => ({ ...prev, [k]: v }));
 
@@ -5856,6 +5874,79 @@ function AutoModeSettingsModal({ settings, onSave, onCancel, onResetOnboarding }
             With these settings the bot will trade maximum <strong>{s.maxTradesPerHour}</strong> time{s.maxTradesPerHour !== 1 ? "s" : ""} per hour at <strong>{s.minConfidence}%</strong> confidence, requiring <strong>{s.consensusRequired}/4</strong> AI models to agree. RAY uses live Google news for macro context. Auto-halts if heat exceeds <strong>{s.maxHeat}R</strong>.
           </div>
         </div>
+
+        {/* Filter Controls */}
+        {serverWeights && onUpdateServerWeight && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: '#8b949e', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 8 }}>
+              Filter Controls
+            </div>
+            <FilterToggle label="Weekly Trend Filter" value={serverWeights.weeklyTrendEnabled ?? true}
+              onChange={() => onUpdateServerWeight('weeklyTrendEnabled', !(serverWeights.weeklyTrendEnabled ?? true))} />
+            <FilterToggle label="M5 Trend Confirmation" value={serverWeights.m5TrendEnabled ?? true}
+              onChange={() => onUpdateServerWeight('m5TrendEnabled', !(serverWeights.m5TrendEnabled ?? true))} />
+            <FilterToggle label="Options PCR Filter" value={serverWeights.optionsPCREnabled ?? true}
+              onChange={() => onUpdateServerWeight('optionsPCREnabled', !(serverWeights.optionsPCREnabled ?? true))} />
+            <FilterToggle label="Historical Edge Filter" value={serverWeights.historicalEdgeEnabled ?? true}
+              onChange={() => onUpdateServerWeight('historicalEdgeEnabled', !(serverWeights.historicalEdgeEnabled ?? true))} />
+          </div>
+        )}
+
+        {/* Numeric filter settings */}
+        {serverWeights && onUpdateServerWeight && (<>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#e6edf3' }}>Score threshold</span>
+              <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 14, fontWeight: 700, color: '#388bfd' }}>{serverWeights.scoreThreshold ?? 65}%</span>
+            </div>
+            <input type="range" min={50} max={95} step={5} value={serverWeights.scoreThreshold ?? 65}
+              onChange={e => onUpdateServerWeight('scoreThreshold', Number(e.target.value))}
+              style={{ width: '100%', accentColor: '#388bfd', cursor: 'pointer' }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#484f58' }}>
+              <span>50% — more trades</span><span>95% — very selective</span>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#e6edf3' }}>Post-close cooldown</span>
+              <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 14, fontWeight: 700, color: '#d29922' }}>{serverWeights.postCloseCooldownMins ?? 15} min</span>
+            </div>
+            <input type="range" min={5} max={60} step={5} value={serverWeights.postCloseCooldownMins ?? 15}
+              onChange={e => onUpdateServerWeight('postCloseCooldownMins', Number(e.target.value))}
+              style={{ width: '100%', accentColor: '#d29922', cursor: 'pointer' }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#484f58' }}>
+              <span>5 min — re-enter fast</span><span>60 min — long rest</span>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 12, color: '#e6edf3', fontWeight: 600 }}>Max open trades</span>
+                <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, fontWeight: 700, color: '#3fb950' }}>{serverWeights.maxOpenTrades ?? 2}</span>
+              </div>
+              <input type="range" min={1} max={5} step={1} value={serverWeights.maxOpenTrades ?? 2}
+                onChange={e => onUpdateServerWeight('maxOpenTrades', Number(e.target.value))}
+                style={{ width: '100%', accentColor: '#3fb950', cursor: 'pointer' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#484f58' }}>
+                <span>1</span><span>5</span>
+              </div>
+            </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 12, color: '#e6edf3', fontWeight: 600 }}>Heat limit</span>
+                <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, fontWeight: 700, color: '#f85149' }}>{serverWeights.heatLimit ?? 4}R</span>
+              </div>
+              <input type="range" min={2} max={10} step={0.5} value={serverWeights.heatLimit ?? 4}
+                onChange={e => onUpdateServerWeight('heatLimit', Number(e.target.value))}
+                style={{ width: '100%', accentColor: '#f85149', cursor: 'pointer' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#484f58' }}>
+                <span>2R</span><span>10R</span>
+              </div>
+            </div>
+          </div>
+        </>)}
 
         {/* Buttons */}
         <div style={{ display: "flex", gap: 10 }}>
@@ -8129,6 +8220,28 @@ export default function TradingRobot() {
   const [autoModeLoading, setAutoModeLoading] = useState(false);
   const [recoveryStatus, setRecoveryStatus] = useState({ recoveryMode: false, peakBalance: 0, currentBalance: 0, drawdown: 0, triggerAt: 3, exitAt: 1.5 });
   const [showAutoSettings, setShowAutoSettings] = useState(false);
+  const [serverWeights, setServerWeights] = useState({
+    weeklyTrendEnabled: true, m5TrendEnabled: true, optionsPCREnabled: true,
+    historicalEdgeEnabled: true, postCloseCooldownMins: 15, maxOpenTrades: 2, heatLimit: 4, scoreThreshold: 65,
+  });
+  useEffect(() => {
+    const token = localStorage.getItem('auth_token');
+    fetch(`${BRIDGE}/xavier-weights`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setServerWeights(prev => ({ ...prev, ...d })); })
+      .catch(() => {});
+  }, []);
+  const updateServerWeight = useCallback((key, value) => {
+    const token = localStorage.getItem('auth_token');
+    setServerWeights(prev => {
+      fetch(`${BRIDGE}/xavier-weights`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ [key]: value }),
+      }).catch(() => {});
+      return { ...prev, [key]: value };
+    });
+  }, []);
   const [autoSettings, setAutoSettings] = useState({
     minConfidence: 65,
     maxTradesPerHour: 2,
@@ -9417,6 +9530,8 @@ export default function TradingRobot() {
           onSave={(s) => { setAutoSettings(s); setShowAutoSettings(false); enableAutoMode(true); }}
           onCancel={() => setShowAutoSettings(false)}
           onResetOnboarding={() => { localStorage.removeItem("xavier_onboarded"); setShowOnboarding(true); setShowAutoSettings(false); }}
+          serverWeights={serverWeights}
+          onUpdateServerWeight={updateServerWeight}
         />
       )}
 

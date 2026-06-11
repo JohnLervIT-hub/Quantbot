@@ -3158,7 +3158,8 @@ async function loadPendingKillShots() {
 }
 
 // ─── RUNTIME STATE PERSISTENCE ─────────────────────────────────────────────────
-// Persists: consecutiveLosses, recoveryMode, peakBalance, xavierWeights
+// Persists: consecutiveLosses, recoveryMode, peakBalance in runtime_state;
+//           xavierWeights separately in xavier_weights for direct lookup
 async function saveRuntimeState() {
   if (!supabase) return;
   try {
@@ -3168,8 +3169,12 @@ async function saveRuntimeState() {
         consecutiveLosses: Object.fromEntries(consecutiveLosses),
         recoveryMode,
         peakBalance,
-        xavierWeights,
       }),
+      updated_at: new Date().toISOString(),
+    });
+    await supabase.from('system_state').upsert({
+      key:        'xavier_weights',
+      value:      JSON.stringify(xavierWeights),
       updated_at: new Date().toISOString(),
     });
   } catch (e) {
@@ -3195,10 +3200,22 @@ async function loadRuntimeState() {
       }
       if (state.recoveryMode !== undefined) recoveryMode = state.recoveryMode;
       if (state.peakBalance)               peakBalance   = state.peakBalance;
-      if (state.xavierWeights)             Object.assign(xavierWeights, state.xavierWeights);
       console.log(`[RUNTIME STATE] restored ✅ recovery:${recoveryMode} peak:$${peakBalance.toFixed(2)} losses:${consecutiveLosses.size} pairs`);
     } else {
       console.log('[RUNTIME STATE] fresh start');
+    }
+
+    // Restore xavierWeights from dedicated key — takes precedence, merges with code defaults
+    const { data: weightsData } = await supabase
+      .from('system_state')
+      .select('value')
+      .eq('key', 'xavier_weights')
+      .single();
+
+    if (weightsData?.value) {
+      const saved = JSON.parse(weightsData.value);
+      xavierWeights = { ...xavierWeights, ...saved };
+      console.log('[XAVIER WEIGHTS] restored from Supabase ✅', JSON.stringify(xavierWeights));
     }
   } catch (e) {
     console.log('[RUNTIME STATE] fresh start —', e.message);
