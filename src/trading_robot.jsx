@@ -8420,7 +8420,8 @@ export default function TradingRobot() {
   useEffect(() => {
     const fetchPaperTrades = async () => {
       try {
-        const r = await fetch(`${BRIDGE}/paper-trades`);
+        const r = await fetch(`${BRIDGE}/paper-trades`, { headers: getAuthHeaders() });
+        if (!r.ok) return;
         const data = await r.json();
         if (Array.isArray(data.trades)) setPaperTrades(data.trades);
       } catch {}
@@ -8437,8 +8438,8 @@ export default function TradingRobot() {
       try {
         const [healthData, accountData, recoveryData] = await Promise.all([
           fetch(`${BRIDGE}/health`).then(r => r.json()).catch(() => null),
-          fetch(`${BRIDGE}/account`).then(r => r.json()).catch(() => null),
-          fetch(`${BRIDGE}/recovery-status`).then(r => r.json()).catch(() => null),
+          fetch(`${BRIDGE}/account`, { headers: getAuthHeaders() }).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${BRIDGE}/recovery-status`, { headers: getAuthHeaders() }).then(r => r.ok ? r.json() : null).catch(() => null),
         ]);
         if (!isMounted) return;
         if (healthData) {
@@ -8587,14 +8588,18 @@ export default function TradingRobot() {
           const isImprovement = currentSLPrice === 0 || (isLong ? newSL > currentSLPrice : newSL < currentSLPrice);
           if (isImprovement) {
             try {
-              await fetch(`${BRIDGE}/order/${tradeId}/sl`, {
-                method: "PATCH", headers: { "Content-Type": "application/json" },
+              const r = await fetch(`${BRIDGE}/order/${tradeId}/sl`, {
+                method: "PATCH", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
                 body: JSON.stringify({ price: newSL.toFixed(dec) }),
               });
-              mgmt.breakevenDone = true;
-              const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-              setMgmtAlerts(prev => [{ id: `${tradeId}-be-${nowMs}`, timestamp: ts, pair, action: "BREAKEVEN", msg: "Moved to breakeven — protecting capital" }, ...prev].slice(0, 20));
-              console.log(`[TME] ${pair} breakeven — SL → ${newSL.toFixed(dec)}`);
+              if (r.ok) {
+                mgmt.breakevenDone = true;
+                const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+                setMgmtAlerts(prev => [{ id: `${tradeId}-be-${nowMs}`, timestamp: ts, pair, action: "BREAKEVEN", msg: "Moved to breakeven — protecting capital" }, ...prev].slice(0, 20));
+                console.log(`[TME] ${pair} breakeven — SL → ${newSL.toFixed(dec)}`);
+              } else {
+                console.warn(`[TME] Breakeven rejected HTTP ${r.status} for ${pair}`);
+              }
             } catch (e) { console.error(`[TME] Breakeven failed ${pair}:`, e.message); }
           }
         }
@@ -8602,14 +8607,18 @@ export default function TradingRobot() {
         // 2. PARTIAL PROFIT — when profit >= 2R, close 500 units
         if (!mgmt.partialDone && currentR >= 2 && Math.abs(parseInt(trade.currentUnits || 0)) > 500) {
           try {
-            await fetch(`${BRIDGE}/close/${tradeId}/partial`, {
-              method: "POST", headers: { "Content-Type": "application/json" },
+            const r = await fetch(`${BRIDGE}/close/${tradeId}/partial`, {
+              method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
               body: JSON.stringify({ units: "500" }),
             });
-            mgmt.partialDone = true;
-            const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-            setMgmtAlerts(prev => [{ id: `${tradeId}-pp-${nowMs}`, timestamp: ts, pair, action: "PARTIAL", msg: "Partial profit taken at 2R" }, ...prev].slice(0, 20));
-            console.log(`[TME] ${pair} partial close — 500 units at 2R`);
+            if (r.ok) {
+              mgmt.partialDone = true;
+              const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+              setMgmtAlerts(prev => [{ id: `${tradeId}-pp-${nowMs}`, timestamp: ts, pair, action: "PARTIAL", msg: "Partial profit taken at 2R" }, ...prev].slice(0, 20));
+              console.log(`[TME] ${pair} partial close — 500 units at 2R`);
+            } else {
+              console.warn(`[TME] Partial rejected HTTP ${r.status} for ${pair}`);
+            }
           } catch (e) { console.error(`[TME] Partial close failed ${pair}:`, e.message); }
         }
 
@@ -8620,12 +8629,16 @@ export default function TradingRobot() {
           const isImprovement = currentSLPrice === 0 || (isLong ? trailSL > currentSLPrice : trailSL < currentSLPrice);
           if (isImprovement) {
             try {
-              await fetch(`${BRIDGE}/order/${tradeId}/sl`, {
-                method: "PATCH", headers: { "Content-Type": "application/json" },
+              const r = await fetch(`${BRIDGE}/order/${tradeId}/sl`, {
+                method: "PATCH", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
                 body: JSON.stringify({ price: trailSL.toFixed(dec) }),
               });
-              mgmt.trailingActive = true;
-              console.log(`[TME] ${pair} trail → ${trailSL.toFixed(dec)} (${currentR.toFixed(1)}R locked)`);
+              if (r.ok) {
+                mgmt.trailingActive = true;
+                console.log(`[TME] ${pair} trail → ${trailSL.toFixed(dec)} (${currentR.toFixed(1)}R locked)`);
+              } else {
+                console.warn(`[TME] Trailing stop rejected HTTP ${r.status} for ${pair}`);
+              }
             } catch (e) { console.error(`[TME] Trailing stop failed ${pair}:`, e.message); }
           }
         }
@@ -8633,12 +8646,16 @@ export default function TradingRobot() {
         // 4. TIME EXIT — > 4 hours open with no profit
         if (hoursSinceOpen > 4 && unrealizedPL <= 0) {
           try {
-            await fetch(`${BRIDGE}/close/${tradeId}`, { method: "POST" });
-            setOpenTrades(prev => prev.filter(t => t.id !== tradeId));
-            delete tradeMgmtRef.current[tradeId];
-            const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-            setMgmtAlerts(prev => [{ id: `${tradeId}-te-${nowMs}`, timestamp: ts, pair, action: "TIME EXIT", msg: "Time exit — no momentum after 4 hours" }, ...prev].slice(0, 20));
-            console.log(`[TME] ${pair} time exit — ${hoursSinceOpen.toFixed(1)}h with P&L ${unrealizedPL.toFixed(2)}`);
+            const r = await fetch(`${BRIDGE}/close/${tradeId}`, { method: "POST", headers: getAuthHeaders() });
+            if (r.ok) {
+              setOpenTrades(prev => prev.filter(t => t.id !== tradeId));
+              delete tradeMgmtRef.current[tradeId];
+              const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+              setMgmtAlerts(prev => [{ id: `${tradeId}-te-${nowMs}`, timestamp: ts, pair, action: "TIME EXIT", msg: "Time exit — no momentum after 4 hours" }, ...prev].slice(0, 20));
+              console.log(`[TME] ${pair} time exit — ${hoursSinceOpen.toFixed(1)}h with P&L ${unrealizedPL.toFixed(2)}`);
+            } else {
+              console.warn(`[TME] Time exit rejected HTTP ${r.status} for ${pair} — trade remains open`);
+            }
           } catch (e) { console.error(`[TME] Time exit failed ${pair}:`, e.message); }
           continue;
         }
@@ -8725,9 +8742,16 @@ export default function TradingRobot() {
   const closeTrade = useCallback(async (tradeId, pair) => {
     if (!window.confirm(`Close ${pair} position?`)) return;
     try {
-      await fetch(`${BRIDGE}/close/${tradeId}`, { method: "POST" });
-      setOpenTrades(prev => prev.filter(t => t.id !== tradeId));
-    } catch {}
+      const r = await fetch(`${BRIDGE}/close/${tradeId}`, { method: "POST", headers: getAuthHeaders() });
+      if (r.ok) {
+        setOpenTrades(prev => prev.filter(t => t.id !== tradeId));
+      } else {
+        const err = await r.json().catch(() => ({}));
+        alert(`Close failed: ${err.error || `HTTP ${r.status}`}`);
+      }
+    } catch (e) {
+      alert(`Close failed: ${e.message}`);
+    }
   }, []);
 
   const handleStrategyChange = useCallback((s) => {
