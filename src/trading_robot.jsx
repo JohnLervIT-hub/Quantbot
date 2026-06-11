@@ -8582,6 +8582,21 @@ export default function TradingRobot() {
         }
         const mgmt = tradeMgmtRef.current[tradeId];
 
+        // Swing/Kill Shot trades are fully exempt from TME — managed by OANDA SL/TP only
+        const isSwingTrade = (() => {
+          try {
+            const swingIds = new Set(
+              JSON.parse(localStorage.getItem('swing_trades') || '[]')
+                .map(s => s.oandaId?.toString()).filter(Boolean)
+            );
+            return swingIds.has(tradeId?.toString());
+          } catch { return false; }
+        })();
+        if (isSwingTrade) {
+          console.log(`[TME] ${pair} is a swing/Kill Shot trade — skipping all TME management`);
+          continue;
+        }
+
         // 1. BREAKEVEN — when profit >= 1R, move SL to entry + 1 pip
         if (!mgmt.breakevenDone && currentR >= 1 && entryPrice > 0) {
           const newSL = isLong ? entryPrice + pip : entryPrice - pip;
@@ -8643,13 +8658,8 @@ export default function TradingRobot() {
           }
         }
 
-        // 4. TIME EXIT — > 4 hours open with no profit (M5 trades only — skip swing/Kill Shot)
-        const swingIds = new Set(
-          JSON.parse(localStorage.getItem('swing_trades') || '[]')
-            .map(s => s.oandaId?.toString()).filter(Boolean)
-        );
-        const isSwingTrade = swingIds.has(tradeId?.toString());
-        if (!isSwingTrade && hoursSinceOpen > 4 && unrealizedPL <= 0) {
+        // 4. TIME EXIT — > 4 hours open with no profit (M5 intraday trades only)
+        if (hoursSinceOpen > 4 && unrealizedPL <= 0) {
           try {
             const r = await fetch(`${BRIDGE}/close/${tradeId}`, { method: "POST", headers: getAuthHeaders() });
             if (r.ok) {
@@ -8663,9 +8673,6 @@ export default function TradingRobot() {
             }
           } catch (e) { console.error(`[TME] Time exit failed ${pair}:`, e.message); }
           continue;
-        }
-        if (isSwingTrade && hoursSinceOpen > 4 && unrealizedPL <= 0) {
-          console.log(`[TME] ${pair} swing/Kill Shot — skipping time exit (${hoursSinceOpen.toFixed(1)}h, P&L $${unrealizedPL.toFixed(2)})`);
         }
 
         // 5. SESSION EXIT ALERT — London/Prime trade when Prime window closes (17 UTC = 11am MDT)
