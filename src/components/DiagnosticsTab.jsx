@@ -96,8 +96,8 @@ export default function DiagnosticsTab({ isVisible }) {
           M5 Signal Funnel
         </div>
         {[
-          ['Signals Scanned',    m5?.signalsScanned    ?? 0],
-          ['Passed News Guard',  m5?.passedNewsGuard   ?? 0],
+          ['Pairs Checked',      m5?.passedNewsGuard   ?? 0],
+          ['Signals Generated',  m5?.signalsScanned    ?? 0],
           ['Passed Gatekeeper',  m5?.passedGatekeeper  ?? 0],
           ['Passed Macro Filter',m5?.passedMacroFilter ?? 0],
           ['Reached Consensus',  m5?.reachedConsensus  ?? 0],
@@ -131,14 +131,20 @@ export default function DiagnosticsTab({ isVisible }) {
           Blocked Signals
         </div>
         {[
-          ['Score Threshold', blocked?.scoreThreshold ?? 0],
-          ['News Guard',      blocked?.newsGuard      ?? 0],
-          ['Macro Filter',    blocked?.macroFilter    ?? 0],
-          ['Options PCR',     blocked?.options        ?? 0],
-          ['Historical Edge', blocked?.historical     ?? 0],
-          ['Consensus',       blocked?.consensus      ?? 0],
-          ['Cooldown',        blocked?.cooldown       ?? 0],
-          ['Heat Limit',      blocked?.heatLimit      ?? 0],
+          ['Score Threshold',        blocked?.scoreThreshold    ?? 0],
+          ['News Guard',             blocked?.newsGuard         ?? 0],
+          ['Weekly Trend Block',     blocked?.weeklyTrend       ?? 0],
+          ['M5 Trend Block',         blocked?.m5Trend           ?? 0],
+          ['Long Macro Block',       blocked?.longMacro         ?? 0],
+          ['Options PCR',            blocked?.options           ?? 0],
+          ['Historical Edge',        blocked?.historical        ?? 0],
+          ['Consensus',              blocked?.consensus         ?? 0],
+          ['Consensus Cooldown',     blocked?.consensusCooldown ?? 0],
+          ['Post-Close Cooldown',    blocked?.postClose         ?? 0],
+          ['Pair Lock (open trade)', blocked?.pairLock          ?? 0],
+          ['Validation Block',       blocked?.validation        ?? 0],
+          ['PlaceOrder Block',       blocked?.placeOrder        ?? 0],
+          ['Heat Limit',             blocked?.heatLimit         ?? 0],
         ].map(([label, value]) => (
           <div key={label} style={{
             display:'flex',

@@ -941,30 +941,36 @@ const signalFirstDetected      = new Map(); // instrument → ms timestamp when 
 
 // ─── DIAGNOSTIC COUNTERS (reset every 24h) ───────────────────────────────────
 let diagCounters = {
-  resetAt:             Date.now(),
-  loopRuns:            0,
-  pairsAttempted:      0,
-  noSignal:            0,
-  signalCounter:       0,
-  gatekeeperPass:      0,
-  newsGuardPass:       0,
-  macroPass:           0,
-  reachedConsensus:    0,
-  aplusCount:          0,
-  standardCount:       0,
-  executedCount:       0,
-  blockedScore:        0,
-  blockedNews:         0,
-  blockedMacro:        0,
-  blockedOptions:      0,
-  blockedHistory:      0,
-  blockedConsensus:    0,
-  blockedCooldown:     0,
-  blockedHeat:         0,
-  swingCounter:        0,
-  swingConsensusPass:  0,
-  swingQueued:         0,
-  swingExecutedCount:  0,
+  resetAt:                  Date.now(),
+  loopRuns:                 0,
+  pairsAttempted:           0,
+  noSignal:                 0,
+  signalCounter:            0,
+  gatekeeperPass:           0,
+  newsGuardPass:            0,
+  macroPass:                0,
+  reachedConsensus:         0,
+  aplusCount:               0,
+  standardCount:            0,
+  executedCount:            0,
+  blockedScore:             0,
+  blockedNews:              0,
+  blockedWeeklyTrend:       0,
+  blockedM5Trend:           0,
+  blockedLongMacro:         0,
+  blockedOptions:           0,
+  blockedHistory:           0,
+  blockedConsensus:         0,
+  blockedConsensusCooldown: 0,
+  blockedPostClose:         0,
+  blockedPairLock:          0,
+  blockedValidation:        0,
+  blockedPlaceOrder:        0,
+  blockedHeat:              0,
+  swingCounter:             0,
+  swingConsensusPass:       0,
+  swingQueued:              0,
+  swingExecutedCount:       0,
 };
 let   economicEvents       = [];        // high-impact events this week
 let   dailyStats           = { date: '', trades: 0, winners: 0, losers: 0, totalPnl: 0, bestTrade: '', _bestPnl: -Infinity };
@@ -4496,7 +4502,7 @@ async function serverAutoTrade() {
 
   // Reset diagnostic counters every 24h
   if (Date.now() - diagCounters.resetAt > 24 * 60 * 60 * 1000) {
-    diagCounters = { resetAt: Date.now(), loopRuns: 0, pairsAttempted: 0, noSignal: 0, signalCounter: 0, gatekeeperPass: 0, newsGuardPass: 0, macroPass: 0, reachedConsensus: 0, aplusCount: 0, standardCount: 0, executedCount: 0, blockedScore: 0, blockedNews: 0, blockedMacro: 0, blockedOptions: 0, blockedHistory: 0, blockedConsensus: 0, blockedCooldown: 0, blockedHeat: 0, swingCounter: 0, swingConsensusPass: 0, swingQueued: 0, swingExecutedCount: 0 };
+    diagCounters = { resetAt: Date.now(), loopRuns: 0, pairsAttempted: 0, noSignal: 0, signalCounter: 0, gatekeeperPass: 0, newsGuardPass: 0, macroPass: 0, reachedConsensus: 0, aplusCount: 0, standardCount: 0, executedCount: 0, blockedScore: 0, blockedNews: 0, blockedWeeklyTrend: 0, blockedM5Trend: 0, blockedLongMacro: 0, blockedOptions: 0, blockedHistory: 0, blockedConsensus: 0, blockedConsensusCooldown: 0, blockedPostClose: 0, blockedPairLock: 0, blockedValidation: 0, blockedPlaceOrder: 0, blockedHeat: 0, swingCounter: 0, swingConsensusPass: 0, swingQueued: 0, swingExecutedCount: 0 };
   }
 
   if (openTrades.length >= 2) {
@@ -4528,7 +4534,7 @@ async function serverAutoTrade() {
       continue;
     }
     // Consensus cooldown — 15 minutes between signal attempts per pair
-    if (Date.now() - (lastConsensus.get(instrument) || 0) < 15 * 60_000) { diagCounters.blockedCooldown++; continue; }
+    if (Date.now() - (lastConsensus.get(instrument) || 0) < 15 * 60_000) { diagCounters.blockedConsensusCooldown++; continue; }
 
     // Post-close cooldown — 15 minutes after any close on this instrument
     const lastClose = postCloseCooldown.get(instrument);
@@ -4536,7 +4542,7 @@ async function serverAutoTrade() {
     console.log(`[COOLDOWN CHECK] ${instrument} — ${lastClose ? `last close ${Math.round((Date.now() - lastClose) / 60000)} min ago, ${cooldownMinsLeft > 0 ? cooldownMinsLeft + ' min remaining' : 'CLEAR'}` : 'no recent close'}`);
     if (lastClose && Date.now() - lastClose < POST_CLOSE_COOLDOWN_MS) {
       console.log(`[COOLDOWN HARD BLOCK] ${instrument} — ${cooldownMinsLeft} min remaining — ABORTING`);
-      diagCounters.blockedCooldown++;
+      diagCounters.blockedPostClose++;
       continue;
     }
 
@@ -4545,7 +4551,7 @@ async function serverAutoTrade() {
       console.log(`[PAIR LOCK] ${instrument} already open in another timeframe — skipping M5`);
       serverRejections.unshift({ ts, instrument, direction: '?', score: 0, session, strategy, rejections: [{ condition: 'Pair Lock', actual: `${instrument} already open`, threshold: 'One position per pair across all systems' }] });
       if (serverRejections.length > 50) serverRejections.pop();
-      diagCounters.blockedCooldown++;
+      diagCounters.blockedPairLock++;
       continue;
     }
 
@@ -4657,7 +4663,7 @@ async function serverAutoTrade() {
       serverRejections.unshift({ ts, instrument, direction: signal.direction, score: signal.score, session, strategy,
         rejections: [{ condition: 'Weekly Trend Alignment', actual: `${signal.direction} vs ${weeklyTrend} weekly`, threshold: 'Signal must align with weekly candle direction' }] });
       if (serverRejections.length > 50) serverRejections.pop();
-      diagCounters.blockedMacro++;
+      diagCounters.blockedWeeklyTrend++;
       continue;
     }
 
@@ -4786,7 +4792,7 @@ async function serverAutoTrade() {
           30 * 60 * 1000,
           () => ({ title: '⏳ Waiting for Trend', description: instrument + ' score ' + signal.score + '% — trend not confirmed yet' })
         );
-        diagCounters.blockedMacro++;
+        diagCounters.blockedM5Trend++;
         continue;
       }
       console.log(`[TREND CONFIRMED] ${instrument} ${signal.direction} — trend active, proceeding to consensus`);
@@ -4836,7 +4842,7 @@ async function serverAutoTrade() {
           60 * 60 * 1000,
           () => ({ title: '🚫 USD Block', description: instrument + ' LONG blocked — USD strength' })
         );
-        diagCounters.blockedMacro++;
+        diagCounters.blockedLongMacro++;
         continue;
       }
       console.log(`[LONG FILTER] ${instrument} LONG cleared — ${condsMet}/3 meets ${required}/3 required (EMA50up:${c1_ema50Up} LTbias:${c2_weeklyBull} XavierBull:${c3_xavierBull})`);
@@ -4860,8 +4866,6 @@ async function serverAutoTrade() {
     } catch (e) {
       console.error('[SUPABASE INSIGHT] fetch failed:', e.message);
     }
-
-    lastConsensus.set(instrument, Date.now());
 
     const bars      = liveHistory.slice(-21);
     const tr        = bars.slice(1).map((v, i) => Math.abs(v - bars[i]));
@@ -5039,6 +5043,7 @@ async function serverAutoTrade() {
       continue;
     }
     console.log('[COUNCIL PASSED]', instrument, 'proceeding to execute');
+    lastConsensus.set(instrument, Date.now());
     if (isHighConviction) diagCounters.aplusCount++; else diagCounters.standardCount++;
 
     // ── Pre-trade validation — must pass BEFORE Discord notification fires ────
@@ -5046,7 +5051,8 @@ async function serverAutoTrade() {
     {
       const preValidation = await validateTrade(instrument, session, signal, sl, price, false);
       if (!preValidation.valid) {
-        console.log('[A+ BLOCKED]', instrument, 'failed pre-trade validation:', preValidation.errors.join(' | '));
+        console.log('[FUNNEL]', instrument, 'blocked by validateTrade:', preValidation.errors.join(', '));
+        diagCounters.blockedValidation++;
         continue;
       }
     }
@@ -5159,7 +5165,8 @@ async function serverAutoTrade() {
         if (paperTrades.length > 100) paperTrades.pop();
         console.log(`[auto] ${instrument} — PAPER logged (market halted)`);
       } else if (result.blocked) {
-        console.log(`[auto] ${instrument} — placeOrder blocked: ${result.blocked}`);
+        console.log('[FUNNEL]', instrument, 'blocked by placeOrder:', result.blocked);
+        diagCounters.blockedPlaceOrder++;
       } else if (result.success) {
         const { fill, tradeId: oandaId } = result;
         diagCounters.executedCount++;
@@ -6485,14 +6492,20 @@ app.get('/diagnostics', requireAuth, async (_req, res) => {
       standard:          diagCounters.standardCount,
       executed:          diagCounters.executedCount,
       blocked: {
-        scoreThreshold: diagCounters.blockedScore,
-        newsGuard:      diagCounters.blockedNews,
-        macroFilter:    diagCounters.blockedMacro,
-        options:        diagCounters.blockedOptions,
-        historical:     diagCounters.blockedHistory,
-        consensus:      diagCounters.blockedConsensus,
-        cooldown:       diagCounters.blockedCooldown,
-        heatLimit:      diagCounters.blockedHeat,
+        scoreThreshold:       diagCounters.blockedScore,
+        newsGuard:            diagCounters.blockedNews,
+        weeklyTrend:          diagCounters.blockedWeeklyTrend,
+        m5Trend:              diagCounters.blockedM5Trend,
+        longMacro:            diagCounters.blockedLongMacro,
+        options:              diagCounters.blockedOptions,
+        historical:           diagCounters.blockedHistory,
+        consensus:            diagCounters.blockedConsensus,
+        consensusCooldown:    diagCounters.blockedConsensusCooldown,
+        postClose:            diagCounters.blockedPostClose,
+        pairLock:             diagCounters.blockedPairLock,
+        validation:           diagCounters.blockedValidation,
+        placeOrder:           diagCounters.blockedPlaceOrder,
+        heatLimit:            diagCounters.blockedHeat,
       },
     },
     swing: {
