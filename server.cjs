@@ -1158,16 +1158,16 @@ const ATR_TP_MULTIPLIER = { XAG_USD: 6.0, BCO_USD: 5.0, WTICO_USD: 5.0 };
 // Minimum stop loss distance per instrument — prevents ATR compression from shrinking SL too tight
 // M5 SL floors — tighter (M5 candles have smaller ATR than H4 swing)
 const MIN_SL_FLOOR_M5 = {
-  XAU_USD:    8,       // M5: $8 min
-  XAG_USD:    0.20,    // M5: 20 cents
-  NAS100_USD: 25,      // M5: 25 points
-  JP225_USD:  50,      // M5: 50 points
-  AU200_AUD:  10,      // M5: 10 points
-  EUR_USD:    0.0010,  // M5: 10 pips
-  GBP_USD:    0.0012,  // M5: 12 pips
-  EUR_GBP:    0.0008,  // M5: 8 pips
-  USD_JPY:    0.10,    // M5: 10 pips
-  USD_CAD:    0.0010,  // M5: 10 pips
+  XAU_USD:    5,       // M5: $5 min (reduced from 8)
+  XAG_USD:    0.15,    // M5: 15 cents (reduced from 0.20)
+  NAS100_USD: 20,      // M5: 20 points (reduced from 25)
+  JP225_USD:  40,      // M5: 40 points (reduced from 50)
+  AU200_AUD:  8,       // M5: 8 points (reduced from 10)
+  EUR_USD:    0.0008,  // M5: 8 pips (reduced from 0.0010)
+  GBP_USD:    0.0010,  // M5: 10 pips (reduced from 0.0012)
+  EUR_GBP:    0.0006,  // M5: 6 pips (reduced from 0.0008)
+  USD_JPY:    0.08,    // M5: 8 pips (reduced from 0.10)
+  USD_CAD:    0.0008,  // M5: 8 pips (reduced from 0.0010)
 };
 
 // Swing SL floors — wider (H4 candles, larger ATR)
@@ -4426,8 +4426,13 @@ async function validateTrade(instrument, session, signal, sl, entryPrice = 0, is
   const minFloor = floors[instrument] || 0;
   if (minFloor > 0 && entryPrice > 0) {
     const slDistance = Math.abs(entryPrice - sl);
-    if (slDistance < minFloor)
+    if (slDistance < minFloor) {
+      console.log(`[SL FLOOR ${isSwing ? 'SWING' : 'M5'}]`, instrument,
+        'ATR SL:', slDistance.toFixed(4),
+        'floor:', minFloor,
+        'using floor ← applied');
       errors.push(`SL distance ${slDistance.toFixed(4)} below ${isSwing ? 'swing' : 'M5'} floor ${minFloor}`);
+    }
   }
 
   // Signal score
