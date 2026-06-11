@@ -5532,7 +5532,10 @@ async function checkOandaHealth() {
 
 // ─── SERVER-SIDE SWING AUTO TRADE ENGINE (Kill Shot — H4, 4-hour scan) ───────
 async function serverSwingAutoTrade() {
-  if (process.env.AUTO_MODE_ENABLED !== 'true') return;
+  if (process.env.AUTO_MODE_ENABLED !== 'true') {
+    console.log('[SWING SKIP] auto mode disabled — set AUTO_MODE_ENABLED=true to enable Kill Shots');
+    return;
+  }
 
   // OANDA health check — stand by silently during maintenance windows
   const oandaHealthy = await checkOandaHealth();
@@ -5552,13 +5555,22 @@ async function serverSwingAutoTrade() {
   const d   = now.getUTCDay();
 
   // Weekend block (Saturday all day; Sunday before 22 UTC)
-  if (d === 6 || (d === 0 && h < 22)) return;
+  if (d === 6 || (d === 0 && h < 22)) {
+    console.log(`[SWING SKIP] weekend gate — day=${d} hour=${h} UTC`);
+    return;
+  }
 
   // Only scan London open → NY close: 8–20 UTC
-  if (h < 8 || h >= 20) return;
+  if (h < 8 || h >= 20) {
+    console.log(`[SWING SKIP] outside trading hours — ${h} UTC (active window: 08–20 UTC)`);
+    return;
+  }
 
   // Friday PM block: no new swings after 18 UTC Friday
-  if (d === 5 && h >= 18) return;
+  if (d === 5 && h >= 18) {
+    console.log(`[SWING SKIP] Friday PM gate — ${h} UTC Friday, no new swings after 18:00`);
+    return;
+  }
 
   swingStatus = { status: 'SCANNING', message: 'Scanning Kill Shot pairs…', lastSignal: lastValidSwingSignal || null, nextScan: null };
 
@@ -5573,16 +5585,17 @@ async function serverSwingAutoTrade() {
     return;
   }
 
-  // Hard cap: max 2 open trades (M5 + swing combined) — matches Rule 3
-  if (openTrades.length >= 2) {
-    console.log(`[swing-auto] ${openTrades.length} open trades — circuit breaker, skipping swing scan`);
+  // Hard cap: max open trades (M5 + swing combined) — read from xavierWeights
+  const maxOpenTrades = xavierWeights.maxOpenTrades || 2;
+  if (openTrades.length >= maxOpenTrades) {
+    console.log(`[SWING HEAT BLOCK] ${openTrades.length}/${maxOpenTrades} open trades — swing scan paused until a trade closes`);
     return;
   }
 
   const session = getServerSession();
   const sessionKillShots = (XAVIER_SESSION_RULES[session] || {}).killShot || [];
   if (sessionKillShots.length === 0) {
-    console.log(`[swing-auto] ${session} — no kill shot pairs defined, skipping`);
+    console.log(`[SWING SKIP] no Kill Shot pairs defined for ${session} session`);
     return;
   }
 
@@ -5607,10 +5620,16 @@ async function serverSwingAutoTrade() {
         fetchOandaCandles(instrument, 'W',   10),
       ]);
 
-      if (h4Candles.length < 50) continue;
+      if (h4Candles.length < 50) {
+        console.log(`[SWING SKIP] ${instrument} — insufficient H4 candles: ${h4Candles.length} (need 50)`);
+        continue;
+      }
 
       const sig = serverGenerateSwingSignal(h4Candles, weeklyCandles, instrument);
-      if (!sig) continue;
+      if (!sig) {
+        console.log(`[SWING SKIP] ${instrument} — no swing signal generated (conditions not met)`);
+        continue;
+      }
       diagCounters.swingCounter++;
 
       // Weekly trend alignment block — prevents counter-trend swing trades
@@ -5683,9 +5702,6 @@ async function serverSwingAutoTrade() {
       }
       // Block if swing auto already tracking an open trade for this pair
       if (swingAutoTrades.some(t => t.instrument === instrument && !t.closed)) continue;
-
-      // Stamp cooldown now (before async consensus)
-      lastSwingConsensus.set(instrument, Date.now());
 
       // Fix 1: Fetch live price — H4 last close can be hours stale
       const livePrice = await fetchLivePrice(instrument);
@@ -5796,9 +5812,12 @@ async function serverSwingAutoTrade() {
       // Hard gate — 3/4 normally; 4/4 required for counter-trend trades
       const minConfirms = sig.requireFullConsensus ? 4 : 3;
       if (consensus.confirms < minConfirms) {
-        console.log(`[SWING] consensus failed ${consensus.confirms}/${minConfirms}${sig.counterTrend ? ' (counter-trend — 4/4 required)' : ''} — not sending Discord notification`);
+        console.log(`[SWING COOLDOWN SKIP] ${instrument} — consensus failed ${consensus.confirms}/${minConfirms}${sig.counterTrend ? ' (counter-trend — 4/4 required)' : ''} — no cooldown set, will retry next scan`);
         continue;
       }
+      // Stamp 4h cooldown only after consensus PASSES — failed scans don't lock the pair
+      lastSwingConsensus.set(instrument, Date.now());
+      console.log(`[SWING COOLDOWN SET] ${instrument} — consensus passed — 4h cooldown started`);
       diagCounters.swingConsensusPass++;
 
       // ── SL/TP sanity check before queuing ───────────────────────────────────
@@ -7043,9 +7062,9 @@ setTimeout(() => backfillNullTrades().catch(e => console.error('[backfill] Start
 setTimeout(() => serverAutoTrade().catch(e => console.error('[auto] Startup:', e.message)), 10_000);
 setInterval(() => serverAutoTrade().catch(e => console.error('[auto] Loop:', e.message)), 60_000);
 
-// Kill Shot swing scan — every 4 hours + 15s startup delay
+// Kill Shot swing scan — every 1 hour + 15s startup delay
 setTimeout(() => serverSwingAutoTrade().catch(e => console.error('[swing-auto] Startup:', e.message)), 15_000);
-setInterval(() => serverSwingAutoTrade().catch(e => console.error('[swing-auto] Loop:', e.message)), 4 * 60 * 60 * 1000);
+setInterval(() => serverSwingAutoTrade().catch(e => console.error('[swing-auto] Loop:', e.message)), 60 * 60 * 1000);
 
 // Upgrade 1 — Trade management (breakeven, partial close, trail) every 30s
 setTimeout(() => manageOpenTrades().catch(e => console.error('[mgmt] Startup:', e.message)), 20_000);
