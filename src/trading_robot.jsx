@@ -3606,7 +3606,7 @@ function SwingConsensusPanel({ pair, sig, session, xavierIntel, freshNews, liveP
         <div style={{ display: "flex", gap: 8 }}>
           {consensus.executeAllowed ? (
             <button
-              onClick={() => { onExecute(pair, sig); onCancel(); }}
+              onClick={() => { onExecute(pair, { ...sig, consensusConfirms: confirms }); onCancel(); }}
               style={{ flex: 1, padding: "8px 0", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", background: "#F9731618", color: "#F97316", border: "1px solid #F97316", letterSpacing: "0.04em", fontFamily: "inherit" }}
             >
               ⚔️ Execute Kill Shot
@@ -3890,7 +3890,7 @@ function SwingPanel({ signals, scanning, onExecute, openTrades, isMobile, isFriP
 
             {/* Execute button — gated by consensus */}
             <button
-              onClick={() => canExec && !isAlreadyOpen && executeAllowed && !isPhase2 && onExecute(pair, sig)}
+              onClick={() => canExec && !isAlreadyOpen && executeAllowed && !isPhase2 && onExecute(pair, { ...sig, consensusConfirms: confirms })}
               disabled={isAlreadyOpen || !canExec || !executeAllowed || !!cs?.loading || isPhase2}
               style={{
                 marginTop: 8, width: "100%", padding: "7px 0", borderRadius: 6,
@@ -9087,11 +9087,15 @@ export default function TradingRobot() {
     if (!window.confirm(`⚔️ Execute Kill Shot: ${pair} ${sig.direction} @ ${swingFmt(pair, sig.entry)}?\nScore: ${sig.score}% · SL: ${swingFmt(pair, sig.sl)} · TP1: ${swingFmt(pair, sig.tp1)}`)) return;
     const units = sig.direction === "LONG" ? 500 : -500;
     try {
-      const orderPayload = { instrument: sym, units, slPrice: sig.sl, tp1Price: sig.tp1 };
+      const orderPayload = {
+        instrument: sym, units, slPrice: sig.sl, tp1Price: sig.tp1,
+        approved: true,
+        consensusConfirms: sig.consensusConfirms ?? 3,
+      };
       console.log('[SWING ORDER PAYLOAD]', JSON.stringify(orderPayload, null, 2));
       const r = await fetch(`${BRIDGE}/swing/order`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify(orderPayload),
       });
       const data = await r.json();
