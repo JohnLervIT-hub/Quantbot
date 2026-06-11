@@ -251,12 +251,12 @@ app.get('/trades', requireAuth, async (req, res) => {
     const data = await r.json();
     if (!Array.isArray(data.trades)) {
       console.warn('[/trades] OANDA unexpected response:', JSON.stringify(data).slice(0, 120));
-      return res.json({ trades: [] });
+      return res.status(502).json({ error: 'OANDA_ERROR', detail: JSON.stringify(data).slice(0, 100) });
     }
     res.json(data);
   } catch (e) {
     console.error('[/trades] OANDA fetch failed:', e.message);
-    res.json({ trades: [] });
+    res.status(503).json({ error: 'OANDA_UNAVAILABLE', detail: e.message });
   }
 });
 
