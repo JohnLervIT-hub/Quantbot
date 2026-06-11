@@ -5756,7 +5756,6 @@ function AutoModeSettingsModal({ settings, onSave, onCancel, onResetOnboarding, 
   const set = (k, v) => setS(prev => ({ ...prev, [k]: v }));
 
   const consensusLabels = ["1/4", "2/4", "3/4", "4/4"];
-  const heatOptions = [2, 3, 4, 6];
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
@@ -5775,18 +5774,9 @@ function AutoModeSettingsModal({ settings, onSave, onCancel, onResetOnboarding, 
           <button onClick={onCancel} style={{ background: "none", border: "none", color: "#8b949e", fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1 }}>✕</button>
         </div>
 
-        {/* Signal confidence */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3" }}>Minimum signal confidence</span>
-            <span style={{ fontFamily: FONT_MONO, fontSize: 14, fontWeight: 700, color: "#388bfd" }}>{s.minConfidence}%</span>
-          </div>
-          <input type="range" min={50} max={90} step={5} value={s.minConfidence} onChange={e => set("minConfidence", Number(e.target.value))}
-            style={{ width: "100%", accentColor: "#388bfd", cursor: "pointer" }} />
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#484f58" }}>
-            <span>50% — more trades</span><span>90% — fewer, safer</span>
-          </div>
-          <div style={{ fontSize: 11, color: "#8b949e" }}>Only trade signals above this score</div>
+        {/* ── Section 1: Execution Settings ── */}
+        <div style={{ fontSize: 10, fontWeight: 700, color: '#8b949e', textTransform: 'uppercase', letterSpacing: '0.1em', paddingBottom: 6, borderBottom: '1px solid #21262d' }}>
+          Execution Settings
         </div>
 
         {/* Max trades per hour */}
@@ -5804,23 +5794,6 @@ function AutoModeSettingsModal({ settings, onSave, onCancel, onResetOnboarding, 
             ))}
           </div>
           <div style={{ fontSize: 11, color: "#8b949e" }}>Circuit breaker — halts after limit</div>
-        </div>
-
-        {/* Max heat */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3" }}>Max portfolio heat</span>
-          <div style={{ display: "flex", gap: 8 }}>
-            {heatOptions.map(v => (
-              <button key={v} onClick={() => set("maxHeat", v)}
-                style={{ flex: 1, padding: "8px 0", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-                  background: s.maxHeat === v ? "rgba(186,117,23,0.15)" : "#0d1117",
-                  color: s.maxHeat === v ? "#d29922" : "#8b949e",
-                  border: `1px solid ${s.maxHeat === v ? "#d29922" : "#30363d"}` }}>
-                {v}R
-              </button>
-            ))}
-          </div>
-          <div style={{ fontSize: 11, color: "#8b949e" }}>Stop trading above this heat level</div>
         </div>
 
         {/* Consensus required */}
@@ -5868,32 +5841,12 @@ function AutoModeSettingsModal({ settings, onSave, onCancel, onResetOnboarding, 
           <div style={{ fontSize: 11, color: "#8b949e" }}>Automatically close at these levels</div>
         </div>
 
-        {/* Risk summary */}
-        <div style={{ background: "#2d2000", border: "1px solid #d29922", borderRadius: 8, padding: "12px 14px" }}>
-          <div style={{ fontSize: 11, color: "#d29922", lineHeight: 1.6 }}>
-            With these settings the bot will trade maximum <strong>{s.maxTradesPerHour}</strong> time{s.maxTradesPerHour !== 1 ? "s" : ""} per hour at <strong>{s.minConfidence}%</strong> confidence, requiring <strong>{s.consensusRequired}/4</strong> AI models to agree. RAY uses live Google news for macro context. Auto-halts if heat exceeds <strong>{s.maxHeat}R</strong>.
-          </div>
-        </div>
-
-        {/* Filter Controls */}
-        {serverWeights && onUpdateServerWeight && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: '#8b949e', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 8 }}>
-              Filter Controls
-            </div>
-            <FilterToggle label="Weekly Trend Filter" value={serverWeights.weeklyTrendEnabled ?? true}
-              onChange={() => onUpdateServerWeight('weeklyTrendEnabled', !(serverWeights.weeklyTrendEnabled ?? true))} />
-            <FilterToggle label="M5 Trend Confirmation" value={serverWeights.m5TrendEnabled ?? true}
-              onChange={() => onUpdateServerWeight('m5TrendEnabled', !(serverWeights.m5TrendEnabled ?? true))} />
-            <FilterToggle label="Options PCR Filter" value={serverWeights.optionsPCREnabled ?? true}
-              onChange={() => onUpdateServerWeight('optionsPCREnabled', !(serverWeights.optionsPCREnabled ?? true))} />
-            <FilterToggle label="Historical Edge Filter" value={serverWeights.historicalEdgeEnabled ?? true}
-              onChange={() => onUpdateServerWeight('historicalEdgeEnabled', !(serverWeights.historicalEdgeEnabled ?? true))} />
-          </div>
-        )}
-
-        {/* Numeric filter settings */}
+        {/* ── Section 2: Filter Controls ── */}
         {serverWeights && onUpdateServerWeight && (<>
+          <div style={{ fontSize: 10, fontWeight: 700, color: '#8b949e', textTransform: 'uppercase', letterSpacing: '0.1em', paddingBottom: 6, borderBottom: '1px solid #21262d' }}>
+            Filter Controls
+          </div>
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: '#e6edf3' }}>Score threshold</span>
@@ -5946,7 +5899,26 @@ function AutoModeSettingsModal({ settings, onSave, onCancel, onResetOnboarding, 
               </div>
             </div>
           </div>
+
+          <FilterToggle label="Weekly Trend Confirmation" value={serverWeights.weeklyTrendEnabled ?? true}
+            onChange={() => onUpdateServerWeight('weeklyTrendEnabled', !(serverWeights.weeklyTrendEnabled ?? true))} />
+          <FilterToggle label="M5 Trend Confirmation" value={serverWeights.m5TrendEnabled ?? true}
+            onChange={() => onUpdateServerWeight('m5TrendEnabled', !(serverWeights.m5TrendEnabled ?? true))} />
+          <FilterToggle label="Options PCR Filter" value={serverWeights.optionsPCREnabled ?? true}
+            onChange={() => onUpdateServerWeight('optionsPCREnabled', !(serverWeights.optionsPCREnabled ?? true))} />
+          <FilterToggle label="Historical Edge Filter" value={serverWeights.historicalEdgeEnabled ?? true}
+            onChange={() => onUpdateServerWeight('historicalEdgeEnabled', !(serverWeights.historicalEdgeEnabled ?? true))} />
         </>)}
+
+        {/* Summary */}
+        <div style={{ background: '#161b22', border: '1px solid #30363d', borderRadius: 8, padding: '10px 14px' }}>
+          <div style={{ fontSize: 11, color: '#8b949e', lineHeight: 1.7, fontFamily: "'JetBrains Mono',monospace" }}>
+            Xavier trades when score ≥ <strong style={{ color: '#388bfd' }}>{serverWeights?.scoreThreshold ?? 65}%</strong>,
+            max <strong style={{ color: '#3fb950' }}>{serverWeights?.maxOpenTrades ?? 2}</strong> trades open,{' '}
+            <strong style={{ color: '#3fb950' }}>{s.consensusRequired}/4</strong> models agree.
+            Cooldown: <strong style={{ color: '#d29922' }}>{serverWeights?.postCloseCooldownMins ?? 15}min</strong> after each close.
+          </div>
+        </div>
 
         {/* Buttons */}
         <div style={{ display: "flex", gap: 10 }}>
@@ -9221,7 +9193,7 @@ export default function TradingRobot() {
             <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
               <span style={{ fontSize: 10, color: autoMode ? "#484f58" : "#30363d", fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>
                 {autoMode
-                  ? `${autoSettings.minConfidence}% · ${autoSettings.maxTradesPerHour}/hr · ${autoSettings.maxHeat}R`
+                  ? `${serverWeights.scoreThreshold ?? 65}% · ${autoSettings.maxTradesPerHour}/hr · ${serverWeights.maxOpenTrades ?? 2} open`
                   : `${(displayUPL >= 0 ? "+" : "") + displayUPL.toFixed(2)} UPL`}
               </span>
               {paperTodayCount > 0 && (
@@ -9324,7 +9296,7 @@ export default function TradingRobot() {
                 </button>
                 {autoMode && (
                   <span style={{ fontSize: 10, color: "#3fb950", fontFamily: FONT_MONO, letterSpacing: "0.2px" }}>
-                    {autoSettings.minConfidence}% · {autoSettings.maxTradesPerHour}/hr · {autoSettings.maxHeat}R
+                    {serverWeights.scoreThreshold ?? 65}% · {autoSettings.maxTradesPerHour}/hr · {serverWeights.maxOpenTrades ?? 2} open
                   </span>
                 )}
               </div>
