@@ -7304,6 +7304,63 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('──────────────────────────────────────────');
 });
 
+// ─── STARTUP GUARD — detect open trades before enabling auto mode ─────────────
+(async function startupGuard() {
+  console.log('[STARTUP GUARD] Checking for open OANDA trades...');
+  let openTrades = [];
+  try {
+    const r = await fetch(`${BASE}/v3/accounts/${ACCOUNT}/openTrades`, { headers: H });
+    const data = await r.json();
+    openTrades = data.trades || [];
+  } catch (e) {
+    console.warn('[STARTUP GUARD] Could not fetch open trades:', e.message, '— proceeding normally');
+    return;
+  }
+
+  if (openTrades.length === 0) {
+    console.log('[STARTUP GUARD] No open trades — safe to start ✅');
+    return;
+  }
+
+  const pairList = openTrades.map(t => (t.instrument || '').replace('_', '/')).join(', ');
+  console.warn(`[STARTUP GUARD] ⚠️  ${openTrades.length} open trade(s) detected: ${pairList}`);
+  console.warn('[STARTUP GUARD] Disabling auto mode — 60s grace period before management resumes');
+
+  // Temporarily disable auto mode so no new trades fire during grace period
+  process.env.AUTO_MODE_ENABLED = 'false';
+
+  // Alert Discord
+  try {
+    await sendDiscordEmbed({
+      title: '⚠️ Railway Restarted — Open Trades Detected',
+      color: 0xd29922,
+      fields: [
+        { name: 'Open Trades', value: String(openTrades.length),   inline: true  },
+        { name: 'Pairs',       value: pairList || '—',             inline: true  },
+        { name: 'Action',      value: 'Auto mode disabled\n60s grace period — management resumes automatically', inline: false },
+      ],
+    });
+  } catch (e) {
+    console.warn('[STARTUP GUARD] Discord alert failed:', e.message);
+  }
+
+  // After 60s grace period re-enable auto mode (if it was on before restart)
+  await loadAutoMode().catch(e => console.error('[STARTUP GUARD] loadAutoMode:', e.message));
+  setTimeout(async () => {
+    console.log('[STARTUP GUARD] Grace period over — auto mode restored, trade management resuming ✅');
+    try {
+      await sendDiscordEmbed({
+        title: '✅ Startup Guard Complete',
+        color: 0x3fb950,
+        fields: [
+          { name: 'Auto Mode', value: process.env.AUTO_MODE_ENABLED === 'true' ? '✅ ON' : '❌ OFF', inline: true },
+          { name: 'Status',    value: 'Trade management active',                                       inline: true },
+        ],
+      });
+    } catch (e) { /* non-fatal */ }
+  }, 60_000);
+})().catch(e => console.error('[STARTUP GUARD] Fatal:', e.message));
+
 // Backfill any Supabase records with null close fields — runs once 5s after boot
 setTimeout(() => backfillNullTrades().catch(e => console.error('[backfill] Startup:', e.message)), 5_000);
 
