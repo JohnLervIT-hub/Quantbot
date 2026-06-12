@@ -733,6 +733,7 @@ async function fetchXavierContext() {
       .from('trades')
       .select('*')
       .not('outcome', 'is', null)
+      .neq('exit_type', 'SYSTEM_ERROR')
       .gte('close_time', CLEAN_CUTOFF)
       .order('created_at', { ascending: false })
       .limit(100);
@@ -3656,7 +3657,8 @@ async function saveTradeToSupabase(trade) {
           .select('r_multiple, outcome')
           .eq('pair', instrument)
           .gte('close_time', CLEAN_CUTOFF)
-          .not('r_multiple', 'is', null);
+          .not('r_multiple', 'is', null)
+          .neq('exit_type', 'SYSTEM_ERROR');
         const tradeCount = pairTrades?.length ?? 0;
         if (tradeCount >= 10) {
           const avgR = pairTrades.reduce((s, t) => s + (t.r_multiple || 0), 0) / tradeCount;
@@ -3697,7 +3699,7 @@ async function saveTradeToSupabase(trade) {
       }
     }
 
-    await updatePattern(trade);
+    if (trade.exitType !== 'SYSTEM_ERROR') await updatePattern(trade);
     if (trade.pnl < 0 && trade.rMultiple != null && Math.abs(trade.rMultiple) >= 0.10) {
       await saveLesson(trade);
     }
@@ -4269,17 +4271,19 @@ async function getDailySummary() {
     };
   }
 
-  const wins      = trades.filter(t => t.pnl > 0);
-  const losses    = trades.filter(t => t.pnl < 0);
-  const totalPnl  = trades.reduce((s, t) => s + (t.pnl || 0), 0);
-  const bestTrade = trades.reduce((best, t) => (t.pnl > best.pnl ? t : best), trades[0]);
+  // Include SYSTEM_ERROR in P&L (account accuracy) but exclude from win rate
+  const totalPnl   = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+  const cleanTrades = trades.filter(t => t.exit_type !== 'SYSTEM_ERROR');
+  const wins       = cleanTrades.filter(t => t.pnl > 0);
+  const losses     = cleanTrades.filter(t => t.pnl < 0);
+  const bestTrade  = trades.reduce((best, t) => (t.pnl > best.pnl ? t : best), trades[0]);
 
   return {
     date:        dayStart.toDateString(),
-    trades:      trades.length,
+    trades:      cleanTrades.length,
     wins:        wins.length,
     losses:      losses.length,
-    winRate:     ((wins.length / trades.length) * 100).toFixed(1) + '%',
+    winRate:     cleanTrades.length > 0 ? ((wins.length / cleanTrades.length) * 100).toFixed(1) + '%' : '—',
     totalPnl,
     totalPnlStr: (totalPnl >= 0 ? '+' : '') + '$' + totalPnl.toFixed(2),
     bestTrade:   `${bestTrade.pair} ${bestTrade.direction} $${bestTrade.pnl.toFixed(2)}`,
@@ -7003,14 +7007,17 @@ app.get('/supabase/performance', requireAuth, async (_req, res) => {
   try {
     const { data, error } = await supabase.from('trades').select('*');
     if (error) return res.status(500).json({ error: error.message });
-    const trades = data || [];
-    if (trades.length === 0) return res.json({ totalTrades: 0, wins: 0, losses: 0, winRate: 0, avgR: 0, totalPnl: 0, bestPair: null, worstPair: null, bestSession: null });
+    const allTrades = data || [];
+    if (allTrades.length === 0) return res.json({ totalTrades: 0, wins: 0, losses: 0, winRate: 0, avgR: 0, totalPnl: 0, bestPair: null, worstPair: null, bestSession: null });
+
+    // Include SYSTEM_ERROR in P&L (account accuracy); exclude from all performance metrics
+    const totalPnl   = allTrades.reduce((s, t) => s + (t.pnl || 0), 0);
+    const trades     = allTrades.filter(t => t.exit_type !== 'SYSTEM_ERROR');
 
     const wins   = trades.filter(t => t.outcome === 'WIN').length;
     const losses = trades.filter(t => t.outcome === 'LOSS').length;
-    const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
-    const validR   = trades.filter(t => t.r_multiple !== null && t.r_multiple !== undefined);
-    const avgR     = validR.length > 0 ? validR.reduce((s, t) => s + t.r_multiple, 0) / validR.length : 0;
+    const validR = trades.filter(t => t.r_multiple !== null && t.r_multiple !== undefined);
+    const avgR   = validR.length > 0 ? validR.reduce((s, t) => s + t.r_multiple, 0) / validR.length : 0;
 
     // Best / worst pair by avg R
     const pairMap = {};
@@ -7039,7 +7046,7 @@ app.get('/supabase/performance', requireAuth, async (_req, res) => {
       totalTrades: trades.length,
       wins,
       losses,
-      winRate:     parseFloat(((wins / trades.length) * 100).toFixed(1)),
+      winRate:     trades.length > 0 ? parseFloat(((wins / trades.length) * 100).toFixed(1)) : 0,
       avgR:        parseFloat(avgR.toFixed(3)),
       totalPnl:    parseFloat(totalPnl.toFixed(2)),
       bestPair,
@@ -7055,8 +7062,11 @@ app.get('/supabase/performance', requireAuth, async (_req, res) => {
 app.get('/supabase/history', requireAuth, async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
   try {
-    const { pair, outcome, session, dateRange, sortBy, limit } = req.query;
+    const { pair, outcome, session, dateRange, sortBy, limit, includeErrors } = req.query;
     let query = supabase.from('trades').select('*');
+
+    // Exclude SYSTEM_ERROR trades from history by default — include only for explicit audit
+    if (includeErrors !== 'true') query = query.neq('exit_type', 'SYSTEM_ERROR');
 
     if (pair    && pair    !== 'ALL') query = query.eq('pair',    pair);
     if (outcome && outcome !== 'ALL') query = query.eq('outcome', outcome);
